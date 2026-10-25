@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+node_modules/
+web/dist/
+desktop/out/
+data/
+backups/
+.env
+*.sqlite*
+*.log
+.DS_Store
+*.tsbuildinfo
+
+desktop/assets/

@@ -1,0 +1,8 @@
+# Replace ledger.example.com with your domain after DNS is configured.
+ledger.example.com {
+    encode zstd gzip
+    request_body {
+        max_size 6MB
+    }
+    reverse_proxy 127.0.0.1:8765
+}

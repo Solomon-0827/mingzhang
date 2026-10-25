@@ -1,0 +1,188 @@
+const { app, BrowserWindow, Menu, ipcMain, dialog } = require("electron");
+const fs = require("node:fs");
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+let main, setup;
+const configFile = () => path.join(app.getPath("userData"), "connection.json");
+function readURL() {
+  try {
+    return JSON.parse(fs.readFileSync(configFile(), "utf8")).url || "";
+  } catch {
+    return "";
+  }
+}
+function validURL(value) {
+  const url = new URL(value);
+  if (url.username || url.password || url.search || url.hash)
+    throw Error("地址不能包含密码或参数");
+  if (
+    url.protocol !== "https:" &&
+    !(
+      url.protocol === "http:" &&
+      ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
+    )
+  )
+    throw Error("云端地址需要 HTTPS；本地测试可使用 http://127.0.0.1:8765");
+  return url.origin;
+}
+function setupWindow() {
+  if (setup) {
+    setup.focus();
+    return;
+  }
+  setup = new BrowserWindow({
+    width: 600,
+    height: 460,
+    resizable: false,
+    title: "连接明账",
+    backgroundColor: "#f6f7f3",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  setup.loadFile("setup.html");
+  setup.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  setup.webContents.on("will-navigate", (e) => e.preventDefault());
+  setup.on("closed", () => {
+    setup = null;
+  });
+}
+function openLedger(url) {
+  if (main) main.close();
+  main = new BrowserWindow({
+    width: 1360,
+    height: 930,
+    minWidth: 880,
+    minHeight: 650,
+    title: "明账",
+    backgroundColor: "#f6f7f3",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  main.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  main.webContents.on("will-navigate", (event, target) => {
+    if (new URL(target).origin !== url) event.preventDefault();
+  });
+  main.webContents.session.setPermissionRequestHandler(
+    (_webContents, _permission, callback) => callback(false),
+  );
+  main.webContents.session.setPermissionCheckHandler(() => false);
+  main.webContents.on(
+    "did-fail-load",
+    (_event, code, _description, _url, isMain) => {
+      if (isMain && code !== -3) {
+        dialog.showMessageBox(main, {
+          type: "warning",
+          title: "无法连接账本",
+          message: "账本服务暂时无法连接",
+          detail:
+            "请确认服务器已启动、网络可用，或通过菜单“明账 → 服务器连接”修改地址。",
+          buttons: ["知道了"],
+        });
+      }
+    },
+  );
+  main.loadURL(url);
+  main.on("closed", () => {
+    main = null;
+  });
+}
+ipcMain.handle("connection:read", (event) => {
+  if (event.sender !== setup?.webContents) throw Error("无权限");
+  return readURL();
+});
+ipcMain.handle("connection:save", (event, value) => {
+  if (
+    event.sender !== setup?.webContents ||
+    event.senderFrame.url !==
+      pathToFileURL(path.join(__dirname, "setup.html")).href
+  )
+    throw Error("无权限");
+  const url = validURL(value);
+  fs.writeFileSync(configFile(), JSON.stringify({ url }), { mode: 0o600 });
+  openLedger(url);
+  setup.close();
+  return true;
+});
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (main) {
+      if (main.isMinimized()) main.restore();
+      main.focus();
+    } else setupWindow();
+  });
+  app.whenReady().then(() => {
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate([
+        {
+          label: "明账",
+          submenu: [
+            { role: "about", label: "关于明账" },
+            {
+              label: "服务器连接…",
+              accelerator: "CmdOrCtrl+,",
+              click: setupWindow,
+            },
+            { type: "separator" },
+            { role: "hide", label: "隐藏明账" },
+            { role: "quit", label: "退出明账" },
+          ],
+        },
+        {
+          label: "编辑",
+          submenu: [
+            { role: "undo", label: "撤销" },
+            { role: "redo", label: "重做" },
+            { type: "separator" },
+            { role: "cut", label: "剪切" },
+            { role: "copy", label: "复制" },
+            { role: "paste", label: "粘贴" },
+            { role: "selectAll", label: "全选" },
+          ],
+        },
+        {
+          label: "显示",
+          submenu: [
+            { role: "reload", label: "刷新账本" },
+            { role: "resetZoom", label: "实际大小" },
+            { role: "zoomIn", label: "放大" },
+            { role: "zoomOut", label: "缩小" },
+            { role: "togglefullscreen", label: "全屏" },
+          ],
+        },
+        {
+          label: "窗口",
+          submenu: [
+            { role: "minimize", label: "最小化" },
+            { role: "zoom", label: "缩放" },
+          ],
+        },
+      ]),
+    );
+    let url = readURL();
+    try {
+      url = validURL(url);
+      openLedger(url);
+    } catch {
+      setupWindow();
+    }
+  });
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") app.quit();
+  });
+  app.on("activate", () => {
+    if (!main && !setup) {
+      const url = readURL();
+      if (url) openLedger(url);
+      else setupWindow();
+    }
+  });
+}

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+    />
+    <title>连接明账</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 40px 48px;
+        background: #f6f7f3;
+        color: #284638;
+        font:
+          14px -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+      }
+      small {
+        font-size: 10px;
+        letter-spacing: 2px;
+        color: #829477;
+      }
+      h1 {
+        font-size: 27px;
+        margin: 15px 0;
+      }
+      p {
+        color: #87947d;
+        font-size: 12px;
+        line-height: 1.9;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        margin: 24px 0 9px;
+      }
+      input {
+        display: block;
+        width: 100%;
+        padding: 13px;
+        background: white;
+        border: 1px solid #dce4d3;
+        border-radius: 7px;
+        color: #355641;
+        font-size: 13px;
+      }
+      button {
+        margin-top: 16px;
+        padding: 12px 20px;
+        border: 0;
+        border-radius: 7px;
+        background: #205c4c;
+        color: white;
+        cursor: pointer;
+      }
+      #error {
+        color: #b15c47;
+        min-height: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <small>MINGZHANG / 明账</small>
+    <h1>连接你的私人账本</h1>
+    <p>
+      网页版与两台 Mac 连接同一地址，数据保持一致。<br />本地体验请先启动随附的服务。
+    </p>
+    <form id="form">
+      <label for="url">账本服务地址</label
+      ><input
+        id="url"
+        type="url"
+        required
+        placeholder="https://你的账本域名"
+        autocomplete="off"
+      />
+      <p id="error" role="alert"></p>
+      <button type="submit">连接账本</button>
+    </form>
+    <script src="setup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,23 @@
+[Unit]
+Description=Mingzhang private ledger
+After=network.target
+
+[Service]
+Type=simple
+User=mingzhang
+Group=mingzhang
+WorkingDirectory=/opt/mingzhang/app
+EnvironmentFile=/opt/mingzhang/config.env
+ExecStart=/opt/mingzhang/venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8765 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/mingzhang/data /opt/mingzhang/backups
+MemoryMax=700M
+
+[Install]
+WantedBy=multi-user.target
