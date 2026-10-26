@@ -1,0 +1,80 @@
+name: Verify and deploy
+on:
+  pull_request:
+    branches: [feat/first-release]
+  push:
+    branches: [feat/first-release]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: pip install uv
+      - run: uv sync --frozen
+      - run: uv run ruff check backend scripts tests
+      - run: uv run pytest -q
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+      - run: bash -n deploy/upgrade.sh
+      - run: docker run --rm -v "$PWD:/source:ro" python:3.12-slim bash /source/tests/deploy-smoke.sh
+      - name: Package application only
+        run: tar --exclude=__pycache__ --exclude='*.pyc' -czf mingzhang.tar.gz backend scripts deploy web/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mingzhang-${{ github.sha }}
+          path: mingzhang.tar.gz
+          retention-days: 14
+  deploy:
+    needs: verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release'
+    runs-on: ubuntu-24.04
+    environment: production
+    concurrency:
+      group: mingzhang-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mingzhang-${{ github.sha }}
+      - name: Reject stale deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          latest=$(gh api "repos/$REPOSITORY/git/ref/heads/feat/first-release" --jq .object.sha)
+          test "$latest" = "$REVISION" || { echo 'A newer commit exists; refusing stale deployment'; exit 1; }
+      - name: Install SSH identity
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$SSH_KEY" && test -n "$KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/*
+      - name: Upload and deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          REVISION: ${{ github.sha }}
+        run: |
+          test -n "$DEPLOY_HOST" && test -n "$DEPLOY_USER"
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes mingzhang.tar.gz "$target:mingzhang-$REVISION.tar.gz"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "set -eu; mkdir -p releases/$REVISION; tar -xzf mingzhang-$REVISION.tar.gz -C releases/$REVISION; cd releases/$REVISION; sudo -n bash deploy/upgrade.sh $REVISION"
+      - name: Remove runner credentials
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
