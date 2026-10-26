@@ -96,7 +96,7 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
           setCategories(move(groups.map(g => g.name),from,to).flatMap(name => groups.find(g => g.name === name)!.items)); setDirty(true);
         }} render={parent => change?.level === "parent" && change.path === parent && change.action !== "add" ? inlineEditor() : <>
           <button type="button" className={`parent-choice ${group?.name === parent ? "selected" : ""}`} onClick={() => {setSelected(parent);if(!busy){setChange(null);setError("");}}}>
-            <Folder size={17} strokeWidth={1.5}/><strong>{parent}</strong><small>{groups.find(g => g.name === parent)!.items.length}</small><ChevronRight size={14}/></button>{rowTools("parent",parent)}</>} />
+            <Folder size={17} strokeWidth={1.5}/><strong>{parent}</strong><small>{groups.find(g => g.name === parent)!.items.length}</small></button>{rowTools("parent",parent)}<button type="button" className="category-tool" aria-label={`查看二级分类：${parent}`} onClick={() => {setSelected(parent);if(!busy){setChange(null);setError("");}}}><ChevronRight size={14}/></button></>} />
       </section>
       <section className="child-column"><div className="settings-column-heading"><span>{group?.name} <ChevronRight size={14}/> 二级分类</span><button className="category-tool add" title="新增二级分类" aria-label="新增二级分类" disabled={busy || dirty || !group} onClick={()=>start("add","child",group.name)}><Plus size={19} strokeWidth={1.6}/></button></div>
         {change?.action === "add" && change.level === "child" && <div className="category-new-row">{inlineEditor()}</div>}
