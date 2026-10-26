@@ -1123,6 +1123,7 @@ function App() {
         )}
         {page === "settings" && state && <OrderSettings state={state} defaults={categories}
           onCategoryChange={async value => { await run(() => api("/categories", value)); }}
+          onPasswordChanged={() => { setLogged(false); setState(null); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
           onEditAccount={setAccountEditor}
           onSave={async value => { await run(() => api("/display-order", value, "PUT")); }} />}
         {page === "data" && state && (

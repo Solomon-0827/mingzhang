@@ -1,3 +1,4 @@
+import { PasswordSettings } from "./password-settings";
 import { useState, useRef, useEffect, type ReactNode } from "react";
 import { GripVertical, ChevronRight, Folder, Plus, PencilLine, Trash2, Check, X } from "lucide-react";
 import { Account, CategoryChange, DisplayOrder, State, ordered, accountLabels } from "./types";
@@ -37,7 +38,8 @@ function SortList({ items, scope, disabled, onMove, render }: {
 const move = (items: string[], from: number, to: number) => {
   const result = [...items]; const [item] = result.splice(from, 1); result.splice(to, 0, item); return result;
 };
-export function OrderSettings({ state, defaults, onSave, onEditAccount, onCategoryChange }: {
+export function OrderSettings({ state, defaults, onSave, onEditAccount, onCategoryChange, onPasswordChanged }: {
+  onPasswordChanged: () => void;
   onCategoryChange: (value: CategoryChange) => Promise<void>;
   state: State; defaults: string[]; onSave: (value: DisplayOrder) => Promise<void>; onEditAccount: (value: Account) => void;
 }) {
@@ -86,7 +88,9 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
     <div className="settings-tabs" role="tablist" aria-label="设置">
       <button role="tab" aria-selected={section === "categories"} onClick={() => setSection("categories")}>分类管理</button>
       <button role="tab" aria-selected={section === "accounts"} onClick={() => setSection("accounts")}>账户管理</button>
+      <button role="tab" aria-selected={section === "password"} onClick={() => setSection("password")}>修改密码</button>
     </div>
+    {section === "password" ? <PasswordSettings onChanged={onPasswordChanged} /> : <>
     <div className="settings-intro"><h2>{section === "categories" ? "分类层级与排序" : "账户排序与设置"}</h2>
       <p>{section === "categories" ? "拖动左侧手柄调整顺序。一级分类整组移动，二级分类在所属组内移动。" : "拖动左侧手柄调整账户顺序，点击编辑修改账户信息。"}</p></div>
     {section === "categories" ? <div className="category-manager">
@@ -116,5 +120,6 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
       <button disabled={!dirty || busy} onClick={() => {setAccounts(state.accounts.map(a=>a.id));setCategories(initialCategories());setDirty(false);setError("");}}>撤销调整</button>
       <button className="primary" disabled={!dirty || busy} onClick={async () => {setBusy(true);setError("");try {await onSave({accounts,categories,version:state.ordering?.version ?? 0});setDirty(false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}>{busy ? "保存中…" : "保存排序"}</button>
     </div>
+    </>}
   </section>;
 }

@@ -2199,3 +2199,10 @@ footer {
   .shell > aside { position: relative; }
   .sidebar-toggle { position: absolute; right: 16px; top: 16px; margin: 0; }
 }
+
+.password-settings { max-width: 460px; padding: 24px; display: grid; gap: 18px; }
+.password-settings h2 { margin: 0; font-size: 18px; }
+.password-settings > p { margin: 0; font-size: 13px; line-height: 1.7; color: #768578; }
+.password-settings > p.error { color: #b65948; }
+.password-settings label { display: grid; gap: 8px; font-size: 13px; }
+.password-settings button { justify-self: start; }
