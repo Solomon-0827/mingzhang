@@ -50,6 +50,8 @@ import {
   money,
   today,
 } from "./types";
+import { ControlTheme, StyledDate, StyledSelect } from "./controls";
+import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 
 const categories = [
@@ -98,7 +100,8 @@ function App() {
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false);
-  const [page, setPage] = useState("overview"),
+  const [bookMonth, setBookMonth] = useState(today().slice(0, 7));
+  const [page, setPage] = useState("entry"),
     [period, setPeriod] = useState("month"),
     [anchor, setAnchor] = useState(today().slice(0, 7));
   const [customStart, setCustomStart] = useState(
@@ -196,9 +199,13 @@ function App() {
       setNotice("先添加一个资金账户，再开始记账。");
       return;
     }
+    if (page === "entry") {
+      document.getElementById("home-amount")?.focus();
+      return;
+    }
     setEditor(newEntry(state.accounts[0].id));
     setEditing(false);
-  }, [state]);
+  }, [state, page]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
@@ -209,9 +216,10 @@ function App() {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [logged, openNew]);
-  async function run(action: () => Promise<unknown>, message = "已保存") {
+  async function run(action: () => Promise<unknown>, message = "") {
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       await action();
       await refresh();
@@ -223,23 +231,26 @@ function App() {
       setBusy(false);
     }
   }
-  const entries = (state?.entries || []).filter(
-    (x) =>
-      Boolean(x.deleted) === trash &&
-      x.date >= range[0] &&
-      x.date <= range[1] &&
-      (!day || x.date === day) &&
-      (!type || x.kind === type) &&
-      (!accountFilter ||
-        x.account_id === accountFilter ||
-        x.to_account_id === accountFilter) &&
-      (!categoryFilter || x.category === categoryFilter) &&
-      (!query ||
-        [x.category, x.merchant, x.memo, x.counterparty]
-          .join(" ")
-          .toLowerCase()
-          .includes(query.toLowerCase())),
-  );
+  const entries =
+    page === "entry"
+      ? (state?.entries || []).filter((x) => !x.deleted)
+      : (state?.entries || []).filter(
+          (x) =>
+            Boolean(x.deleted) === trash &&
+            x.date >= range[0] &&
+            x.date <= range[1] &&
+            (!day || x.date === day) &&
+            (!type || x.kind === type) &&
+            (!accountFilter ||
+              x.account_id === accountFilter ||
+              x.to_account_id === accountFilter) &&
+            (!categoryFilter || x.category === categoryFilter) &&
+            (!query ||
+              [x.category, x.merchant, x.memo, x.counterparty]
+                .join(" ")
+                .toLowerCase()
+                .includes(query.toLowerCase())),
+        );
   const accountName = (id: string | null) =>
     state?.accounts.find((x) => x.id === id)?.name || "—";
   function move(direction: number) {
@@ -276,7 +287,7 @@ function App() {
       <div className="login">
         <div className="login-story">
           <div className="brand">
-            <BookOpen />
+            <img src="/icon.svg" alt="" width={40} height={40} />
             明账 <span>MINGZHANG</span>
           </div>
           <div>
@@ -341,7 +352,7 @@ function App() {
     <div className="shell">
       <aside>
         <div className="brand">
-          <BookOpen />
+          <img src="/icon.svg" alt="" width={40} height={40} />
           明账<span>个人账本</span>
         </div>
         <div className="workspace">
@@ -354,6 +365,7 @@ function App() {
         <p className="nav-label">工作空间</p>
         <nav>
           {[
+            ["entry", "记一笔", Plus],
             ["overview", "账本总览", LayoutDashboard],
             ["transactions", "全部流水", ArrowLeftRight],
             ["reports", "收支报表", ChartNoAxesCombined],
@@ -393,7 +405,7 @@ function App() {
           <small>明账 v0.1 · 让每一笔都有来处</small>
         </div>
       </aside>
-      <main>
+      <main className={page === "entry" ? "entry-workspace" : undefined}>
         <header>
           <div>
             <p className="eyebrow">
@@ -404,6 +416,7 @@ function App() {
             <h1>
               {
                 {
+                  entry: "记一笔",
                   overview: "账本总览",
                   transactions: "全部流水",
                   reports: "收支报表",
@@ -415,6 +428,7 @@ function App() {
             <p className="subtitle">
               {
                 {
+                  entry: "记下当下这一笔，让生活的收支清清楚楚。",
                   overview: "看清钱的去向，也看见生活的节奏。",
                   transactions: "每一笔收支，都有清楚的来龙去脉。",
                   reports: "从每一天，到每一年。",
@@ -436,10 +450,12 @@ function App() {
             >
               <RefreshCw size={18} />
             </button>
-            <button className="primary" onClick={openNew}>
-              <Plus size={18} />
-              记一笔 <kbd>⌘ N</kbd>
-            </button>
+            {page !== "entry" && (
+              <button className="primary" onClick={openNew}>
+                <Plus size={18} />
+                记一笔 <kbd>⌘ N</kbd>
+              </button>
+            )}
           </div>
         </header>
         {error && (
@@ -457,6 +473,32 @@ function App() {
               <X size={16} />
             </button>
           </div>
+        )}
+        {page === "entry" && state && (
+          <section className="entry-home">
+            {state.accounts.length ? (
+              <EntryDialog
+                inline
+                initial={newEntry(state.accounts[0].id)}
+                editing={false}
+                accounts={state.accounts}
+                entries={state.entries}
+                onClose={() => {}}
+                onSave={async (value) => {
+                  await run(() => api("/entries", value, "POST"), "");
+                  setBookMonth(value.date.slice(0, 7));
+                }}
+              />
+            ) : (
+              <div className="entry-empty">
+                <h2>从第一个账户开始</h2>
+                <p>添加现金、银行卡或支付宝等账户，就可以记下第一笔收支。</p>
+                <button className="primary" onClick={() => setPage("accounts")}>
+                  添加资金账户
+                </button>
+              </div>
+            )}
+          </section>
         )}
         {["overview", "transactions", "reports"].includes(page) && (
           <div className="period-bar">
@@ -486,7 +528,7 @@ function App() {
                     <ChevronLeft size={18} />
                   </button>
                   <strong>{periodTitle}</strong>
-                  <input
+                  <StyledDate
                     aria-label="选择月份"
                     type="month"
                     value={anchor}
@@ -503,14 +545,14 @@ function App() {
                 </>
               ) : (
                 <>
-                  <input
+                  <StyledDate
                     aria-label="开始日期"
                     type="date"
                     value={customStart}
                     onChange={(e) => setCustomStart(e.target.value)}
                   />
                   <span>至</span>
-                  <input
+                  <StyledDate
                     aria-label="结束日期"
                     type="date"
                     value={customEnd}
@@ -603,7 +645,7 @@ function App() {
                       />
                       <Line
                         name="收入"
-                        type="linear"
+                        type="monotone"
                         dataKey="income"
                         stroke="#257864"
                         strokeWidth={2.5}
@@ -611,7 +653,7 @@ function App() {
                       />
                       <Line
                         name="支出"
-                        type="linear"
+                        type="monotone"
                         dataKey="expense"
                         stroke="#d69957"
                         strokeWidth={2.5}
@@ -669,6 +711,7 @@ function App() {
                       <Tooltip formatter={(v) => `¥ ${money(Number(v))}`} />
                       <Area
                         name="累计结余"
+                        type="monotone"
                         dataKey="cumulative"
                         stroke="#257864"
                         fill="url(#balanceFill)"
@@ -775,14 +818,37 @@ function App() {
             </div>
           </>
         )}
+        {page === "entry" && state && (
+          <BookList
+            state={state}
+            month={bookMonth}
+            onMonth={setBookMonth}
+            onSave={async (entry) => {
+              await run(() => api(`/entries/${entry.id}`, entry, "PUT"));
+            }}
+            onEdit={(entry) => {
+              setEditor({ ...entry });
+              setEditing(true);
+            }}
+            onDelete={(entry) => {
+              run(
+                () =>
+                  api(`/entries/${entry.id}/delete`, {
+                    version: entry.version,
+                  }),
+                "已移入回收站，可随时恢复",
+              ).catch(() => {});
+            }}
+          />
+        )}
         {["overview", "transactions"].includes(page) && (
           <section className="panel">
             <div className="panel-head">
               <h2>
-                {page === "overview" ? "最近流水" : "交易明细"}{" "}
+                {page !== "transactions" ? "最近记录" : "交易明细"}{" "}
                 <span className="count">{entries.length}</span>
               </h2>
-              {page === "overview" ? (
+              {page !== "transactions" ? (
                 <button
                   className="text-button"
                   onClick={() => setPage("transactions")}
@@ -809,7 +875,7 @@ function App() {
                     onChange={(e) => setQuery(e.target.value)}
                   />
                 </label>
-                <select
+                <StyledSelect
                   aria-label="交易类型筛选"
                   value={type}
                   onChange={(e) => setType(e.target.value)}
@@ -820,8 +886,8 @@ function App() {
                       {v}
                     </option>
                   ))}
-                </select>
-                <select
+                </StyledSelect>
+                <StyledSelect
                   aria-label="账户筛选"
                   value={accountFilter}
                   onChange={(e) => setAccountFilter(e.target.value)}
@@ -832,7 +898,7 @@ function App() {
                       {a.name}
                     </option>
                   ))}
-                </select>
+                </StyledSelect>
                 {(day || categoryFilter) && (
                   <button
                     className="chip"
@@ -855,14 +921,16 @@ function App() {
                       <th>日期</th>
                       <th>交易 / 分类</th>
                       <th>账户</th>
-                      <th>备注</th>
                       <th className="numeric">金额</th>
                       <th>操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     {entries
-                      .slice(0, page === "overview" ? 6 : 500)
+                      .slice(
+                        0,
+                        page === "overview" ? 6 : page === "entry" ? 20 : 500,
+                      )
                       .map((x) => (
                         <tr key={x.id}>
                           <td className="muted">
@@ -901,7 +969,6 @@ function App() {
                               <small>→ {accountName(x.to_account_id)}</small>
                             )}
                           </td>
-                          <td className="memo">{x.memo || "—"}</td>
                           <td
                             className={
                               "numeric " +
@@ -919,7 +986,7 @@ function App() {
                           </td>
                           <td>
                             <div className="row-actions">
-                              {trash ? (
+                              {page === "transactions" && trash ? (
                                 <button
                                   onClick={() =>
                                     run(
@@ -979,7 +1046,7 @@ function App() {
                       ))}
                   </tbody>
                 </table>
-                {entries.length > 500 && (
+                {page === "transactions" && entries.length > 500 && (
                   <p className="muted">
                     当前展示前 500 笔，请缩小日期范围或使用搜索。
                   </p>
@@ -987,87 +1054,21 @@ function App() {
               </div>
             ) : (
               <Empty
-                text={trash ? "回收站是空的" : "这段时间还没有匹配的流水"}
-                action={trash ? undefined : openNew}
+                text={
+                  page === "entry"
+                    ? "还没有记录，在上方记下第一笔吧。"
+                    : trash
+                      ? "回收站是空的"
+                      : "这段时间还没有匹配的流水"
+                }
+                action={page === "entry" || trash ? undefined : openNew}
               />
             )}
           </section>
         )}
         {page === "accounts" && state && (
           <>
-            <div className="stats">
-              <Metric
-                label="总资产"
-                value={state.assets}
-                note="账户正余额 + 尚未收回的借出"
-                tone="income"
-              />
-              <Metric
-                label="总负债"
-                value={state.liabilities}
-                note="账户负余额 + 尚未偿还的借入"
-                tone="expense"
-              />
-              <Metric
-                label="净资产"
-                value={state.net_assets}
-                note="总资产 − 总负债 · 截至当前"
-                tone="balance"
-              />
-            </div>
-            <section className="panel">
-              <div className="panel-head">
-                <h2>我的账户</h2>
-                <button
-                  className="text-button"
-                  onClick={() =>
-                    setAccountEditor({
-                      id: "",
-                      name: "",
-                      kind: "bank",
-                      opening_cents: 0,
-                      balance_cents: 0,
-                      version: 1,
-                    })
-                  }
-                >
-                  <Plus size={17} />
-                  添加账户
-                </button>
-              </div>
-              <div className="account-grid">
-                {state.accounts.map((a) => (
-                  <button
-                    className="account-card"
-                    key={a.id}
-                    onClick={() => setAccountEditor(a)}
-                  >
-                    <Wallet size={24} />
-                    <span>{accountLabels[a.kind]}</span>
-                    <h3>{a.name}</h3>
-                    <strong>¥ {money(a.balance_cents)}</strong>
-                    <small>
-                      期初余额 ¥ {money(a.opening_cents)} · 点击编辑
-                    </small>
-                  </button>
-                ))}
-              </div>
-              {!state.accounts.length && (
-                <Empty
-                  text="添加银行卡、微信、支付宝或现金账户"
-                  action={() =>
-                    setAccountEditor({
-                      id: "",
-                      name: "",
-                      kind: "bank",
-                      opening_cents: 0,
-                      balance_cents: 0,
-                      version: 1,
-                    })
-                  }
-                />
-              )}
-            </section>
+            <AccountWorkspace state={state} onEdit={setAccountEditor} />
             <section className="panel">
               <div className="panel-head">
                 <h2>未结清往来</h2>
@@ -1221,7 +1222,15 @@ function Modal({
     return () => previous?.focus();
   }, []);
   return (
-    <div className="modal-backdrop">
+    <div
+      className="modal-backdrop"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          event.stopPropagation();
+          onClose();
+        }
+      }}
+    >
       <section
         className="modal"
         ref={dialogRef}
@@ -1266,6 +1275,7 @@ function Modal({
   );
 }
 function EntryDialog({
+  inline = false,
   initial,
   editing,
   accounts,
@@ -1273,6 +1283,7 @@ function EntryDialog({
   onClose,
   onSave,
 }: {
+  inline?: boolean;
   initial: Entry;
   editing: boolean;
   accounts: Account[];
@@ -1286,200 +1297,210 @@ function EntryDialog({
     ),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  const amountRef = useRef<HTMLInputElement>(null);
   const set = <K extends keyof Entry>(key: K, v: Entry[K]) =>
     setValue((old) => ({ ...old, [key]: v }));
   const refKind = { refund: "expense", repay: "borrow", collect: "lend" }[
     value.kind as "refund" | "repay" | "collect"
   ];
-  return (
-    <Modal title={editing ? "编辑交易" : "记一笔"} onClose={onClose}>
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          setError("");
-          setBusy(true);
-          try {
-            await onSave({ ...value, amount_cents: cents(amount) });
-          } catch (e) {
-            setError((e as Error).message);
-          } finally {
-            setBusy(false);
+  const categoryOptions = Array.from(
+    new Set([
+      ...categories.filter((category) =>
+        value.kind === "income"
+          ? category.startsWith("收入/") || category === "未分类"
+          : !category.startsWith("收入/"),
+      ),
+      ...entries
+        .filter((entry) => !entry.deleted && entry.kind === value.kind)
+        .map((entry) => entry.category),
+      value.category,
+    ]),
+  ).filter(Boolean);
+  const form = (
+    <form
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setError("");
+        setBusy(true);
+        try {
+          await onSave({ ...value, amount_cents: cents(amount) });
+          if (inline) {
+            setValue({
+              ...newEntry(value.account_id),
+              kind: value.kind,
+              category: value.category,
+              date: value.date,
+            });
+            setAmount("");
+            amountRef.current?.focus();
           }
-        }}
-      >
-        <div className="entry-kinds">
-          {Object.entries(labels).map(([k, v]) => (
-            <button
-              type="button"
-              className={value.kind === k ? "selected" : ""}
-              key={k}
-              onClick={() =>
-                setValue({
-                  ...value,
-                  kind: k as Kind,
-                  to_account_id: null,
-                  reference_id: null,
-                  category: ["income", "expense"].includes(k)
-                    ? k === "income"
-                      ? "收入/工资"
-                      : "日常/餐饮"
-                    : "",
-                })
-              }
-            >
-              {v}
-            </button>
-          ))}
+        } catch (e) {
+          setError((e as Error).message);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <div className="entry-kinds">
+        {Object.entries(labels).map(([k, v]) => (
+          <button
+            type="button"
+            className={value.kind === k ? "selected" : ""}
+            key={k}
+            onClick={() =>
+              setValue({
+                ...value,
+                kind: k as Kind,
+                to_account_id: null,
+                reference_id: null,
+                category: ["income", "expense"].includes(k)
+                  ? k === "income"
+                    ? "收入/工资"
+                    : "日常/餐饮"
+                  : "",
+              })
+            }
+          >
+            {v}
+          </button>
+        ))}
+      </div>
+      <label className="amount-input">
+        金额（人民币）
+        <div>
+          <span>¥</span>
+          <input
+            aria-label="金额"
+            id={inline ? "home-amount" : undefined}
+            ref={amountRef}
+            autoFocus
+            required
+            inputMode="decimal"
+            placeholder="0.00"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+          />
         </div>
-        <label className="amount-input">
-          金额（人民币）
-          <div>
-            <span>¥</span>
-            <input
-              aria-label="金额"
-              autoFocus
-              required
-              inputMode="decimal"
-              placeholder="0.00"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-          </div>
+      </label>
+      <div className="form-grid">
+        <label>
+          日期
+          <StyledDate
+            aria-label="日期"
+            type="date"
+            required
+            max={today()}
+            value={value.date}
+            onChange={(e) => set("date", e.target.value)}
+          />
         </label>
-        <div className="form-grid">
-          <label>
-            日期
-            <input
-              aria-label="日期"
-              type="date"
+        <label>
+          {value.kind === "transfer" ? "转出账户" : "账户"}
+          <StyledSelect
+            value={value.account_id}
+            onChange={(e) => set("account_id", e.target.value)}
+          >
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </StyledSelect>
+        </label>
+        {value.kind === "transfer" && (
+          <label className="full">
+            转入账户
+            <StyledSelect
               required
-              max={today()}
-              value={value.date}
-              onChange={(e) => set("date", e.target.value)}
-            />
-          </label>
-          <label>
-            {value.kind === "transfer" ? "转出账户" : "账户"}
-            <select
-              value={value.account_id}
-              onChange={(e) => set("account_id", e.target.value)}
+              value={value.to_account_id || ""}
+              onChange={(e) => set("to_account_id", e.target.value)}
             >
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
+              <option value="">请选择转入账户</option>
+              {accounts
+                .filter((a) => a.id !== value.account_id)
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+            </StyledSelect>
+            <small>信用卡还本金也使用账户间转账。</small>
+          </label>
+        )}
+        {["income", "expense"].includes(value.kind) && (
+          <label className="full">
+            分类
+            <StyledSelect
+              aria-label="分类"
+              value={value.category}
+              onChange={(e) => set("category", e.target.value)}
+            >
+              {categoryOptions.map((category) => (
+                <option key={category} value={category}>
+                  {category.replace("/", " · ")}
                 </option>
               ))}
-            </select>
+            </StyledSelect>
           </label>
-          {value.kind === "transfer" && (
-            <label className="full">
-              转入账户
-              <select
-                required
-                value={value.to_account_id || ""}
-                onChange={(e) => set("to_account_id", e.target.value)}
-              >
-                <option value="">请选择转入账户</option>
-                {accounts
-                  .filter((a) => a.id !== value.account_id)
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-              </select>
-              <small>信用卡还本金也使用账户间转账。</small>
-            </label>
-          )}
-          {["income", "expense"].includes(value.kind) && (
-            <label className="full">
-              分类
-              <input
-                list="categories"
-                required
-                value={value.category}
-                onChange={(e) => set("category", e.target.value)}
-                placeholder="一级分类/二级分类"
-              />
-              <datalist id="categories">
-                {Array.from(
-                  new Set([...categories, ...entries.map((x) => x.category)]),
-                )
-                  .filter(Boolean)
-                  .map((c) => (
-                    <option key={c} value={c} />
-                  ))}
-              </datalist>
-            </label>
-          )}
-          {refKind && (
-            <label className="full">
-              关联原交易
-              <select
-                required
-                value={value.reference_id || ""}
-                onChange={(e) => set("reference_id", e.target.value)}
-              >
-                <option value="">选择原始{labels[refKind as Kind]}记录</option>
-                {entries
-                  .filter(
-                    (x) =>
-                      !x.deleted &&
-                      x.kind === refKind &&
-                      (x.remaining_cents > 0 || x.id === initial.reference_id),
-                  )
-                  .map((x) => (
-                    <option key={x.id} value={x.id}>
-                      {x.date} · {x.counterparty || x.category} · ¥{" "}
-                      {money(x.amount_cents)}
-                    </option>
-                  ))}
-              </select>
-              <small>退款在实际退款日抵扣原分类支出。</small>
-            </label>
-          )}
-          {["lend", "borrow"].includes(value.kind) && (
-            <label className="full">
-              往来对象
-              <input
-                required
-                value={value.counterparty}
-                onChange={(e) => set("counterparty", e.target.value)}
-                placeholder="例如：张先生"
-              />
-            </label>
-          )}
-          <label className="full">
-            商家 / 交易对象
-            <input
-              value={value.merchant}
-              onChange={(e) => set("merchant", e.target.value)}
-              placeholder="选填"
-              maxLength={120}
-            />
-          </label>
-          <label className="full">
-            备注
-            <textarea
-              value={value.memo}
-              onChange={(e) => set("memo", e.target.value)}
-              placeholder="记下这笔交易的来由"
-              maxLength={1000}
-            />
-          </label>
-        </div>
-        {error && (
-          <p role="alert" className="error">
-            {error}
-          </p>
         )}
-        <div className="modal-footer">
-          <small>保存失败时，输入内容会保留。</small>
-          <button className="primary" disabled={busy}>
-            {busy ? "正在保存…" : "保存交易"}
-          </button>
-        </div>
-      </form>
+        {refKind && (
+          <label className="full">
+            关联原交易
+            <StyledSelect
+              required
+              value={value.reference_id || ""}
+              onChange={(e) => set("reference_id", e.target.value)}
+            >
+              <option value="">选择原始{labels[refKind as Kind]}记录</option>
+              {entries
+                .filter(
+                  (x) =>
+                    !x.deleted &&
+                    x.kind === refKind &&
+                    (x.remaining_cents > 0 || x.id === initial.reference_id),
+                )
+                .map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {x.date} · {x.counterparty || x.category} · ¥{" "}
+                    {money(x.amount_cents)}
+                  </option>
+                ))}
+            </StyledSelect>
+            <small>退款在实际退款日抵扣原分类支出。</small>
+          </label>
+        )}
+        {["lend", "borrow"].includes(value.kind) && (
+          <label className="full">
+            往来对象
+            <input
+              required
+              value={value.counterparty}
+              onChange={(e) => set("counterparty", e.target.value)}
+              placeholder="例如：张先生"
+            />
+          </label>
+        )}
+      </div>
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+      <div className="modal-footer">
+        <small>
+          {inline ? "Enter 保存 · 连续记账" : "保存失败时，输入内容会保留。"}
+        </small>
+        <button className="primary" disabled={busy}>
+          {busy ? "正在保存…" : "保存交易"}
+        </button>
+      </div>
+    </form>
+  );
+  return inline ? (
+    form
+  ) : (
+    <Modal title={editing ? "编辑交易" : "记一笔"} onClose={onClose}>
+      {form}
     </Modal>
   );
 }
@@ -1524,7 +1545,7 @@ function AccountDialog({
         </label>
         <label>
           账户类型
-          <select
+          <StyledSelect
             value={value.kind}
             onChange={(e) => setValue({ ...value, kind: e.target.value })}
           >
@@ -1533,7 +1554,7 @@ function AccountDialog({
                 {v}
               </option>
             ))}
-          </select>
+          </StyledSelect>
         </label>
         <label>
           期初余额（元）
@@ -1694,7 +1715,7 @@ function DataPage({
             {Object.entries(fieldLabels).map(([key, label]) => (
               <label key={key}>
                 {label}
-                <select
+                <StyledSelect
                   value={upload.mapping[key] || ""}
                   onChange={(e) => {
                     setUpload({
@@ -1710,7 +1731,7 @@ function DataPage({
                       {h}
                     </option>
                   ))}
-                </select>
+                </StyledSelect>
               </label>
             ))}
           </div>
@@ -1884,4 +1905,8 @@ function DataPage({
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <ControlTheme>
+    <App />
+  </ControlTheme>,
+);

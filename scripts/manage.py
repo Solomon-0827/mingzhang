@@ -17,7 +17,8 @@ if args.command == "init":
     initialize()
     with connect() as db:
         if db.execute("SELECT 1 FROM settings WHERE key='password'").fetchone():
-            raise SystemExit("账本已初始化，未改动密码。")
+            print("账本已初始化，未改动密码。")
+            raise SystemExit(0)
         password = os.environ.get("LEDGER_INITIAL_PASSWORD") or getpass.getpass("设置账本密码（至少 12 位）：")
         if len(password) < 12:
             raise SystemExit("密码至少 12 位")

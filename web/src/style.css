@@ -350,7 +350,7 @@ header {
   font-size: 13px;
   font-weight: 500;
 }
-.period-picker button {
+.period-picker > button {
   display: grid;
   place-items: center;
   width: 26px;
@@ -551,12 +551,12 @@ header {
 .table-wrap {
   overflow-x: auto;
 }
-table {
+.table-wrap table {
   border-collapse: collapse;
   width: 100%;
   font-size: 11px;
 }
-th {
+.table-wrap th {
   text-align: left;
   font-size: 10px;
   font-weight: 400;
@@ -566,16 +566,16 @@ th {
   padding: 12px 20px;
   white-space: nowrap;
 }
-td {
+.table-wrap td {
   padding: 15px 20px;
   border-top: 1px solid #f0f2eb;
   line-height: 1.6;
 }
-td small {
+.table-wrap td small {
   display: block;
   font-size: 9px;
 }
-tbody tr:hover {
+.table-wrap tbody tr:hover {
   background: #fafcf8;
 }
 .numeric {
@@ -1077,8 +1077,8 @@ footer {
   .category-row small {
     display: none;
   }
-  td,
-  th {
+  .table-wrap td,
+  .table-wrap th {
     padding-left: 14px;
     padding-right: 14px;
   }
@@ -1273,4 +1273,733 @@ footer {
   footer span {
     display: none;
   }
+}
+
+/* The primary workspace is the entry form; reports live in their own views. */
+.entry-home {
+  width: 100%;
+  margin: 0 0 24px;
+  padding: 24px;
+  background: #fbfcf9;
+  border: 1px solid #e0e6da;
+  border-radius: 16px;
+}
+.entry-home .entry-kinds {
+  margin-top: 0;
+  gap: 8px;
+}
+.entry-home .entry-kinds button {
+  padding: 10px 18px;
+  font-size: 14px;
+}
+.entry-home .amount-input {
+  display: block;
+  margin: 28px 0;
+  font-size: 13px;
+}
+.entry-home .amount-input input {
+  font-size: 44px;
+}
+.entry-home .form-grid {
+  gap: 18px 24px;
+}
+.entry-home .modal-footer {
+  padding-top: 20px;
+  border-top: 1px solid #e0e6da;
+}
+.entry-home .modal-footer .primary {
+  min-width: 140px;
+}
+.entry-empty p {
+  margin: 18px 0 24px;
+  color: #78846e;
+}
+
+@media (min-width: 1100px) {
+  .entry-home form {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) minmax(0, 3fr);
+    gap: 18px 30px;
+  }
+  .entry-home .entry-kinds {
+    grid-column: 1 / -1;
+    margin: 0;
+  }
+  .entry-home .amount-input {
+    margin: 12px 0 0;
+  }
+  .entry-home .form-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .entry-home .form-grid .full {
+    grid-column: auto;
+  }
+  .entry-home .form-grid label:last-child {
+    grid-column: span 2;
+  }
+  .entry-home textarea {
+    min-height: 40px;
+    height: 40px;
+  }
+  .entry-home .modal-footer {
+    grid-column: 1 / -1;
+    margin-top: 0;
+    padding-top: 14px;
+  }
+  .entry-home form > .error {
+    grid-column: 1 / -1;
+  }
+}
+
+.category-picker {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.category-picker legend {
+  color: #78846e;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.category-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.category-options button {
+  border: 1px solid #dfe6d8;
+  background: #fff;
+  border-radius: 7px;
+  padding: 9px 18px;
+  color: #52614c;
+}
+.category-options button.selected {
+  background: #e1ebd9;
+  border-color: #739b76;
+  color: #245c3b;
+  font-weight: 600;
+}
+.category-options button:focus-visible {
+  outline: 2px solid #257864;
+  outline-offset: 2px;
+}
+.category-picker select {
+  margin-top: 10px;
+}
+.account-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 24px 36px;
+  border-left: 4px solid #257864;
+  padding: 18px 24px;
+  margin-bottom: 24px;
+  background: #edf2e8;
+}
+.account-summary span {
+  display: block;
+  color: #6a7861;
+  font-size: 12px;
+}
+.account-summary strong {
+  display: block;
+  font-size: 28px;
+  margin-top: 8px;
+}
+.account-summary p {
+  font-size: 13px;
+  color: #6a7861;
+}
+.account-summary b {
+  margin-left: 8px;
+  color: #344c3f;
+}
+.account-summary small {
+  color: #78846e;
+  margin-left: auto;
+}
+@media (min-width: 1100px) {
+  .entry-home .form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .entry-home .form-grid label:last-child {
+    grid-column: auto;
+  }
+  .entry-home .form-grid .category-picker {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Shared calendar and dropdown components, including their popovers. */
+.ledger-select,
+.ledger-date {
+  width: 100%;
+  text-align: left;
+}
+.ledger-date.ant-picker {
+  min-height: 44px;
+  cursor: pointer;
+}
+.ledger-date .ant-picker-input > input {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  cursor: pointer;
+}
+.ledger-select input {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+.ant-picker-dropdown button {
+  min-height: 0;
+}
+.ant-select-dropdown,
+.ant-picker-dropdown {
+  text-align: left;
+}
+.period-picker .ledger-date {
+  width: 180px;
+}
+.filters .ledger-select {
+  width: 180px;
+}
+@media (min-width: 1100px) {
+  .entry-home .form-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: start;
+  }
+  .entry-home .form-grid > .full {
+    grid-column: auto;
+  }
+}
+
+/* Familiar bookkeeping workspace: month rail, daily groups and account types. */
+.book-list-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 20px;
+  flex-wrap: wrap;
+}
+.book-list-heading h2 small {
+  margin-left: 12px;
+}
+.book-sums {
+  display: flex;
+  gap: 22px;
+  font-size: 12px;
+  color: #7b817a;
+}
+.book-sums b {
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.book-in {
+  color: #b54722;
+}
+.book-out {
+  color: #126a54;
+}
+.book-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 20px;
+  align-items: center;
+  border-block: 1px solid #e8ebe5;
+  background: #fafbf8;
+}
+.book-filters .ledger-select,
+.book-filters .ledger-date {
+  width: 170px;
+}
+.book-filters > input {
+  flex: 1;
+  min-width: 180px;
+}
+.book-body {
+  display: grid;
+  grid-template-columns: 195px minmax(0, 1fr);
+}
+.month-rail {
+  border-right: 1px solid #e6e9e2;
+  align-self: stretch;
+  background: #fafbf8;
+}
+.year-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 8px;
+  position: sticky;
+  top: 0;
+  background: #f3f5ef;
+  z-index: 1;
+  font-size: 13px;
+}
+.month-rail > button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 12px;
+  border-bottom: 1px solid #e8ebe5;
+  border-left: 3px solid transparent;
+  text-align: left;
+}
+.month-rail > button.active,
+.account-rail > button.active {
+  border-left-color: #c5a45e;
+  background: white;
+}
+.month-rail > button > span > b {
+  font-size: 24px;
+}
+.month-rail small {
+  display: block;
+  font-size: 10px;
+}
+.book-entries {
+  min-width: 0;
+}
+.book-entries table {
+  font-size: 13px;
+}
+.book-entries th {
+  font-size: 12px;
+}
+.book-entries td {
+  padding: 12px 18px;
+}
+.book-day td {
+  background: #f5f7f1;
+  padding: 11px 18px;
+}
+.book-day td > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.book-day strong {
+  font-size: 19px;
+}
+.book-day td small {
+  display: inline;
+  font-size: 11px;
+  font-weight: 400;
+}
+.book-day .book-sums {
+  font-size: 11px;
+}
+.book-pagination {
+  display: flex;
+  justify-content: flex-end;
+  gap: 18px;
+  align-items: center;
+  padding: 18px;
+  font-size: 12px;
+  border-top: 1px solid #e8ebe5;
+}
+.book-note {
+  padding: 12px 20px;
+  color: #929b89;
+  font-size: 11px;
+}
+.account-workspace {
+  display: grid;
+  grid-template-columns: 195px minmax(0, 1fr);
+  min-height: 500px;
+}
+.account-rail {
+  background: #f8faf5;
+  border-right: 1px solid #e6e9e2;
+}
+.asset-overview {
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  gap: 6px;
+}
+.asset-overview > span {
+  font-size: 11px;
+  color: #929b89;
+  margin-top: 10px;
+}
+.asset-overview b,
+.asset-overview strong {
+  font-size: 21px;
+  font-variant-numeric: tabular-nums;
+}
+.account-rail > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px;
+  width: 100%;
+  border-top: 1px solid #e6e9e2;
+  border-left: 3px solid transparent;
+}
+.account-rail > button > span {
+  text-align: right;
+}
+.account-rail small {
+  display: block;
+}
+.account-detail {
+  padding: 28px;
+  min-width: 0;
+  background: #fcfdfb;
+}
+.account-detail-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.account-flow {
+  display: flex;
+  gap: 0;
+  margin: 28px 0;
+}
+.account-flow > div {
+  padding: 0 28px;
+  border-right: 1px solid #e6e9e2;
+}
+.account-flow > div:first-child {
+  padding-left: 0;
+}
+.account-flow strong {
+  display: block;
+  font-size: 25px;
+  margin-top: 8px;
+}
+.account-table {
+  border: 1px solid #e6e9e2;
+  border-radius: 6px;
+  background: white;
+}
+.account-table td {
+  font-size: 13px;
+}
+.account-table td svg {
+  vertical-align: middle;
+  margin-right: 10px;
+  color: #7c927e;
+}
+@media (max-width: 780px) {
+  .book-body {
+    grid-template-columns: 110px minmax(0, 1fr);
+  }
+  .book-sums {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .book-entries table {
+    min-width: 570px;
+  }
+  .month-rail > button {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .account-workspace {
+    grid-template-columns: 1fr;
+  }
+  .account-rail {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .asset-overview {
+    width: 100%;
+  }
+  .account-rail > button {
+    width: 50%;
+  }
+  .account-detail {
+    padding: 18px;
+  }
+  .account-flow {
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .account-flow > div {
+    padding: 0;
+    border: 0;
+  }
+  .account-table table {
+    min-width: 520px;
+  }
+}
+
+.month-rail > button {
+  height: 76px;
+  padding: 10px 12px;
+}
+.month-rail > button > span:first-child {
+  position: relative;
+  white-space: nowrap;
+}
+.month-rail > button > span:first-child > small {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  font-size: 10px;
+  line-height: 1.2;
+}
+.month-rail > button > span:last-child {
+  text-align: right;
+}
+.month-rail > button > span:last-child > small {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.9;
+  font-variant-numeric: tabular-nums;
+}
+.book-neutral {
+  color: #566575;
+}
+.book-kind {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.book-kind.book-in {
+  background: #fff0e9;
+}
+.book-kind.book-out {
+  background: #e5f3ed;
+}
+.book-kind.book-neutral {
+  background: #edf0f4;
+}
+.book-amount {
+  font-size: 14px;
+  font-weight: 600;
+}
+@media (max-width: 780px) {
+  .month-rail > button {
+    height: 100px;
+    justify-content: center;
+  }
+  .month-rail > button > span:first-child > small {
+    position: static;
+    display: inline;
+    margin-left: 4px;
+  }
+  .month-rail > button > span:last-child > small {
+    font-size: 9px;
+  }
+}
+
+.book-list .book-entries th {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.book-filters .ledger-date.ant-picker {
+  min-height: 28px;
+}
+.book-filters .ledger-select,
+.book-filters .ledger-date {
+  width: 155px;
+}
+.book-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  max-width: 100%;
+}
+.book-search-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: #527567;
+  font-size: 12px;
+}
+.book-search-toggle:hover,
+.book-search-toggle[aria-expanded="true"] {
+  background: #eaf1e7;
+}
+.book-search-input {
+  display: flex;
+  align-items: center;
+  border: 1px solid #c9d8ce;
+  border-radius: 6px;
+  background: white;
+}
+.book-search-input:focus-within {
+  border-color: #257864;
+  box-shadow: 0 0 0 2px #25786414;
+}
+.book-search-input input {
+  width: 220px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 0;
+  box-shadow: none;
+  font-size: 12px;
+  background: transparent;
+}
+.book-search-input > button {
+  display: grid;
+  place-items: center;
+  padding: 5px;
+  color: #7b897a;
+}
+@media (max-width: 780px) {
+  .book-search {
+    margin-left: 0;
+  }
+  .book-search-input input {
+    width: 175px;
+  }
+}
+
+/* Compact entry workspace leaves more room for the ledger below. */
+.entry-workspace {
+  padding-top: 22px;
+}
+.entry-workspace > header {
+  margin-bottom: 16px;
+}
+.entry-workspace > header .eyebrow,
+.entry-workspace > header .subtitle {
+  display: none;
+}
+.entry-workspace > header h1 {
+  font-size: 24px;
+}
+.entry-home {
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  border-radius: 12px;
+}
+.entry-home .entry-kinds {
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.entry-home .entry-kinds button {
+  padding: 7px 14px;
+  font-size: 13px;
+}
+.entry-home .amount-input {
+  margin: 8px 0 12px;
+  font-size: 12px;
+}
+.entry-home .amount-input input {
+  font-size: 32px;
+  padding: 3px 10px;
+}
+.entry-home .amount-input > div {
+  padding: 0;
+}
+.entry-home .modal-footer {
+  margin-top: 12px;
+  padding-top: 10px;
+}
+@media (min-width: 1100px) {
+  .entry-home form {
+    grid-template-columns: minmax(140px, 1fr) minmax(0, 3fr) auto;
+    gap: 12px 20px;
+    align-items: end;
+  }
+  .entry-home .entry-kinds {
+    margin: 0;
+  }
+  .entry-home .amount-input {
+    margin: 0;
+  }
+  .entry-home .form-grid {
+    gap: 12px;
+  }
+  .entry-home .modal-footer {
+    grid-column: auto;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    position: relative;
+  }
+  .entry-home .modal-footer > small {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 7px);
+    white-space: nowrap;
+    font-size: 10px;
+  }
+  .entry-home .modal-footer .primary {
+    min-width: 110px;
+    height: 44px;
+  }
+}
+
+.editable-entry-row {
+  cursor: pointer;
+}
+.editable-entry-row:focus-visible {
+  outline: 2px solid #257864;
+  outline-offset: -2px;
+}
+.entry-field-trigger {
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  border-radius: 4px;
+  padding: 3px 5px;
+  margin: -3px -5px;
+}
+.entry-field-trigger:hover {
+  background: #e6eee5;
+  text-decoration: underline dotted;
+  text-underline-offset: 4px;
+}
+.field-editor {
+  width: 290px;
+  max-width: 75vw;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  cursor: default;
+}
+.field-editor > input {
+  width: 100%;
+}
+.field-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.field-editor-actions > button {
+  font-size: 12px;
+}
+.field-editor-actions > button:first-child {
+  margin-right: auto;
+  color: #68816e;
+}
+.field-editor-actions .primary {
+  padding: 8px 14px;
+}
+
+.field-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: transparent;
+  cursor: default;
 }
