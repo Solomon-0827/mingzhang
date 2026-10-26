@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from backend.auth import authenticated, token_hash, verify_password
+from backend.categories import CategoryChange, change_category
 from backend.db import backup, connect, db_path, initialize
 from backend.importing import commit_import, preview, read_file
 from backend.ledger import Account, Entry, audit, fail, report, save_entry, set_deleted, snapshot
@@ -140,6 +141,12 @@ def state():
     result["server_time"] = datetime.now().isoformat()
     result["backup_date"] = max((p.name for p in BACKUP_DIR.glob("ledger-*.sqlite3")), default=None)
     return result
+
+
+@app.post("/api/categories", dependencies=[Depends(authenticated)])
+def manage_categories(body: CategoryChange):
+    with connect() as db:
+        return change_category(db, body)
 
 
 class DisplayOrder(BaseModel):

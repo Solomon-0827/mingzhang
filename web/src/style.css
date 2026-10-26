@@ -2064,3 +2064,16 @@ footer {
 .ant-select-item-option .category-parent { display:none; }
 .ant-select-item-option .category-option { padding-left:14px; }
 @media(max-width:700px) { .category-manager {grid-template-columns: 42% 58%; margin:0 12px;} .settings-intro,.settings-save{padding:18px 12px;} .child-label small {display:none;} .settings-save {flex-wrap:wrap;} .settings-save>span {width:100%;} }
+@media(min-width:1100px) {
+  .entry-home .amount-input { grid-column:1; }
+  .entry-home .entry-category { grid-column:2; }
+}
+.category-actions { display:flex; gap:8px; align-items:center; margin-bottom:16px; }
+.category-crud { margin:0 28px 20px; padding:18px; border:1px solid #dce6d6; border-radius:10px; background:#f6f8f4; }
+.category-crud h3 { margin:0 0 12px; }
+.category-crud p { font-size:13px; color:#788675; }
+.category-crud input { width:260px; margin-right:12px; }
+.category-crud button { margin:0 8px 0 0; }
+.child-label .text-button { flex-shrink:0; }
+.category-removed { margin:20px 28px; color:#768473; font-size:13px; }
+.category-removed > div { display:flex; align-items:center; justify-content:space-between; padding:8px 0; }

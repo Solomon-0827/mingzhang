@@ -76,7 +76,7 @@ export function EntryField({
   const refKind = { refund: "expense", repay: "borrow", collect: "lend" }[
     draft.kind as "refund" | "repay" | "collect"
   ];
-  const categoryOptions = ordered(Array.from(
+  const categoryOptions = ordered(state.category_catalog ? Object.keys(state.category_catalog.items).filter(p => state.category_catalog!.items[p].includes(draft.kind)) : Array.from(
     new Set([
       ...(draft.kind === "income"
         ? ["收入/工资", "收入/其他"]

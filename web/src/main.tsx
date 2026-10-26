@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import {
   Account,
+  CategoryCatalog,
   ordered,
   Entry,
   Kind,
@@ -490,6 +491,7 @@ function App() {
                 accounts={state.accounts}
                 entries={state.entries}
                 categoryOrder={state.ordering?.categories}
+                catalog={state.category_catalog}
                 onClose={() => {}}
                 onSave={async (value) => {
                   await run(() => api("/entries", value, "POST"), "");
@@ -1125,6 +1127,7 @@ function App() {
           </>
         )}
         {page === "settings" && state && <OrderSettings state={state} defaults={categories}
+          onCategoryChange={async value => { await run(() => api("/categories", value)); }}
           onEditAccount={setAccountEditor}
           onSave={async value => { await run(() => api("/display-order", value, "PUT")); }} />}
         {page === "data" && state && (
@@ -1147,6 +1150,7 @@ function App() {
           accounts={state.accounts}
           entries={state.entries}
                 categoryOrder={state.ordering?.categories}
+                catalog={state.category_catalog}
           onClose={() => setEditor(null)}
           onSave={async (value) => {
             await run(() =>
@@ -1291,6 +1295,7 @@ function EntryDialog({
   editing,
   accounts,
   categoryOrder = [],
+  catalog,
   entries,
   onClose,
   onSave,
@@ -1300,6 +1305,7 @@ function EntryDialog({
   editing: boolean;
   accounts: Account[];
   categoryOrder?: string[];
+  catalog?: CategoryCatalog;
   entries: Entry[];
   onClose: () => void;
   onSave: (entry: Entry) => Promise<void>;
@@ -1316,7 +1322,7 @@ function EntryDialog({
   const refKind = { refund: "expense", repay: "borrow", collect: "lend" }[
     value.kind as "refund" | "repay" | "collect"
   ];
-  const categoryOptions = ordered(Array.from(
+  const categoryOptions = ordered(catalog ? Object.keys(catalog.items).filter(p => catalog.items[p].includes(value.kind)) : Array.from(
     new Set([
       ...categories.filter((category) =>
         value.kind === "income"
@@ -1329,6 +1335,11 @@ function EntryDialog({
       value.category,
     ]),
   ).filter(Boolean), categoryOrder);
+  useEffect(() => {
+    if (!editing && catalog && ["income", "expense"].includes(value.kind) && !categoryOptions.includes(value.category)) {
+      setValue(old => ({...old, category: categoryOptions[0] ?? ""}));
+    }
+  }, [catalog, value.kind, value.category, editing]);
   const form = (
     <form
       onSubmit={async (e) => {
@@ -1378,13 +1389,6 @@ function EntryDialog({
           </button>
         ))}
       </div>
-        {["income", "expense"].includes(value.kind) && (
-          <label className="entry-category">
-            分类
-            <CategorySelect options={categoryOptions} value={value.category}
-              onChange={e => set("category", e.target.value)} />
-          </label>
-        )}
       <label className="amount-input">
         金额（人民币）
         <div>
@@ -1402,6 +1406,13 @@ function EntryDialog({
           />
         </div>
       </label>
+        {["income", "expense"].includes(value.kind) && (
+          <label className="entry-category">
+            分类
+            <CategorySelect options={categoryOptions} value={value.category}
+              onChange={e => set("category", e.target.value)} />
+          </label>
+        )}
       <div className="form-grid">
         <label>
           日期

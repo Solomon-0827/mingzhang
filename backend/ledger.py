@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
 
+from backend.categories import catalog
+
 KINDS = ["income", "expense", "transfer", "refund", "lend", "borrow", "repay", "collect", "balance_in", "balance_out"]
 
 
@@ -62,6 +64,11 @@ def validate_entry(db, data, exclude=None):
     for aid in [data["account_id"]] + ([data["to_account_id"]] if data["to_account_id"] else []):
         if not db.execute("SELECT id FROM accounts WHERE id=?", (aid,)).fetchone():
             fail("账户不存在")
+    category_state = catalog(db)
+    if data["category"] in category_state["hidden"] + category_state["retired"]:
+        previous = db.execute("SELECT category FROM entries WHERE id=?", (exclude,)).fetchone() if exclude else None
+        if not previous or previous[0] != data["category"]:
+            fail("分类已删除或更名，请重新选择")
     kind = data["kind"]
     if kind == "transfer":
         if not data["to_account_id"] or data["to_account_id"] == data["account_id"]:
@@ -182,6 +189,7 @@ def snapshot(db):
     return dict(
         accounts=accounts,
         ordering=ordering,
+        category_catalog=catalog(db),
         entries=entries,
         assets=assets,
         liabilities=liabilities,
