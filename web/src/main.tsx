@@ -291,7 +291,7 @@ function App() {
       <div className="login">
         <div className="login-story">
           <div className="brand">
-            <img src="/icon.svg" alt="" width={40} height={40} />
+            <img src="/icon.png" alt="" width={40} height={40} />
             明账 <span>MINGZHANG</span>
           </div>
           <div>
@@ -356,7 +356,7 @@ function App() {
     <div className="shell">
       <aside>
         <div className="brand">
-          <img src="/icon.svg" alt="" width={40} height={40} />
+          <img src="/icon.png" alt="" width={40} height={40} />
           明账<span>个人账本</span>
         </div>
         <div className="workspace">

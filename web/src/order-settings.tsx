@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { GripVertical, ChevronRight, Folder } from "lucide-react";
+import { GripVertical, ChevronRight, Folder, Plus, PencilLine, Trash2, Check, X } from "lucide-react";
 import { Account, CategoryChange, DisplayOrder, State, ordered, accountLabels } from "./types";
 import { StyledSelect } from "./controls";
 import { categoryGroups, categoryLeaf } from "./category-groups";
@@ -69,6 +69,19 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
       setChange(null);
     } catch(e) {setError((e as Error).message);} finally {setBusy(false);}
   };
+  const inlineEditor = () => change && <form className="category-inline-editor" onSubmit={e => {e.preventDefault();void submitChange();}} onKeyDown={e => {if(e.key === "Escape" && !busy){e.preventDefault();setChange(null);setError("");}}}>
+    {["add", "rename"].includes(change.action) ? <>
+      <input autoFocus aria-label="分类名称" value={name} maxLength={40} onChange={e=>setName(e.target.value)} placeholder={change.level === "parent" ? "一级分类名称" : "二级分类名称"} disabled={busy}/>
+      {change.action === "add" && change.level === "parent" && <StyledSelect aria-label="分类收支类型" value={change.kind} onChange={e=>setChange({...change,kind:e.target.value})}><option value="expense">支出</option><option value="income">收入</option></StyledSelect>}
+    </> : <span className="inline-delete-copy">{change.action === "delete" ? "删除此分类？历史账目保留，可恢复。" : "恢复此分类？"}</span>}
+    <button className="category-tool confirm" title="确认（Enter）" aria-label="确认分类修改" disabled={busy}><Check size={17} strokeWidth={1.6}/></button>
+    <button type="button" className="category-tool" title="取消（Esc）" aria-label="取消分类修改" disabled={busy} onClick={()=>{setChange(null);setError("");}}><X size={17} strokeWidth={1.6}/></button>
+    {error && <small className="inline-category-error" role="alert">{error}</small>}
+  </form>;
+  const rowTools = (level: "parent" | "child", path: string) => <div className="category-row-tools">
+    <button className="category-tool" title="编辑" aria-label={`编辑分类：${path}`} disabled={busy || dirty} onClick={()=>start("rename",level,path)}><PencilLine size={16} strokeWidth={1.5}/></button>
+    <button className="category-tool delete" title="删除" aria-label={`删除分类：${path}`} disabled={busy || dirty} onClick={()=>start("delete",level,path)}><Trash2 size={16} strokeWidth={1.5}/></button>
+  </div>;
   return <section className="panel settings-panel">
     <div className="settings-tabs" role="tablist" aria-label="设置">
       <button role="tab" aria-selected={section === "categories"} onClick={() => setSection("categories")}>分类管理</button>
@@ -76,44 +89,30 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
     </div>
     <div className="settings-intro"><h2>{section === "categories" ? "分类层级与排序" : "账户排序与设置"}</h2>
       <p>{section === "categories" ? "拖动左侧手柄调整顺序。一级分类整组移动，二级分类在所属组内移动。" : "拖动左侧手柄调整账户顺序，点击编辑修改账户信息。"}</p></div>
-    {section === "categories" && <div className="category-crud">
-      <div className="category-actions">
-        <button disabled={busy || dirty} onClick={() => start("add", "parent", "")}>＋ 新增一级分类</button>
-        <button disabled={busy || dirty || !group} onClick={() => start("add", "child", group.name)}>＋ 新增二级分类</button>
-        <button disabled={busy || dirty || !group} onClick={() => start("rename", "parent", group.name)}>修改当前一级分类</button>
-        <button disabled={busy || dirty || !group} onClick={() => start("delete", "parent", group.name)}>删除当前一级分类</button>
-      </div>
-      {dirty && <p>请先保存或撤销排序调整，再修改分类。</p>}
-      {change && <form onSubmit={e => {e.preventDefault();void submitChange();}}>
-        <h3>{({add:"新增",rename:"修改",delete:"删除",restore:"恢复"})[change.action]}{change.level === "parent" ? "一级分类" : "二级分类"}{change.path && ` · ${change.path}`}</h3>
-        {["add", "rename"].includes(change.action) && <input autoFocus aria-label="分类名称" value={name} maxLength={40} onChange={e=>setName(e.target.value)} placeholder="输入分类名称" disabled={busy}/>}
-        {change.action === "add" && change.level === "parent" && <StyledSelect aria-label="分类收支类型" value={change.kind} onChange={e=>setChange({...change,kind:e.target.value})}><option value="expense">支出分类</option><option value="income">收入分类</option></StyledSelect>}
-        {change.action === "delete" && <p>将移除「{change.path}」{change.level === "parent" ? "及所属二级分类" : ""}，历史账目保持不变。之后可以在下方“已删除分类”中恢复。</p>}
-        {change.action === "rename" && <p>已有账目的分类名称也会同步更新，金额和账户不变。</p>}
-        <button className="primary" disabled={busy}>{busy ? "处理中…" : "确认"}</button><button type="button" disabled={busy} onClick={()=>setChange(null)}>取消</button>
-      </form>}
-    </div>}
     {section === "categories" ? <div className="category-manager">
-      <section className="parent-column"><div className="settings-column-heading">一级分类 <small>{groups.length} 个</small></div>
+      <section className="parent-column"><div className="settings-column-heading"><span>一级分类 <small>{groups.length}</small></span><button className="category-tool add" title="新增一级分类" aria-label="新增一级分类" disabled={busy || dirty} onClick={()=>start("add","parent","")}><Plus size={19} strokeWidth={1.6}/></button></div>
+        {change?.action === "add" && change.level === "parent" && <div className="category-new-row">{inlineEditor()}</div>}
         <SortList scope="parents" items={groups.map(g => g.name)} disabled={busy || !!change} onMove={(from,to) => {
           setCategories(move(groups.map(g => g.name),from,to).flatMap(name => groups.find(g => g.name === name)!.items)); setDirty(true);
-        }} render={name => <button type="button" className={`parent-choice ${group?.name === name ? "selected" : ""}`} onClick={() => setSelected(name)}>
-          <Folder size={17}/><strong>{name}</strong><small>{groups.find(g => g.name === name)!.items.length}</small><ChevronRight size={16}/></button>} />
+        }} render={parent => change?.level === "parent" && change.path === parent && change.action !== "add" ? inlineEditor() : <>
+          <button type="button" className={`parent-choice ${group?.name === parent ? "selected" : ""}`} onClick={() => {setSelected(parent);if(!busy){setChange(null);setError("");}}}>
+            <Folder size={17} strokeWidth={1.5}/><strong>{parent}</strong><small>{groups.find(g => g.name === parent)!.items.length}</small><ChevronRight size={14}/></button>{rowTools("parent",parent)}</>} />
       </section>
-      <section className="child-column"><div className="settings-column-heading"><span>{group?.name} <ChevronRight size={14}/> 二级分类</span><small>{group?.items.length ?? 0} 个</small></div>
+      <section className="child-column"><div className="settings-column-heading"><span>{group?.name} <ChevronRight size={14}/> 二级分类</span><button className="category-tool add" title="新增二级分类" aria-label="新增二级分类" disabled={busy || dirty || !group} onClick={()=>start("add","child",group.name)}><Plus size={19} strokeWidth={1.6}/></button></div>
+        {change?.action === "add" && change.level === "child" && <div className="category-new-row">{inlineEditor()}</div>}
         {group && <SortList key={group.name} scope="children" items={group.items} disabled={busy || !!change} onMove={(from,to) => {
           setCategories(groups.flatMap(g => g.name === group.name ? move(g.items,from,to) : g.items)); setDirty(true);
-        }} render={id => <div className="child-label"><span className="tree-branch">└</span><strong>{categoryLeaf(id)}</strong><small>属于 {group.name}</small>{id.includes("/") && <><button className="text-button" disabled={busy || dirty} onClick={()=>start("rename","child",id)}>修改</button><button className="text-button" disabled={busy || dirty} onClick={()=>start("delete","child",id)}>删除</button></>}</div>} />}
+        }} render={id => change?.level === "child" && change.path === id && change.action !== "add" ? inlineEditor() : <div className="child-label"><span className="tree-branch">└</span><strong>{categoryLeaf(id)}</strong><small>属于 {group.name}</small>{id.includes("/") && rowTools("child",id)}</div>} />}
       </section>
     </div> : <div className="account-settings-list"><div className="settings-column-heading">账户 <small>{accounts.length} 个</small></div>
       <SortList scope="accounts" items={accounts} disabled={busy || !!change} onMove={(from,to) => {setAccounts(move(accounts,from,to));setDirty(true);}}
         render={id => { const account = state.accounts.find(a => a.id === id)!; return <><div className="account-setting-name"><strong>{account.name}</strong><small>{accountLabels[account.kind]}</small></div><button type="button" className="text-button" disabled={busy} onClick={() => onEditAccount(account)}>编辑</button></>; }} />
     </div>}
     {section === "categories" && !!state.category_catalog?.hidden.length && <details className="category-removed"><summary>已删除分类（{state.category_catalog.hidden.length}）</summary>
-      {state.category_catalog.hidden.map(path=><div key={path}><span>{path}</span><button disabled={busy || dirty} onClick={()=>start("restore",path.includes("/") ? "child" : "parent",path)}>恢复</button></div>)}
+      {state.category_catalog.hidden.map(path=><div key={path}><span>{path}</span>{change?.action === "restore" && change.path === path ? inlineEditor() : <button disabled={busy || dirty} onClick={()=>start("restore",path.includes("/") ? "child" : "parent",path)}>恢复</button>}</div>)}
     </details>}
-    {error && <p role="alert" className="error">{error}</p>}
-    <div className="settings-save"><span>{dirty ? "有未保存的排序调整" : "顺序已保存，记账与编辑下拉列表共用。"}</span>
+    {error && !change && <p role="alert" className="error">{error}</p>}
+    <div className="settings-save"><span>{dirty ? "有未保存的排序调整，请先保存或撤销再编辑分类" : "顺序已保存，记账与编辑下拉列表共用。"}</span>
       <button disabled={!dirty || busy} onClick={() => {setAccounts(state.accounts.map(a=>a.id));setCategories(initialCategories());setDirty(false);setError("");}}>撤销调整</button>
       <button className="primary" disabled={!dirty || busy} onClick={async () => {setBusy(true);setError("");try {await onSave({accounts,categories,version:state.ordering?.version ?? 0});setDirty(false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}>{busy ? "保存中…" : "保存排序"}</button>
     </div>
