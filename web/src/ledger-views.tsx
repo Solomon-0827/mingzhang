@@ -239,12 +239,12 @@ export function BookList({
           <table>
             <thead>
               <tr>
-                <th>日期</th>
                 <th>分类</th>
                 <th>类型</th>
                 <th className="numeric">金额</th>
                 <th>账户 / 对方账户</th>
                 <th>操作</th>
+                <th>日期</th>
               </tr>
             </thead>
             {groups.map((date) => (
@@ -283,17 +283,6 @@ export function BookList({
                           onEdit(entry);
                       }}
                     >
-                      <td>
-                        <EntryField
-                          entry={entry}
-                          state={state}
-                          field="date"
-                          onSave={onSave}
-                          onEdit={onEdit}
-                        >
-                          {entry.date}
-                        </EntryField>
-                      </td>
                       <td>
                         <EntryField
                           entry={entry}
@@ -377,9 +366,19 @@ export function BookList({
                           className="row-actions"
                           onClick={(event) => event.stopPropagation()}
                         >
-                          <button onClick={() => onEdit(entry)}>编辑</button>
                           <button onClick={() => onDelete(entry)}>删除</button>
                         </div>
+                      </td>
+                      <td>
+                        <EntryField
+                          entry={entry}
+                          state={state}
+                          field="date"
+                          onSave={onSave}
+                          onEdit={onEdit}
+                        >
+                          {entry.date}
+                        </EntryField>
                       </td>
                     </tr>
                   ))}

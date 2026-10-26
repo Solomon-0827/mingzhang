@@ -125,7 +125,7 @@ export function CategorySelect({ options, value, onChange, disabled, "aria-label
   options: string[]; value: string; onChange: Change; disabled?: boolean; "aria-label"?: string;
 }) {
   return <Select className="ledger-select category-select" aria-label={label} value={value} disabled={disabled}
-    virtual={false} showSearch optionFilterProp="searchText" popupMatchSelectWidth={280}
+    virtual={false} listHeight={420} showSearch optionFilterProp="searchText" popupMatchSelectWidth={280}
     options={categoryGroups(options).map(group => ({ label: <strong className="category-heading">{group.name}</strong>,
       options: group.items.map(item => ({ value: item, searchText: item,
         label: <span className="category-option"><span className="category-parent">{group.name}</span><span>{categoryLeaf(item)}</span></span> })) }))}
