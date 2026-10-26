@@ -38,7 +38,10 @@ export function ordered(values: string[], order: string[] = []) {
   const ranks = new Map(order.map((v, i) => [v, i]));
   return [...values].sort((a, b) => (ranks.get(a) ?? order.length) - (ranks.get(b) ?? order.length));
 }
+export type CategoryCatalog = { items: Record<string, string[]>; hidden: string[]; version: number };
+export type CategoryChange = { action: "add" | "rename" | "delete" | "restore"; level: "parent" | "child"; path: string; name?: string; kind?: string; version: number };
 export type State = {
+  category_catalog?: CategoryCatalog;
   ordering?: DisplayOrder;
   demo: boolean;
   accounts: Account[];

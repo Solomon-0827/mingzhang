@@ -1,5 +1,6 @@
 import React from "react";
 import { ConfigProvider, DatePicker, Select } from "antd";
+import { categoryGroups, categoryLeaf } from "./category-groups";
 import zhCN from "antd/locale/zh_CN";
 import dayjs from "dayjs";
 import "dayjs/locale/zh-cn";
@@ -86,6 +87,7 @@ export function StyledDate({
   max?: string;
   disabled?: boolean;
   open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   required?: boolean;
   size?: "small" | "middle" | "large";
   "aria-label"?: string;
@@ -99,6 +101,9 @@ export function StyledDate({
       format={type === "month" ? "YYYY年MM月" : "YYYY年MM月DD日"}
       allowClear={false}
       inputReadOnly
+      panelRender={(panel) => (
+        <div onClick={(event) => event.stopPropagation()}>{panel}</div>
+      )}
       disabledDate={(date) => Boolean(max && date.format("YYYY-MM-DD") > max)}
       onChange={(date) => {
         if (date)
@@ -108,7 +113,22 @@ export function StyledDate({
             },
           });
       }}
-      getPopupContainer={(trigger) => trigger.parentElement!}
+      // Keep calendar clicks outside the surrounding label: otherwise native
+      // label activation can focus the input and reopen the calendar.
+      getPopupContainer={() => document.body}
+      styles={{ popup: { root: { zIndex: 1400 } } }}
     />
   );
+}
+
+export function CategorySelect({ options, value, onChange, disabled, "aria-label": label = "分类" }: {
+  options: string[]; value: string; onChange: Change; disabled?: boolean; "aria-label"?: string;
+}) {
+  return <Select className="ledger-select category-select" aria-label={label} value={value} disabled={disabled}
+    virtual={false} listHeight={420} showSearch optionFilterProp="searchText" popupMatchSelectWidth={280}
+    options={categoryGroups(options).map(group => ({ label: <strong className="category-heading">{group.name}</strong>,
+      options: group.items.map(item => ({ value: item, searchText: item,
+        label: <span className="category-option"><span className="category-parent">{group.name}</span><span>{categoryLeaf(item)}</span></span> })) }))}
+    onChange={next => onChange({target:{value:next}})}
+    getPopupContainer={trigger => trigger.parentElement!} />;
 }

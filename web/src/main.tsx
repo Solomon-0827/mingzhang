@@ -1,11 +1,14 @@
+import { motion, MotionConfig } from "motion/react";
 import React, {
   useCallback,
+  useId,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { useFeedback } from "./feedback";
 import {
   Area,
   AreaChart,
@@ -31,14 +34,18 @@ import {
   LayoutDashboard,
   LogOut,
   Plus,
+  PanelLeftClose,
+  PanelLeftOpen,
   RefreshCw,
   Search,
+  Settings,
   Trash2,
   Wallet,
   X,
 } from "lucide-react";
 import {
   Account,
+  CategoryCatalog,
   ordered,
   Entry,
   Kind,
@@ -51,7 +58,7 @@ import {
   money,
   today,
 } from "./types";
-import { ControlTheme, StyledDate, StyledSelect } from "./controls";
+import { ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import { OrderSettings } from "./order-settings";
@@ -99,10 +106,9 @@ function App() {
     [logged, setLogged] = useState(false),
     [checked, setChecked] = useState(false);
   const [password, setPassword] = useState(""),
-    [error, setError] = useState(""),
-    [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false);
-  const [sorting, setSorting] = useState(false);
+  const { setError, setNotice, clearConnectionError, toast } = useFeedback();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [bookMonth, setBookMonth] = useState(today().slice(0, 7));
   const [page, setPage] = useState("entry"),
     [period, setPeriod] = useState("month"),
@@ -144,6 +150,7 @@ function App() {
   const refresh = useCallback(async () => {
     const value = await api<State>("/state");
     setState(value);
+    clearConnectionError();
     setLogged(true);
     setLastSync(
       new Date().toLocaleTimeString("zh-CN", {
@@ -151,7 +158,7 @@ function App() {
         minute: "2-digit",
       }),
     );
-  }, []);
+  }, [clearConnectionError]);
   useEffect(() => {
     refresh()
       .catch((e) => {
@@ -290,7 +297,7 @@ function App() {
       <div className="login">
         <div className="login-story">
           <div className="brand">
-            <img src="/icon.svg" alt="" width={40} height={40} />
+            <img src="/icon.png" alt="" width={40} height={40} />
             明账 <span>MINGZHANG</span>
           </div>
           <div>
@@ -339,11 +346,7 @@ function App() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
+          {toast}
           <button className="primary" disabled={busy}>
             {busy ? "正在登录…" : "打开我的账本"} <ArrowUpRight size={18} />
           </button>
@@ -352,11 +355,18 @@ function App() {
       </div>
     );
   return (
-    <div className="shell">
-      <aside>
+    <div className={`shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+      <aside aria-label="主导航">
+        <button className="sidebar-toggle" type="button"
+          aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+          title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+          aria-expanded={!sidebarCollapsed} aria-controls="workspace-nav"
+          onClick={() => setSidebarCollapsed(value => !value)}>
+          {sidebarCollapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
+        </button>
         <div className="brand">
-          <img src="/icon.svg" alt="" width={40} height={40} />
-          明账<span>个人账本</span>
+          <img src="/icon.png" alt="" width={40} height={40} />
+          <b className="brand-name">明账</b><span>个人账本</span>
         </div>
         <div className="workspace">
           <div className="avatar">S</div>
@@ -366,7 +376,7 @@ function App() {
           </div>
         </div>
         <p className="nav-label">工作空间</p>
-        <nav>
+        <nav id="workspace-nav">
           {[
             ["entry", "记一笔", Plus],
             ["overview", "账本总览", LayoutDashboard],
@@ -374,9 +384,13 @@ function App() {
             ["reports", "收支报表", ChartNoAxesCombined],
             ["accounts", "资金账户", Wallet],
             ["data", "数据管理", Database],
+            ["settings", "设置", Settings],
           ].map(([id, label, Icon]) => (
             <button
               key={String(id)}
+              aria-label={String(label)}
+              title={String(label)}
+              aria-current={page === id ? "page" : undefined}
               className={page === id ? "active" : ""}
               onClick={() => {
                 setPage(String(id));
@@ -384,17 +398,18 @@ function App() {
                 setCategoryFilter("");
               }}
             >
+              {page === id && <motion.span className="nav-selection" layoutId="main-navigation-active" transition={{ type: "spring", stiffness: 420, damping: 34 }} />}
               {React.createElement(Icon as typeof Wallet, { size: 19 })}
-              {String(label)}
+              <span className="nav-text">{String(label)}</span>
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className={"sync " + (!online ? "offline" : "")}>
+          <div className={"sync " + (!online ? "offline" : "")} title={online ? `最近同步 ${lastSync}` : "当前离线"}>
             <i />
-            {online ? `最近同步 ${lastSync}` : "当前离线，恢复联网后再保存"}
+            <span className="nav-text">{online ? `最近同步 ${lastSync}` : "当前离线，恢复联网后再保存"}</span>
           </div>
-          <button
+          <button aria-label="退出账本" title="退出账本"
             onClick={() => {
               api("/logout", {}).then(() => {
                 setLogged(false);
@@ -403,12 +418,12 @@ function App() {
             }}
           >
             <LogOut size={16} />
-            退出账本
+            <span className="nav-text">退出账本</span>
           </button>
           <small>明账 v0.1 · 让每一笔都有来处</small>
         </div>
       </aside>
-      <main className={page === "entry" ? "entry-workspace" : undefined}>
+      <motion.main key={page} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.22 }} className={page === "entry" ? "entry-workspace" : undefined}>
         <header>
           <div>
             <p className="eyebrow">
@@ -425,6 +440,7 @@ function App() {
                   reports: "收支报表",
                   accounts: "资金账户",
                   data: "数据管理",
+                  settings: "设置",
                 }[page]
               }
             </h1>
@@ -437,6 +453,7 @@ function App() {
                   reports: "从每一天，到每一年。",
                   accounts: "账户余额与借贷往来，一起看清。",
                   data: "你的数据，由你掌握。",
+                  settings: "按你的习惯整理分类和账户。",
                 }[page]
               }
             </p>
@@ -453,7 +470,6 @@ function App() {
             >
               <RefreshCw size={18} />
             </button>
-            {["entry", "accounts"].includes(page) && <button onClick={() => setSorting(true)}>分类与账户排序</button>}
             {page !== "entry" && (
               <button className="primary" onClick={openNew}>
                 <Plus size={18} />
@@ -462,22 +478,7 @@ function App() {
             )}
           </div>
         </header>
-        {error && (
-          <div className="banner error" role="alert">
-            {error}
-            <button aria-label="关闭错误" onClick={() => setError("")}>
-              <X size={16} />
-            </button>
-          </div>
-        )}
-        {notice && (
-          <div className="banner" role="status">
-            {notice}
-            <button aria-label="关闭提示" onClick={() => setNotice("")}>
-              <X size={16} />
-            </button>
-          </div>
-        )}
+        {toast}
         {page === "entry" && state && (
           <section className="entry-home">
             {state.accounts.length ? (
@@ -488,6 +489,7 @@ function App() {
                 accounts={state.accounts}
                 entries={state.entries}
                 categoryOrder={state.ordering?.categories}
+                catalog={state.category_catalog}
                 onClose={() => {}}
                 onSave={async (value) => {
                   await run(() => api("/entries", value, "POST"), "");
@@ -1122,6 +1124,11 @@ function App() {
             </section>
           </>
         )}
+        {page === "settings" && state && <OrderSettings state={state} defaults={categories}
+          onCategoryChange={async value => { await run(() => api("/categories", value)); }}
+          onPasswordChanged={() => { setLogged(false); setState(null); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
+          onEditAccount={setAccountEditor}
+          onSave={async value => { await run(() => api("/display-order", value, "PUT")); }} />}
         {page === "data" && state && (
           <DataPage
             state={state}
@@ -1133,7 +1140,7 @@ function App() {
         <footer>
           个人账本 · Asia/Shanghai <span>数据以服务端保存结果为准</span>
         </footer>
-      </main>
+      </motion.main>
       {editor && state && (
         <EntryDialog
           key={editor.id}
@@ -1142,6 +1149,7 @@ function App() {
           accounts={state.accounts}
           entries={state.entries}
                 categoryOrder={state.ordering?.categories}
+                catalog={state.category_catalog}
           onClose={() => setEditor(null)}
           onSave={async (value) => {
             await run(() =>
@@ -1154,14 +1162,6 @@ function App() {
             setEditor(null);
           }}
         />
-      )}
-      {sorting && state && (
-        <Modal title="分类与账户排序" onClose={() => setSorting(false)}>
-          <OrderSettings state={state} defaults={categories} onSave={async (value) => {
-            await run(() => api("/display-order", value, "PUT"));
-            setSorting(false);
-          }} />
-        </Modal>
       )}
       {accountEditor && (
         <AccountDialog
@@ -1236,7 +1236,8 @@ function Modal({
     return () => previous?.focus();
   }, []);
   return (
-    <div
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.18 }}
       className="modal-backdrop"
       onClick={(event) => {
         if (event.target === event.currentTarget) {
@@ -1245,7 +1246,9 @@ function Modal({
         }
       }}
     >
-      <section
+      <motion.section
+        initial={{ opacity: 0, y: 14, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ type: "spring", stiffness: 420, damping: 34 }}
         className="modal"
         ref={dialogRef}
         onKeyDown={(event) => {
@@ -1284,8 +1287,8 @@ function Modal({
           </button>
         </div>
         {children}
-      </section>
-    </div>
+      </motion.section>
+    </motion.div>
   );
 }
 function EntryDialog({
@@ -1294,6 +1297,7 @@ function EntryDialog({
   editing,
   accounts,
   categoryOrder = [],
+  catalog,
   entries,
   onClose,
   onSave,
@@ -1303,6 +1307,7 @@ function EntryDialog({
   editing: boolean;
   accounts: Account[];
   categoryOrder?: string[];
+  catalog?: CategoryCatalog;
   entries: Entry[];
   onClose: () => void;
   onSave: (entry: Entry) => Promise<void>;
@@ -1313,13 +1318,15 @@ function EntryDialog({
     ),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  const kindMotionId = useId();
+  const selectedAccount = accounts.find(account => account.id === value.account_id);
   const amountRef = useRef<HTMLInputElement>(null);
   const set = <K extends keyof Entry>(key: K, v: Entry[K]) =>
     setValue((old) => ({ ...old, [key]: v }));
   const refKind = { refund: "expense", repay: "borrow", collect: "lend" }[
     value.kind as "refund" | "repay" | "collect"
   ];
-  const categoryOptions = ordered(Array.from(
+  const categoryOptions = ordered(catalog ? Object.keys(catalog.items).filter(p => catalog.items[p].includes(value.kind)) : Array.from(
     new Set([
       ...categories.filter((category) =>
         value.kind === "income"
@@ -1332,6 +1339,11 @@ function EntryDialog({
       value.category,
     ]),
   ).filter(Boolean), categoryOrder);
+  useEffect(() => {
+    if (!editing && catalog && ["income", "expense"].includes(value.kind) && !categoryOptions.includes(value.category)) {
+      setValue(old => ({...old, category: categoryOptions[0] ?? ""}));
+    }
+  }, [catalog, value.kind, value.category, editing]);
   const form = (
     <form
       onSubmit={async (e) => {
@@ -1377,26 +1389,11 @@ function EntryDialog({
               })
             }
           >
-            {v}
+            {value.kind === k && <motion.span className="kind-selection" layoutId={`entry-kind-${kindMotionId}`} transition={{ type: "spring", stiffness: 500, damping: 36 }} />}
+            <span className="kind-label">{v}</span>
           </button>
         ))}
       </div>
-        {["income", "expense"].includes(value.kind) && (
-          <label className="entry-category">
-            分类
-            <StyledSelect
-              aria-label="分类"
-              value={value.category}
-              onChange={(e) => set("category", e.target.value)}
-            >
-              {categoryOptions.map((category) => (
-                <option key={category} value={category}>
-                  {category.replace("/", " · ")}
-                </option>
-              ))}
-            </StyledSelect>
-          </label>
-        )}
       <label className="amount-input">
         金额（人民币）
         <div>
@@ -1414,6 +1411,13 @@ function EntryDialog({
           />
         </div>
       </label>
+        {["income", "expense"].includes(value.kind) && (
+          <label className="entry-category">
+            分类
+            <CategorySelect options={categoryOptions} value={value.category}
+              onChange={e => set("category", e.target.value)} />
+          </label>
+        )}
       <div className="form-grid">
         <label>
           日期
@@ -1427,7 +1431,15 @@ function EntryDialog({
           />
         </label>
         <label>
-          {value.kind === "transfer" ? "转出账户" : "账户"}
+          <span className="entry-account-heading">
+            <span>{value.kind === "transfer" ? "转出账户" : "账户"}</span>
+            {selectedAccount && <span className="entry-account-balance" role="status" aria-live="polite"
+              title={`${selectedAccount.name}当前余额`}>
+              余额 <motion.strong key={`${selectedAccount.id}-${selectedAccount.balance_cents}`} initial={{ opacity: 0.35 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }} className={selectedAccount.balance_cents < 0 ? "negative-balance" : undefined}>
+                ¥{money(selectedAccount.balance_cents)}
+              </motion.strong>
+            </span>}
+          </span>
           <StyledSelect
             value={value.account_id}
             onChange={(e) => set("account_id", e.target.value)}
@@ -1922,7 +1934,7 @@ function DataPage({
 }
 
 createRoot(document.getElementById("root")!).render(
-  <ControlTheme>
-    <App />
-  </ControlTheme>,
+  <MotionConfig reducedMotion="user">
+    <ControlTheme><App /></ControlTheme>
+  </MotionConfig>,
 );

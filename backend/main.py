@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from backend.auth import authenticated, token_hash, verify_password
+from backend.auth import authenticated, hash_password, token_hash, verify_password
+from backend.categories import CategoryChange, change_category
 from backend.db import backup, connect, db_path, initialize
 from backend.importing import commit_import, preview, read_file
 from backend.ledger import Account, Entry, audit, fail, report, save_entry, set_deleted, snapshot
@@ -119,6 +120,35 @@ def login(body: Login, request: Request, response: Response):
     return {"ok": True}
 
 
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=12, max_length=1024)
+    confirm_password: str = Field(min_length=12, max_length=1024)
+
+
+@app.post("/api/password", dependencies=[Depends(authenticated)])
+def update_password(body: PasswordChange, request: Request, response: Response):
+    host = 'password:' + (request.client.host if request.client else 'local')
+    now = time.time()
+    recent = [t for t in attempts.get(host, []) if now - t < 300]
+    if len(recent) >= 10:
+        fail("尝试次数过多，请 5 分钟后重试", 429)
+    attempts[host] = recent + [now]
+    if body.new_password != body.confirm_password:
+        fail("两次输入的新密码不一致")
+    with connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        stored = db.execute("SELECT value FROM settings WHERE key='password'").fetchone()
+        if not stored or not verify_password(body.current_password, stored[0]):
+            fail("当前密码不正确")
+        db.execute("UPDATE settings SET value=? WHERE key='password'", (hash_password(body.new_password),))
+        db.execute("DELETE FROM sessions")
+        audit(db, 'password.change', {})
+    attempts.pop(host, None)
+    response.delete_cookie('ledger_session')
+    return {"ok": True}
+
+
 @app.post("/api/logout")
 def logout(request: Request, response: Response):
     with connect() as db:
@@ -140,6 +170,12 @@ def state():
     result["server_time"] = datetime.now().isoformat()
     result["backup_date"] = max((p.name for p in BACKUP_DIR.glob("ledger-*.sqlite3")), default=None)
     return result
+
+
+@app.post("/api/categories", dependencies=[Depends(authenticated)])
+def manage_categories(body: CategoryChange):
+    with connect() as db:
+        return change_category(db, body)
 
 
 class DisplayOrder(BaseModel):
