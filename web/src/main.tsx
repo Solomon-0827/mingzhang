@@ -1,5 +1,7 @@
+import { motion, MotionConfig } from "motion/react";
 import React, {
   useCallback,
+  useId,
   useEffect,
   useMemo,
   useRef,
@@ -396,6 +398,7 @@ function App() {
                 setCategoryFilter("");
               }}
             >
+              {page === id && <motion.span className="nav-selection" layoutId="main-navigation-active" transition={{ type: "spring", stiffness: 420, damping: 34 }} />}
               {React.createElement(Icon as typeof Wallet, { size: 19 })}
               <span className="nav-text">{String(label)}</span>
             </button>
@@ -420,7 +423,7 @@ function App() {
           <small>明账 v0.1 · 让每一笔都有来处</small>
         </div>
       </aside>
-      <main className={page === "entry" ? "entry-workspace" : undefined}>
+      <motion.main key={page} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.22 }} className={page === "entry" ? "entry-workspace" : undefined}>
         <header>
           <div>
             <p className="eyebrow">
@@ -1137,7 +1140,7 @@ function App() {
         <footer>
           个人账本 · Asia/Shanghai <span>数据以服务端保存结果为准</span>
         </footer>
-      </main>
+      </motion.main>
       {editor && state && (
         <EntryDialog
           key={editor.id}
@@ -1233,7 +1236,8 @@ function Modal({
     return () => previous?.focus();
   }, []);
   return (
-    <div
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.18 }}
       className="modal-backdrop"
       onClick={(event) => {
         if (event.target === event.currentTarget) {
@@ -1242,7 +1246,9 @@ function Modal({
         }
       }}
     >
-      <section
+      <motion.section
+        initial={{ opacity: 0, y: 14, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ type: "spring", stiffness: 420, damping: 34 }}
         className="modal"
         ref={dialogRef}
         onKeyDown={(event) => {
@@ -1281,8 +1287,8 @@ function Modal({
           </button>
         </div>
         {children}
-      </section>
-    </div>
+      </motion.section>
+    </motion.div>
   );
 }
 function EntryDialog({
@@ -1312,6 +1318,7 @@ function EntryDialog({
     ),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  const kindMotionId = useId();
   const selectedAccount = accounts.find(account => account.id === value.account_id);
   const amountRef = useRef<HTMLInputElement>(null);
   const set = <K extends keyof Entry>(key: K, v: Entry[K]) =>
@@ -1382,7 +1389,8 @@ function EntryDialog({
               })
             }
           >
-            {v}
+            {value.kind === k && <motion.span className="kind-selection" layoutId={`entry-kind-${kindMotionId}`} transition={{ type: "spring", stiffness: 500, damping: 36 }} />}
+            <span className="kind-label">{v}</span>
           </button>
         ))}
       </div>
@@ -1427,9 +1435,9 @@ function EntryDialog({
             <span>{value.kind === "transfer" ? "转出账户" : "账户"}</span>
             {selectedAccount && <span className="entry-account-balance" role="status" aria-live="polite"
               title={`${selectedAccount.name}当前余额`}>
-              余额 <strong className={selectedAccount.balance_cents < 0 ? "negative-balance" : undefined}>
+              余额 <motion.strong key={`${selectedAccount.id}-${selectedAccount.balance_cents}`} initial={{ opacity: 0.35 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }} className={selectedAccount.balance_cents < 0 ? "negative-balance" : undefined}>
                 ¥{money(selectedAccount.balance_cents)}
-              </strong>
+              </motion.strong>
             </span>}
           </span>
           <StyledSelect
@@ -1926,7 +1934,7 @@ function DataPage({
 }
 
 createRoot(document.getElementById("root")!).render(
-  <ControlTheme>
-    <App />
-  </ControlTheme>,
+  <MotionConfig reducedMotion="user">
+    <ControlTheme><App /></ControlTheme>
+  </MotionConfig>,
 );

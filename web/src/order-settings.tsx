@@ -1,3 +1,4 @@
+import { motion } from "motion/react";
 import { PasswordSettings } from "./password-settings";
 import { useState, useRef, useEffect, type ReactNode } from "react";
 import { GripVertical, ChevronRight, Folder, Plus, PencilLine, Trash2, Check, X } from "lucide-react";
@@ -86,9 +87,9 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
   </div>;
   return <section className="panel settings-panel">
     <div className="settings-tabs" role="tablist" aria-label="设置">
-      <button role="tab" aria-selected={section === "categories"} onClick={() => setSection("categories")}>分类管理</button>
-      <button role="tab" aria-selected={section === "accounts"} onClick={() => setSection("accounts")}>账户管理</button>
-      <button role="tab" aria-selected={section === "password"} onClick={() => setSection("password")}>修改密码</button>
+      <button role="tab" aria-selected={section === "categories"} onClick={() => setSection("categories")}><span>分类管理</span>{section === "categories" && <motion.i className="settings-tab-indicator" layoutId="settings-tab-active" transition={{ type: "spring", stiffness: 450, damping: 34 }} />}</button>
+      <button role="tab" aria-selected={section === "accounts"} onClick={() => setSection("accounts")}><span>账户管理</span>{section === "accounts" && <motion.i className="settings-tab-indicator" layoutId="settings-tab-active" transition={{ type: "spring", stiffness: 450, damping: 34 }} />}</button>
+      <button role="tab" aria-selected={section === "password"} onClick={() => setSection("password")}><span>修改密码</span>{section === "password" && <motion.i className="settings-tab-indicator" layoutId="settings-tab-active" transition={{ type: "spring", stiffness: 450, damping: 34 }} />}</button>
     </div>
     {section === "password" ? <PasswordSettings onChanged={onPasswordChanged} /> : <>
     <div className="settings-intro"><h2>{section === "categories" ? "分类层级与排序" : "账户排序与设置"}</h2>
