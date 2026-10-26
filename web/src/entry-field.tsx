@@ -62,6 +62,7 @@ export function EntryField({
     if (next.kind === "transfer") return Boolean(next.to_account_id && next.to_account_id !== next.account_id);
     if (["refund", "repay", "collect"].includes(next.kind)) return Boolean(next.reference_id);
     if (["lend", "borrow"].includes(next.kind)) return Boolean(next.counterparty.trim());
+    if (["balance_in", "balance_out"].includes(next.kind)) return true;
     return Boolean(next.category);
   }
   function selectField(key: "date" | "category" | "account_id" | "to_account_id", value: string) {

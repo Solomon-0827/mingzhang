@@ -110,3 +110,16 @@ npm --prefix web run build
 自动测试覆盖收支口径、部分退款上限、并发退款、跨月统计、借贷净资产、幂等重试、版本冲突、回收站、认证/跨站限制、导入去重/撤销、XLSX、精度及真实恢复命令。
 
 下一轮计划：预算、周期账单、自动分类规则、报销、标签与保存筛选；多币种、自动银行同步、离线同步、多人共享和 AI 不在第一轮范围内。
+
+### 随手记旧版 XLS 迁移
+
+六工作表的旧版 XLS 使用专用迁移命令，保留原始行、时间、成员、项目和备注；相同金额记录不会自动去重，重复文件会被拒绝。
+
+```bash
+LEDGER_DB=data/ledger.sqlite3 uv run python -m scripts.import-sui /path/to/myMoney.xls
+LEDGER_DB=data/ledger.sqlite3 uv run python -m scripts.import-sui /path/to/myMoney.xls --config /path/to/local-config.json --commit
+```
+
+配置可包含 `account_kinds`（账户名到类型）和 `calibrations`（经核对确认的账户、日期、整数分差额和原因）。负债变更取相反余额方向；余额/债权/负债调整不计入收支。外币导出不提供原币种和双边金额，迁移按导出人民币值保留，需要单独对账，不能视为实时多币种账本。
+
+真实数据、密码、校准配置与迁移报告仅保存在本机，不提交 Git。迁移前自动备份既有数据库；写入失败整批回滚。网页 CSV/XLSX 通用入口保持原有预览流程。

@@ -429,7 +429,7 @@ export function AccountWorkspace({
     outflow = 0;
   for (const entry of state.entries.filter((entry) => !entry.deleted)) {
     if (ids.has(entry.account_id)) {
-      if (["income", "refund", "borrow", "collect"].includes(entry.kind))
+      if (["income", "refund", "borrow", "collect", "balance_in"].includes(entry.kind))
         inflow += entry.amount_cents;
       else outflow += entry.amount_cents;
     }

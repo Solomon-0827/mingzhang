@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-KINDS = ["income", "expense", "transfer", "refund", "lend", "borrow", "repay", "collect"]
+KINDS = ["income", "expense", "transfer", "refund", "lend", "borrow", "repay", "collect", "balance_in", "balance_out"]
 
 
 def today():
@@ -16,7 +16,7 @@ def today():
 
 class Account(BaseModel):
     name: str = Field(min_length=1, max_length=60)
-    kind: Literal["bank", "wallet", "cash", "credit"] = "bank"
+    kind: Literal["bank", "wallet", "cash", "credit", "receivable", "liability"] = "bank"
     opening_cents: int = Field(default=0, ge=-(10**12), le=10**12, strict=True)
     version: int = 1
 
@@ -31,7 +31,7 @@ class Account(BaseModel):
 class Entry(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     date: date
-    kind: Literal["income", "expense", "transfer", "refund", "lend", "borrow", "repay", "collect"]
+    kind: Literal["income", "expense", "transfer", "refund", "lend", "borrow", "repay", "collect", "balance_in", "balance_out"]
     amount_cents: int = Field(gt=0, le=10**12, strict=True)
     account_id: str
     to_account_id: str | None = None
@@ -153,7 +153,7 @@ def snapshot(db):
     balances = {a["id"]: a["opening_cents"] for a in accounts}
     active = [x for x in entries if not x["deleted"]]
     for x in active:
-        sign = 1 if x["kind"] in ["income", "refund", "borrow", "collect"] else -1
+        sign = 1 if x["kind"] in ["income", "refund", "borrow", "collect", "balance_in"] else -1
         balances[x["account_id"]] += sign * x["amount_cents"]
         if x["kind"] == "transfer":
             balances[x["to_account_id"]] += x["amount_cents"]
@@ -173,6 +173,8 @@ def snapshot(db):
         a["balance_cents"] = balances[a["id"]]
     assets = sum(max(0, n) for n in balances.values()) + receivable
     liabilities = -sum(min(0, n) for n in balances.values()) + payable
+    receivable += sum(max(0, a["balance_cents"]) for a in accounts if a["kind"] == "receivable")
+    payable += sum(max(0, -a["balance_cents"]) for a in accounts if a["kind"] == "liability")
     return dict(
         accounts=accounts,
         entries=entries,

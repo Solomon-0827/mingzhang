@@ -6,7 +6,9 @@ export type Kind =
   | "lend"
   | "borrow"
   | "repay"
-  | "collect";
+  | "collect"
+  | "balance_in"
+  | "balance_out";
 export type Account = {
   id: string;
   name: string;
@@ -66,12 +68,16 @@ export const labels: Record<Kind, string> = {
   borrow: "借入",
   repay: "还款",
   collect: "收回",
+  balance_in: "余额调增",
+  balance_out: "余额调减",
 };
 export const accountLabels: Record<string, string> = {
   bank: "银行卡",
   wallet: "电子钱包",
   cash: "现金",
   credit: "信用卡",
+  receivable: "债权账户",
+  liability: "负债账户",
 };
 export const money = (n: number) =>
   (n / 100).toLocaleString("zh-CN", {
