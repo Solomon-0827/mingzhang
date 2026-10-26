@@ -6,11 +6,11 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from backend.auth import hash_password
+from backend.auth import hash_password, verify_password
 from backend.db import backup, connect, db_path, initialize
 
 parser = argparse.ArgumentParser()
-parser.add_argument("command", choices=["init", "backup", "restore"])
+parser.add_argument("command", choices=["init", "password", "backup", "restore"])
 parser.add_argument("--file")
 args = parser.parse_args()
 if args.command == "init":
@@ -25,6 +25,28 @@ if args.command == "init":
         db.execute("INSERT INTO settings VALUES ('password',?)", (hash_password(password),))
     os.chmod(db_path(), 0o600)
     print("账本已初始化。")
+elif args.command == "password":
+    with connect() as db:
+        row = db.execute("SELECT value FROM settings WHERE key='password'").fetchone()
+    if not row:
+        raise SystemExit("账本尚未初始化，请先运行 init。")
+    previous = row[0]
+    if not verify_password(getpass.getpass("当前密码："), previous):
+        raise SystemExit("当前密码不正确，未修改。")
+    password = getpass.getpass("新密码（至少 12 位）：")
+    if len(password) < 12:
+        raise SystemExit("密码至少 12 位，未修改。")
+    if password != getpass.getpass("再次输入新密码："):
+        raise SystemExit("两次密码不一致，未修改。")
+    encoded = hash_password(password)
+    with connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        updated = db.execute("UPDATE settings SET value=? WHERE key='password' AND value=?", (encoded, previous))
+        if updated.rowcount != 1:
+            raise SystemExit("密码已在别处修改，请重新运行。")
+        db.execute("DELETE FROM sessions")
+        db.execute("INSERT INTO audit(action,payload) VALUES ('password.change','{}')")
+    print("密码已更换，所有设备需用新密码重新登录。")
 elif args.command == "backup":
     if not args.file:
         raise SystemExit("请指定 --file")

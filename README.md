@@ -33,6 +33,8 @@ LEDGER_DB=data/demo.sqlite3 LEDGER_BACKUPS=backups/demo uv run uvicorn backend.m
 
 真实账本双击 `scripts/start.command`，首次在终端设置至少 12 位密码。地址 http://127.0.0.1:8766 。不会自动导入演示数据。窗口保持打开；Control+C 停止。服务器不监听局域网或公网。
 
+更换当前账本密码：在仓库目录运行 `uv run python -m scripts.manage password`，按提示输入当前密码、新密码及确认密码（至少 12 位，输入不回显）。更换后所有设备需重新登录，账目不受影响；此命令使用 `LEDGER_DB` 指定的数据库，默认是 `data/ledger.sqlite3`。
+
 ## Mac 客户端
 
 解压对应 CPU 的 `.zip`，把 `明账.app` 拖入 Applications。打开后填入账本服务地址。本机运行填上述 localhost 地址；云端运行填同一个 HTTPS 域名。用户名不需要，输入账本密码即可。修改服务器地址：菜单「明账 → 服务器连接」。
