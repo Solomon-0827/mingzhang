@@ -76,8 +76,8 @@ export const accountLabels: Record<string, string> = {
   wallet: "电子钱包",
   cash: "现金",
   credit: "信用卡",
-  receivable: "债权账户",
-  liability: "负债账户",
+  receivable: "债权",
+  liability: "负债",
 };
 export const money = (n: number) =>
   (n / 100).toLocaleString("zh-CN", {
