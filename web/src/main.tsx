@@ -1,3 +1,4 @@
+import { DesktopDownloads } from "./desktop-downloads";
 import { motion, MotionConfig } from "motion/react";
 import React, {
   useCallback,
@@ -350,7 +351,8 @@ function App() {
           <button className="primary" disabled={busy}>
             {busy ? "正在登录…" : "打开我的账本"} <ArrowUpRight size={18} />
           </button>
-          <small>网页版与 Mac 客户端使用同一个账本密码。</small>
+          <small>网页版、Mac 与 Windows 客户端使用同一个账本密码。</small>
+          <DesktopDownloads />
         </form>
       </div>
     );
@@ -1139,6 +1141,7 @@ function App() {
         )}
         <footer>
           个人账本 · Asia/Shanghai <span>数据以服务端保存结果为准</span>
+          <DesktopDownloads />
         </footer>
       </motion.main>
       {editor && state && (

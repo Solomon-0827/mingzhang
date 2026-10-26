@@ -2251,3 +2251,19 @@ footer {
   .shell *, .feedback-toast { transition-duration: 0s !important; animation-duration: 0s !important; }
   .shell .primary:hover, .account-card:hover, .shell > aside nav button:hover > svg { transform: none; }
 }
+
+.desktop-downloads { position: relative; font-size: 13px; color: #366957; }
+.desktop-downloads summary { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; padding: 7px 10px; border-radius: 8px; list-style: none; }
+.desktop-downloads summary::-webkit-details-marker { display: none; }
+.desktop-downloads summary:hover, .desktop-downloads[open] summary { background: #e3eee5; }
+.desktop-downloads summary:focus-visible, .desktop-download-menu a:focus-visible { outline: 2px solid #378368; outline-offset: 3px; }
+.desktop-download-menu { position: absolute; z-index: 50; bottom: calc(100% + 10px); right: 0; width: 310px; max-width: calc(100vw - 48px); padding: 18px; border: 1px solid #dce6dc; border-radius: 16px; background: #fff; box-shadow: 0 12px 40px #234c3520; color: #263e34; }
+.desktop-download-menu > strong { display: block; margin-bottom: 12px; }
+.desktop-download-menu a { display: flex; align-items: center; gap: 12px; margin: 8px 0; padding: 12px; border-radius: 10px; background: #f2f6f1; color: #285b48; text-decoration: none; }
+.desktop-download-menu a:hover { background: #e3eee5; }
+.desktop-download-menu a span { flex: 1; }
+.desktop-download-menu small { display: block; font-size: 11px; margin-top: 3px; color: #738174; }
+.desktop-download-menu p { font-size: 11px; line-height: 1.7; margin: 12px 0 0; color: #718075; }
+.login-form > .desktop-downloads { margin-top: 8px; }
+.login-form .desktop-download-menu { left: 0; right: auto; }
+footer > .desktop-downloads { margin-left: auto; }
