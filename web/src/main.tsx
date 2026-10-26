@@ -33,6 +33,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Settings,
   Trash2,
   Wallet,
   X,
@@ -51,7 +52,7 @@ import {
   money,
   today,
 } from "./types";
-import { ControlTheme, StyledDate, StyledSelect } from "./controls";
+import { ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import { OrderSettings } from "./order-settings";
@@ -102,7 +103,6 @@ function App() {
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false);
-  const [sorting, setSorting] = useState(false);
   const [bookMonth, setBookMonth] = useState(today().slice(0, 7));
   const [page, setPage] = useState("entry"),
     [period, setPeriod] = useState("month"),
@@ -374,6 +374,7 @@ function App() {
             ["reports", "收支报表", ChartNoAxesCombined],
             ["accounts", "资金账户", Wallet],
             ["data", "数据管理", Database],
+            ["settings", "设置", Settings],
           ].map(([id, label, Icon]) => (
             <button
               key={String(id)}
@@ -425,6 +426,7 @@ function App() {
                   reports: "收支报表",
                   accounts: "资金账户",
                   data: "数据管理",
+                  settings: "设置",
                 }[page]
               }
             </h1>
@@ -437,6 +439,7 @@ function App() {
                   reports: "从每一天，到每一年。",
                   accounts: "账户余额与借贷往来，一起看清。",
                   data: "你的数据，由你掌握。",
+                  settings: "按你的习惯整理分类和账户。",
                 }[page]
               }
             </p>
@@ -453,7 +456,6 @@ function App() {
             >
               <RefreshCw size={18} />
             </button>
-            {["entry", "accounts"].includes(page) && <button onClick={() => setSorting(true)}>分类与账户排序</button>}
             {page !== "entry" && (
               <button className="primary" onClick={openNew}>
                 <Plus size={18} />
@@ -1122,6 +1124,9 @@ function App() {
             </section>
           </>
         )}
+        {page === "settings" && state && <OrderSettings state={state} defaults={categories}
+          onEditAccount={setAccountEditor}
+          onSave={async value => { await run(() => api("/display-order", value, "PUT")); }} />}
         {page === "data" && state && (
           <DataPage
             state={state}
@@ -1154,14 +1159,6 @@ function App() {
             setEditor(null);
           }}
         />
-      )}
-      {sorting && state && (
-        <Modal title="分类与账户排序" onClose={() => setSorting(false)}>
-          <OrderSettings state={state} defaults={categories} onSave={async (value) => {
-            await run(() => api("/display-order", value, "PUT"));
-            setSorting(false);
-          }} />
-        </Modal>
       )}
       {accountEditor && (
         <AccountDialog
@@ -1384,17 +1381,8 @@ function EntryDialog({
         {["income", "expense"].includes(value.kind) && (
           <label className="entry-category">
             分类
-            <StyledSelect
-              aria-label="分类"
-              value={value.category}
-              onChange={(e) => set("category", e.target.value)}
-            >
-              {categoryOptions.map((category) => (
-                <option key={category} value={category}>
-                  {category.replace("/", " · ")}
-                </option>
-              ))}
-            </StyledSelect>
+            <CategorySelect options={categoryOptions} value={value.category}
+              onChange={e => set("category", e.target.value)} />
           </label>
         )}
       <label className="amount-input">

@@ -2,7 +2,7 @@ import { createPortal } from "react-dom";
 import { useState } from "react";
 import { Popover } from "antd";
 import { Entry, Kind, State, cents, labels, money, today, ordered } from "./types";
-import { StyledDate, StyledSelect } from "./controls";
+import { StyledDate, StyledSelect, CategorySelect } from "./controls";
 
 type Field =
   | "date"
@@ -99,18 +99,8 @@ export function EntryField({
     ]),
   ).filter(Boolean), state.ordering?.categories);
   const chooseCategory = (
-    <StyledSelect
-      aria-label="修改分类"
-      value={draft.category}
-      disabled={busy}
-      onChange={(e) => selectField("category", e.target.value)}
-    >
-      {categoryOptions.map((category) => (
-        <option key={category} value={category}>
-          {category}
-        </option>
-      ))}
-    </StyledSelect>
+    <CategorySelect options={categoryOptions} aria-label="修改分类" value={draft.category} disabled={busy}
+      onChange={e => selectField("category", e.target.value)} />
   );
   const chooseAccount = (target: "account_id" | "to_account_id") => (
     <StyledSelect
