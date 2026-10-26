@@ -85,4 +85,8 @@ done
 [[ $healthy == true ]]
 systemctl is-active --quiet mingzhang
 trap - ERR
+# Cleanup never runs after failed health checks. A cleanup error does not undo a healthy release.
+if ! python3 "$release/app/deploy/prune-releases.py" "$root" "$previous_app" "$previous_venv"; then
+  echo 'Warning: release cleanup failed; application remains healthy.' >&2
+fi
 printf 'Deployed %s\n' "$revision"

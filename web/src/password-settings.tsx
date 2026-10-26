@@ -1,3 +1,4 @@
+import { KeyRound } from "lucide-react";
 import { useState } from "react";
 import { api } from "./types";
 
@@ -27,6 +28,6 @@ export function PasswordSettings({ onChanged }: { onChanged: () => void }) {
     <label>新密码<input type="password" autoComplete="new-password" required minLength={12} maxLength={1024} placeholder="至少 12 位" value={password} disabled={busy} onChange={e => setPassword(e.target.value)} /></label>
     <label>确认新密码<input type="password" autoComplete="new-password" required minLength={12} maxLength={1024} value={confirm} disabled={busy} onChange={e => setConfirm(e.target.value)} /></label>
     {error && <p className="error" role="alert">{error}</p>}
-    <button className="primary" disabled={busy}>{busy ? "修改中…" : "修改密码并重新登录"}</button>
+    <button aria-label={busy ? "修改中…" : "修改密码并重新登录"} title={busy ? "修改中…" : "修改密码并重新登录"} className="primary" disabled={busy}><KeyRound size={18} aria-hidden="true" /></button>
   </form>;
 }

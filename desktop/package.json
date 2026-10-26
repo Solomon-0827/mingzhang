@@ -1,13 +1,13 @@
 {
   "name": "mingzhang-desktop",
   "productName": "明账",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
-  "description": "明账个人账本 macOS 客户端",
+  "description": "明账个人账本 macOS / Windows 客户端",
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
-    "package": "electron-packager . 明账 --platform=darwin --arch=arm64,x64 --out=out --overwrite --ignore=^/out --app-bundle-id=local.mingzhang.ledger --app-version=0.1.0 --icon=icon.icns"
+    "package": "node package.mjs"
   },
   "devDependencies": {
     "electron": "^42.0.0",

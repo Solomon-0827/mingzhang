@@ -13,7 +13,7 @@ with sqlite3.connect('/opt/mingzhang/data/ledger.sqlite3') as db:
     db.execute('CREATE TABLE sentinel(value TEXT)')
     db.execute("INSERT INTO sentinel VALUES ('keep my ledger')")
 PY
-cp /source/deploy/upgrade.sh /fixture/deploy/
+cp /source/deploy/upgrade.sh /source/deploy/prune-releases.py /fixture/deploy/
 touch /fixture/deploy/requirements.txt /fixture/web/dist/index.html
 printf '#!/bin/sh\nexit 0\n' > /stubs/systemctl
 cat > /stubs/curl <<'CURL'

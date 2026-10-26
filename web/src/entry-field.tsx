@@ -1,3 +1,4 @@
+import { Check, PencilLine, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useState } from "react";
 import { Popover } from "antd";
@@ -308,27 +309,21 @@ export function EntryField({
               </p>
             )}
             <div className="field-editor-actions">
-              <button
+              <button aria-label="完整编辑" title="完整编辑"
                 type="button"
                 disabled={busy}
                 onClick={() => {
                   setOpen(false);
                   onEdit(entry);
                 }}
-              >
-                完整编辑
-              </button>
-              <button
+              ><PencilLine size={18} aria-hidden="true" /></button>
+              <button aria-label="取消" title="取消"
                 type="button"
                 disabled={busy}
                 onClick={() => setOpen(false)}
-              >
-                取消
-              </button>
+              ><X size={18} aria-hidden="true" /></button>
               {(!autoSave || Boolean(error) || (field === "kind" && ["lend", "borrow"].includes(draft.kind))) && !(field === "category" && refKind) && (
-                <button className="primary" disabled={busy}>
-                  {busy ? "保存中…" : "保存"}
-                </button>
+                <button aria-label={busy ? "保存中…" : "保存"} title={busy ? "保存中…" : "保存"} className="primary" disabled={busy}><Check size={18} aria-hidden="true" /></button>
               )}
             </div>
           </form>

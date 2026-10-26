@@ -131,3 +131,17 @@ LEDGER_DB=data/ledger.sqlite3 uv run python -m scripts.import-sui /path/to/myMon
 自动部署配置与服务器升级/回退说明见 [deploy/AUTOMATION.md](deploy/AUTOMATION.md)。
 PR 运行验证，合并到 `feat/first-release` 后构建部署包，使用 production secrets 连接服务器。
 首次启用需要先配置服务器访问凭据；未配置时不会执行成功的云端更新。
+
+
+## 客户端下载
+
+登录页和账本页底部提供「客户端下载」：Mac Apple Silicon arm64 ZIP、Windows 11 x64 ZIP。
+Windows 版解压整个文件夹后运行「明账.exe」；Mac 版解压后拖入应用程序。两者均连接已配置的账本服务。
+当前 Mac 使用 ad-hoc 签名但未公证，Windows 未做发行商代码签名；不声称已通过 Windows 11 真机验收。
+
+GitHub Actions 分别在 macOS、Windows runner 构建客户端，再将两份压缩包及 SHA256 校验文件放入
+网页的 `/downloads/`；任一平台失败均阻止部署，避免发布空下载链接。ZIP 和用户数据不进入 Git。
+仅包含应用代码，不包含开发机连接配置、会话或账本。
+
+本地打包使用 `npm --prefix desktop run package`，在 macOS 生成 arm64 包，在 Windows 生成 x64 包；
+产物位于 `desktop/out/downloads/`。网页本地预览需将下载产物复制到 `web/dist/downloads/`，重新构建网页后要重新复制。

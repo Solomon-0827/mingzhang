@@ -1,3 +1,5 @@
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, BookOpen, ChartNoAxesCombined, Check, ChevronLeft, ChevronRight, Copy, Database, Download, FileUp, Import, LayoutDashboard, LogIn, LogOut, PanelLeftClose, PanelLeftOpen, PencilLine, Plus, RefreshCw, RotateCcw, ScanEye, Search, Settings, Trash2, Undo2, Wallet, X } from "lucide-react";
+import { DesktopDownloads } from "./desktop-downloads";
 import { motion, MotionConfig } from "motion/react";
 import React, {
   useCallback,
@@ -20,29 +22,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import {
-  ArrowDownLeft,
-  ArrowUpRight,
-  ArrowLeftRight,
-  BookOpen,
-  ChartNoAxesCombined,
-  ChevronLeft,
-  ChevronRight,
-  Copy,
-  Database,
-  Download,
-  LayoutDashboard,
-  LogOut,
-  Plus,
-  PanelLeftClose,
-  PanelLeftOpen,
-  RefreshCw,
-  Search,
-  Settings,
-  Trash2,
-  Wallet,
-  X,
-} from "lucide-react";
 import {
   Account,
   CategoryCatalog,
@@ -347,10 +326,9 @@ function App() {
             />
           </label>
           {toast}
-          <button className="primary" disabled={busy}>
-            {busy ? "正在登录…" : "打开我的账本"} <ArrowUpRight size={18} />
-          </button>
-          <small>网页版与 Mac 客户端使用同一个账本密码。</small>
+          <button aria-label={busy ? "正在登录…" : "打开我的账本"} title={busy ? "正在登录…" : "打开我的账本"} className="primary" disabled={busy}><LogIn size={18} aria-hidden="true" /></button>
+          <small>网页版、Mac 与 Windows 客户端使用同一个账本密码。</small>
+          <DesktopDownloads />
         </form>
       </div>
     );
@@ -416,10 +394,7 @@ function App() {
                 setState(null);
               });
             }}
-          >
-            <LogOut size={16} />
-            <span className="nav-text">退出账本</span>
-          </button>
+          ><LogOut size={18} aria-hidden="true" /></button>
           <small>明账 v0.1 · 让每一笔都有来处</small>
         </div>
       </aside>
@@ -461,7 +436,7 @@ function App() {
           <div className="header-actions">
             <button
               className="icon-button"
-              aria-label="刷新账本"
+              aria-label="刷新账本" title="刷新账本"
               onClick={() =>
                 refresh()
                   .then(() => setNotice("已同步最新账本"))
@@ -471,10 +446,7 @@ function App() {
               <RefreshCw size={18} />
             </button>
             {page !== "entry" && (
-              <button className="primary" onClick={openNew}>
-                <Plus size={18} />
-                记一笔 <kbd>⌘ N</kbd>
-              </button>
+              <button aria-label="记一笔（⌘ N）" title="记一笔（⌘ N）" className="primary" onClick={openNew}><Plus size={18} aria-hidden="true" /></button>
             )}
           </div>
         </header>
@@ -500,9 +472,7 @@ function App() {
               <div className="entry-empty">
                 <h2>从第一个账户开始</h2>
                 <p>添加现金、银行卡或支付宝等账户，就可以记下第一笔收支。</p>
-                <button className="primary" onClick={() => setPage("accounts")}>
-                  添加资金账户
-                </button>
+                <button aria-label="添加资金账户" title="添加资金账户" className="primary" onClick={() => setPage("accounts")}><Plus size={18} aria-hidden="true" /></button>
               </div>
             )}
           </section>
@@ -856,20 +826,15 @@ function App() {
                 <span className="count">{entries.length}</span>
               </h2>
               {page !== "transactions" ? (
-                <button
+                <button aria-label="查看全部" title="查看全部"
                   className="text-button"
                   onClick={() => setPage("transactions")}
-                >
-                  查看全部 <ArrowUpRight size={15} />
-                </button>
+                ><ArrowUpRight size={18} aria-hidden="true" /></button>
               ) : (
-                <button
+                <button aria-label={trash ? "返回正常流水" : "回收站"} title={trash ? "返回正常流水" : "回收站"}
                   className="text-button"
                   onClick={() => setTrash(!trash)}
-                >
-                  <Trash2 size={15} />
-                  {trash ? "返回正常流水" : "回收站"}
-                </button>
+                ><Trash2 size={18} aria-hidden="true" /></button>
               )}
             </div>
             {page === "transactions" && (
@@ -994,7 +959,7 @@ function App() {
                           <td>
                             <div className="row-actions">
                               {page === "transactions" && trash ? (
-                                <button
+                                <button aria-label="恢复交易" title="恢复交易"
                                   onClick={() =>
                                     run(
                                       () =>
@@ -1004,21 +969,17 @@ function App() {
                                       "已恢复",
                                     ).catch(() => {})
                                   }
-                                >
-                                  恢复
-                                </button>
+                                ><RotateCcw size={18} aria-hidden="true" /></button>
                               ) : (
                                 <>
-                                  <button
+                                  <button aria-label="编辑" title="编辑"
                                     onClick={() => {
                                       setEditor({ ...x });
                                       setEditing(true);
                                     }}
-                                  >
-                                    编辑
-                                  </button>
+                                  ><PencilLine size={18} aria-hidden="true" /></button>
                                   <button
-                                    aria-label="复制交易"
+                                    aria-label="复制交易" title="复制交易"
                                     onClick={() => {
                                       setEditor({
                                         ...x,
@@ -1032,7 +993,7 @@ function App() {
                                     <Copy size={14} />
                                   </button>
                                   <button
-                                    aria-label="删除交易"
+                                    aria-label="删除交易" title="删除交易"
                                     onClick={() =>
                                       run(
                                         () =>
@@ -1103,7 +1064,7 @@ function App() {
                       待{x.kind === "lend" ? "收" : "还"} ¥{" "}
                       {money(x.remaining_cents)}
                     </span>
-                    <button
+                    <button aria-label={x.kind === "lend" ? "记录收回" : "记录还款"} title={x.kind === "lend" ? "记录收回" : "记录还款"}
                       className="text-button"
                       onClick={() => {
                         setEditor({
@@ -1116,9 +1077,7 @@ function App() {
                         });
                         setEditing(false);
                       }}
-                    >
-                      记录{x.kind === "lend" ? "收回" : "还款"}
-                    </button>
+                    ><ArrowLeftRight size={18} aria-hidden="true" /></button>
                   </div>
                 ))}
             </section>
@@ -1139,6 +1098,7 @@ function App() {
         )}
         <footer>
           个人账本 · Asia/Shanghai <span>数据以服务端保存结果为准</span>
+          <DesktopDownloads />
         </footer>
       </motion.main>
       {editor && state && (
@@ -1214,9 +1174,7 @@ function Empty({ text, action }: { text: string; action?: () => void }) {
       <BookOpen size={28} />
       <p>{text}</p>
       {action && (
-        <button className="text-button" onClick={action}>
-          开始记录 <Plus size={15} />
-        </button>
+        <button aria-label="开始记录" title="开始记录" className="text-button" onClick={action}><Plus size={18} aria-hidden="true" /></button>
       )}
     </div>
   );
@@ -1279,7 +1237,7 @@ function Modal({
         <div className="modal-head">
           <h2>{title}</h2>
           <button
-            aria-label="关闭窗口"
+            aria-label="关闭窗口" title="关闭窗口"
             className="icon-button"
             onClick={onClose}
           >
@@ -1518,9 +1476,7 @@ function EntryDialog({
         <small>
           {inline ? "Enter 保存 · 连续记账" : "保存失败时，输入内容会保留。"}
         </small>
-        <button className="primary" disabled={busy}>
-          {busy ? "正在保存…" : "保存交易"}
-        </button>
+        <button aria-label={busy ? "正在保存…" : "保存交易"} title={busy ? "正在保存…" : "保存交易"} className="primary" disabled={busy}><Check size={18} aria-hidden="true" /></button>
       </div>
     </form>
   );
@@ -1603,9 +1559,7 @@ function AccountDialog({
         )}
         <div className="modal-footer">
           <small>期初余额不计入收入。</small>
-          <button className="primary" disabled={busy}>
-            保存账户
-          </button>
+          <button aria-label="保存账户" title="保存账户" className="primary" disabled={busy}><Check size={18} aria-hidden="true" /></button>
         </div>
       </form>
     </Modal>
@@ -1714,7 +1668,7 @@ function DataPage({
               setPreview(null);
             }}
           />
-          <button
+          <button aria-label={busy ? "正在处理…" : "读取文件"} title={busy ? "正在处理…" : "读取文件"}
             className="secondary"
             disabled={!file || busy}
             onClick={() =>
@@ -1725,9 +1679,7 @@ function DataPage({
                 setPreview(null);
               })
             }
-          >
-            {busy ? "正在处理…" : "读取文件"}
-          </button>
+          ><FileUp size={18} aria-hidden="true" /></button>
           <small>
             每次最多 5 MB、10,000 行。旧版 XLS 请先另存为 XLSX 或 CSV。
           </small>
@@ -1764,7 +1716,7 @@ function DataPage({
             ))}
           </div>
           <div className="panel-actions">
-            <button
+            <button aria-label="生成导入预览" title="生成导入预览"
               className="primary"
               disabled={
                 busy ||
@@ -1786,9 +1738,7 @@ function DataPage({
                   );
                 })
               }
-            >
-              生成导入预览
-            </button>
+            ><ScanEye size={18} aria-hidden="true" /></button>
           </div>
         </section>
       )}
@@ -1850,7 +1800,7 @@ function DataPage({
             </table>
           </div>
           <div className="panel-actions">
-            <button
+            <button aria-label={`确认导入 ${selected.length} 笔`} title={`确认导入 ${selected.length} 笔`}
               className="primary"
               disabled={busy || !selected.length}
               onClick={() =>
@@ -1867,9 +1817,7 @@ function DataPage({
                   );
                 })
               }
-            >
-              确认导入 {selected.length} 笔
-            </button>
+            ><Import size={18} aria-hidden="true" /></button>
           </div>
         </section>
       )}
@@ -1905,7 +1853,7 @@ function DataPage({
                     </td>
                     <td>
                       {x.status === "committed" && (
-                        <button
+                        <button aria-label="撤销此批次" title="撤销此批次"
                           className="text-button"
                           disabled={busy}
                           onClick={() =>
@@ -1915,9 +1863,7 @@ function DataPage({
                               onNotice("该批次已撤销；已创建的账户保留。");
                             })
                           }
-                        >
-                          撤销此批次
-                        </button>
+                        ><Undo2 size={18} aria-hidden="true" /></button>
                       )}
                     </td>
                   </tr>
