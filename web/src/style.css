@@ -2144,3 +2144,58 @@ footer {
   cursor: pointer;
 }
 .feedback-toast button:hover { background: #00000009; }
+
+/* Compact navigation preserves every destination as an accessible icon. */
+.sidebar-toggle {
+  display: grid;
+  place-items: center;
+  align-self: flex-end;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+  color: #647e70;
+}
+.sidebar-toggle:hover { background: #dce6d8; }
+.shell > aside .brand-name { font: inherit; }
+.sidebar-collapsed > aside .brand-name,
+.sidebar-collapsed > aside .brand > span,
+.sidebar-collapsed > aside .workspace,
+.sidebar-collapsed > aside .nav-label,
+.sidebar-collapsed > aside .nav-text,
+.sidebar-collapsed > aside .sidebar-bottom > small { display: none; }
+.entry-account-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  width: 100%;
+}
+.entry-account-balance {
+  font-size: 11px;
+  font-weight: 400;
+  color: #657e70;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.entry-account-balance strong { font-weight: 600; color: #276651; }
+.entry-account-balance .negative-balance { color: #b65948; }
+@media (min-width: 761px) {
+  .sidebar-collapsed > aside {
+    width: 76px;
+    padding: 20px 12px;
+    align-items: center;
+  }
+  .sidebar-collapsed > main { margin-left: 76px; width: calc(100% - 76px); }
+  .sidebar-collapsed .sidebar-toggle { align-self: center; }
+  .sidebar-collapsed > aside .brand { margin-bottom: 30px; }
+  .sidebar-collapsed > aside nav { width: 100%; }
+  .sidebar-collapsed > aside nav button { justify-content: center; padding: 14px 0; }
+  .sidebar-collapsed > aside .sidebar-bottom { align-items: center; padding: 15px 0 0; }
+  .sidebar-collapsed > aside .sidebar-bottom button { justify-content: center; min-height: 36px; }
+}
+@media (max-width: 760px) {
+  .shell > aside { position: relative; }
+  .sidebar-toggle { position: absolute; right: 16px; top: 16px; margin: 0; }
+}

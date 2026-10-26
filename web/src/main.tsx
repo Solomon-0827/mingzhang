@@ -32,6 +32,8 @@ import {
   LayoutDashboard,
   LogOut,
   Plus,
+  PanelLeftClose,
+  PanelLeftOpen,
   RefreshCw,
   Search,
   Settings,
@@ -104,6 +106,7 @@ function App() {
   const [password, setPassword] = useState(""),
     [busy, setBusy] = useState(false);
   const { setError, setNotice, clearConnectionError, toast } = useFeedback();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [bookMonth, setBookMonth] = useState(today().slice(0, 7));
   const [page, setPage] = useState("entry"),
     [period, setPeriod] = useState("month"),
@@ -350,11 +353,18 @@ function App() {
       </div>
     );
   return (
-    <div className="shell">
-      <aside>
+    <div className={`shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+      <aside aria-label="主导航">
+        <button className="sidebar-toggle" type="button"
+          aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+          title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+          aria-expanded={!sidebarCollapsed} aria-controls="workspace-nav"
+          onClick={() => setSidebarCollapsed(value => !value)}>
+          {sidebarCollapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
+        </button>
         <div className="brand">
           <img src="/icon.png" alt="" width={40} height={40} />
-          明账<span>个人账本</span>
+          <b className="brand-name">明账</b><span>个人账本</span>
         </div>
         <div className="workspace">
           <div className="avatar">S</div>
@@ -364,7 +374,7 @@ function App() {
           </div>
         </div>
         <p className="nav-label">工作空间</p>
-        <nav>
+        <nav id="workspace-nav">
           {[
             ["entry", "记一笔", Plus],
             ["overview", "账本总览", LayoutDashboard],
@@ -376,6 +386,9 @@ function App() {
           ].map(([id, label, Icon]) => (
             <button
               key={String(id)}
+              aria-label={String(label)}
+              title={String(label)}
+              aria-current={page === id ? "page" : undefined}
               className={page === id ? "active" : ""}
               onClick={() => {
                 setPage(String(id));
@@ -384,16 +397,16 @@ function App() {
               }}
             >
               {React.createElement(Icon as typeof Wallet, { size: 19 })}
-              {String(label)}
+              <span className="nav-text">{String(label)}</span>
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className={"sync " + (!online ? "offline" : "")}>
+          <div className={"sync " + (!online ? "offline" : "")} title={online ? `最近同步 ${lastSync}` : "当前离线"}>
             <i />
-            {online ? `最近同步 ${lastSync}` : "当前离线，恢复联网后再保存"}
+            <span className="nav-text">{online ? `最近同步 ${lastSync}` : "当前离线，恢复联网后再保存"}</span>
           </div>
-          <button
+          <button aria-label="退出账本" title="退出账本"
             onClick={() => {
               api("/logout", {}).then(() => {
                 setLogged(false);
@@ -402,7 +415,7 @@ function App() {
             }}
           >
             <LogOut size={16} />
-            退出账本
+            <span className="nav-text">退出账本</span>
           </button>
           <small>明账 v0.1 · 让每一笔都有来处</small>
         </div>
@@ -1298,6 +1311,7 @@ function EntryDialog({
     ),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  const selectedAccount = accounts.find(account => account.id === value.account_id);
   const amountRef = useRef<HTMLInputElement>(null);
   const set = <K extends keyof Entry>(key: K, v: Entry[K]) =>
     setValue((old) => ({ ...old, [key]: v }));
@@ -1408,7 +1422,15 @@ function EntryDialog({
           />
         </label>
         <label>
-          {value.kind === "transfer" ? "转出账户" : "账户"}
+          <span className="entry-account-heading">
+            <span>{value.kind === "transfer" ? "转出账户" : "账户"}</span>
+            {selectedAccount && <span className="entry-account-balance" role="status" aria-live="polite"
+              title={`${selectedAccount.name}当前余额`}>
+              余额 <strong className={selectedAccount.balance_cents < 0 ? "negative-balance" : undefined}>
+                ¥{money(selectedAccount.balance_cents)}
+              </strong>
+            </span>}
+          </span>
           <StyledSelect
             value={value.account_id}
             onChange={(e) => set("account_id", e.target.value)}
