@@ -30,6 +30,7 @@ const [built] = await packager({
   appBundleId: 'local.mingzhang.ledger', appCategoryType: 'public.app-category.finance',
   icon: path.join(dir, platform === 'darwin' ? 'icon.icns' : 'icon.ico'),
   appVersion: metadata.version,
+  win32metadata: { CompanyName: 'Solomon', FileDescription: '明账个人账本' },
 });
 const downloads = path.join(dir, 'out', 'downloads');
 await mkdir(downloads, { recursive: true });
