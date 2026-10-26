@@ -62,3 +62,24 @@ def test_imported_catalog_is_authoritative_and_stays_editable(client):
     assert state['category_catalog']['authoritative'] is True
     assert set(state['category_catalog']['items']) == {'日常/日用', '职业/工资', '职业/奖金'}
     assert state['entries'] == before
+
+
+def test_renaming_back_reactivates_previous_name(client):
+    aid = client.post('/api/accounts', json={'name': '测试'}).json()['id']
+    entry = {'date': '2026-01-01', 'kind': 'expense', 'amount_cents': 100,
+             'account_id': aid, 'category': '日常/餐饮'}
+    assert client.post('/api/entries', json=entry).status_code == 200
+    def change(action, level, path, **extra):
+        version = client.get('/api/state').json()['category_catalog']['version']
+        return client.post('/api/categories', json=dict(action=action, level=level, path=path, version=version, **extra))
+    assert change('rename', 'child', '日常/餐饮', name='吃饭').status_code == 200
+    assert change('rename', 'child', '日常/吃饭', name='餐饮').status_code == 200
+    assert change('rename', 'parent', '日常', name='日用').status_code == 200
+    assert change('rename', 'parent', '日用', name='日常').status_code == 200
+    state = client.get('/api/state').json()
+    catalog = state['category_catalog']
+    assert state['entries'][0]['category'] == '日常/餐饮'
+    assert '日常/餐饮' in catalog['items'] and '日常/购物' in catalog['items']
+    assert not {'日常/餐饮', '日常/购物'} & set(catalog['retired'])
+    assert '日常/吃饭' not in catalog['items'] and '日用/餐饮' not in catalog['items']
+    assert client.post('/api/entries', json=entry).status_code == 200

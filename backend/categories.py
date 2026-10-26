@@ -95,6 +95,8 @@ def change_category(db, body):
                 items[new] = items.pop(old)
                 value['retired'].append(old)
                 db.execute('UPDATE entries SET category=?,version=version+1 WHERE category=?', (new, old))
+            # Renaming back to an earlier name makes that name active again.
+            value['retired'] = [p for p in value['retired'] if p not in mapping.values()]
             row = db.execute("SELECT value FROM settings WHERE key='display_order'").fetchone()
             if row:
                 order = json.loads(row[0])
