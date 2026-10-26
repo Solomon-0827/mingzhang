@@ -308,7 +308,7 @@ export function BookList({
                           onSave={onSave}
                           onEdit={onEdit}
                         >
-                          {entry.category ||
+                          {entry.category.split("/").pop() ||
                             entry.counterparty ||
                             labels[entry.kind]}
                         </EntryField>
