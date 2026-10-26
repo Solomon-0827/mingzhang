@@ -182,6 +182,9 @@ export function EntryField({
                 max={today()}
                 disabled={busy}
                 open={open && !busy}
+                onOpenChange={(next) => {
+                  if (!next && !busy) setOpen(false);
+                }}
                 onChange={(event) => selectField("date", event.target.value)}
               />
             )}

@@ -87,6 +87,7 @@ export function StyledDate({
   max?: string;
   disabled?: boolean;
   open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   required?: boolean;
   size?: "small" | "middle" | "large";
   "aria-label"?: string;
@@ -100,6 +101,9 @@ export function StyledDate({
       format={type === "month" ? "YYYY年MM月" : "YYYY年MM月DD日"}
       allowClear={false}
       inputReadOnly
+      panelRender={(panel) => (
+        <div onClick={(event) => event.stopPropagation()}>{panel}</div>
+      )}
       disabledDate={(date) => Boolean(max && date.format("YYYY-MM-DD") > max)}
       onChange={(date) => {
         if (date)
@@ -109,7 +113,10 @@ export function StyledDate({
             },
           });
       }}
-      getPopupContainer={(trigger) => trigger.parentElement!}
+      // Keep calendar clicks outside the surrounding label: otherwise native
+      // label activation can focus the input and reopen the calendar.
+      getPopupContainer={() => document.body}
+      styles={{ popup: { root: { zIndex: 1400 } } }}
     />
   );
 }
