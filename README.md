@@ -125,3 +125,9 @@ LEDGER_DB=data/ledger.sqlite3 uv run python -m scripts.import-sui /path/to/myMon
 配置可包含 `account_kinds`（账户名到类型）和 `calibrations`（经核对确认的账户、日期、整数分差额和原因）。负债变更取相反余额方向；余额/债权/负债调整不计入收支。外币导出不提供原币种和双边金额，迁移按导出人民币值保留，需要单独对账，不能视为实时多币种账本。
 
 真实数据、密码、校准配置与迁移报告仅保存在本机，不提交 Git。迁移前自动备份既有数据库；写入失败整批回滚。网页 CSV/XLSX 通用入口保持原有预览流程。
+
+## 自动部署
+
+自动部署配置与服务器升级/回退说明见 [deploy/AUTOMATION.md](deploy/AUTOMATION.md)。
+PR 运行验证，合并到 `feat/first-release` 后构建部署包，使用 production secrets 连接服务器。
+首次启用需要先配置服务器访问凭据；未配置时不会执行成功的云端更新。
