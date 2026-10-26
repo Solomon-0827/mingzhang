@@ -149,6 +149,10 @@ def set_deleted(db, eid, version, deleted):
 
 def snapshot(db):
     accounts = [dict(x) for x in db.execute("SELECT * FROM accounts ORDER BY rowid")]
+    setting = db.execute("SELECT value FROM settings WHERE key='display_order'").fetchone()
+    ordering = json.loads(setting[0]) if setting else dict(accounts=[], categories=[], version=0)
+    ranks = {aid: i for i, aid in enumerate(ordering["accounts"])}
+    accounts.sort(key=lambda a: ranks.get(a["id"], len(ranks)))
     entries = [dict(x) for x in db.execute("SELECT * FROM entries ORDER BY date DESC,created_at DESC,rowid DESC")]
     balances = {a["id"]: a["opening_cents"] for a in accounts}
     active = [x for x in entries if not x["deleted"]]
@@ -177,6 +181,7 @@ def snapshot(db):
     payable += sum(max(0, -a["balance_cents"]) for a in accounts if a["kind"] == "liability")
     return dict(
         accounts=accounts,
+        ordering=ordering,
         entries=entries,
         assets=assets,
         liabilities=liabilities,

@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 import {
   Account,
+  ordered,
   Entry,
   Kind,
   Report,
@@ -53,6 +54,7 @@ import {
 import { ControlTheme, StyledDate, StyledSelect } from "./controls";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
+import { OrderSettings } from "./order-settings";
 
 const categories = [
   "日常/餐饮",
@@ -100,6 +102,7 @@ function App() {
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false);
+  const [sorting, setSorting] = useState(false);
   const [bookMonth, setBookMonth] = useState(today().slice(0, 7));
   const [page, setPage] = useState("entry"),
     [period, setPeriod] = useState("month"),
@@ -450,6 +453,7 @@ function App() {
             >
               <RefreshCw size={18} />
             </button>
+            {["entry", "accounts"].includes(page) && <button onClick={() => setSorting(true)}>分类与账户排序</button>}
             {page !== "entry" && (
               <button className="primary" onClick={openNew}>
                 <Plus size={18} />
@@ -483,6 +487,7 @@ function App() {
                 editing={false}
                 accounts={state.accounts}
                 entries={state.entries}
+                categoryOrder={state.ordering?.categories}
                 onClose={() => {}}
                 onSave={async (value) => {
                   await run(() => api("/entries", value, "POST"), "");
@@ -1136,6 +1141,7 @@ function App() {
           editing={editing}
           accounts={state.accounts}
           entries={state.entries}
+                categoryOrder={state.ordering?.categories}
           onClose={() => setEditor(null)}
           onSave={async (value) => {
             await run(() =>
@@ -1148,6 +1154,14 @@ function App() {
             setEditor(null);
           }}
         />
+      )}
+      {sorting && state && (
+        <Modal title="分类与账户排序" onClose={() => setSorting(false)}>
+          <OrderSettings state={state} defaults={categories} onSave={async (value) => {
+            await run(() => api("/display-order", value, "PUT"));
+            setSorting(false);
+          }} />
+        </Modal>
       )}
       {accountEditor && (
         <AccountDialog
@@ -1279,6 +1293,7 @@ function EntryDialog({
   initial,
   editing,
   accounts,
+  categoryOrder = [],
   entries,
   onClose,
   onSave,
@@ -1287,6 +1302,7 @@ function EntryDialog({
   initial: Entry;
   editing: boolean;
   accounts: Account[];
+  categoryOrder?: string[];
   entries: Entry[];
   onClose: () => void;
   onSave: (entry: Entry) => Promise<void>;
@@ -1303,7 +1319,7 @@ function EntryDialog({
   const refKind = { refund: "expense", repay: "borrow", collect: "lend" }[
     value.kind as "refund" | "repay" | "collect"
   ];
-  const categoryOptions = Array.from(
+  const categoryOptions = ordered(Array.from(
     new Set([
       ...categories.filter((category) =>
         value.kind === "income"
@@ -1315,7 +1331,7 @@ function EntryDialog({
         .map((entry) => entry.category),
       value.category,
     ]),
-  ).filter(Boolean);
+  ).filter(Boolean), categoryOrder);
   const form = (
     <form
       onSubmit={async (e) => {
@@ -1365,6 +1381,22 @@ function EntryDialog({
           </button>
         ))}
       </div>
+        {["income", "expense"].includes(value.kind) && (
+          <label className="entry-category">
+            分类
+            <StyledSelect
+              aria-label="分类"
+              value={value.category}
+              onChange={(e) => set("category", e.target.value)}
+            >
+              {categoryOptions.map((category) => (
+                <option key={category} value={category}>
+                  {category.replace("/", " · ")}
+                </option>
+              ))}
+            </StyledSelect>
+          </label>
+        )}
       <label className="amount-input">
         金额（人民币）
         <div>
@@ -1425,22 +1457,6 @@ function EntryDialog({
                 ))}
             </StyledSelect>
             <small>信用卡还本金也使用账户间转账。</small>
-          </label>
-        )}
-        {["income", "expense"].includes(value.kind) && (
-          <label className="full">
-            分类
-            <StyledSelect
-              aria-label="分类"
-              value={value.category}
-              onChange={(e) => set("category", e.target.value)}
-            >
-              {categoryOptions.map((category) => (
-                <option key={category} value={category}>
-                  {category.replace("/", " · ")}
-                </option>
-              ))}
-            </StyledSelect>
           </label>
         )}
         {refKind && (

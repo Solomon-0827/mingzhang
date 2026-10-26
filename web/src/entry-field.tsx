@@ -1,7 +1,7 @@
 import { createPortal } from "react-dom";
 import { useState } from "react";
 import { Popover } from "antd";
-import { Entry, Kind, State, cents, labels, money, today } from "./types";
+import { Entry, Kind, State, cents, labels, money, today, ordered } from "./types";
 import { StyledDate, StyledSelect } from "./controls";
 
 type Field =
@@ -76,7 +76,7 @@ export function EntryField({
   const refKind = { refund: "expense", repay: "borrow", collect: "lend" }[
     draft.kind as "refund" | "repay" | "collect"
   ];
-  const categoryOptions = Array.from(
+  const categoryOptions = ordered(Array.from(
     new Set([
       ...(draft.kind === "income"
         ? ["收入/工资", "收入/其他"]
@@ -97,7 +97,7 @@ export function EntryField({
       draft.category,
       "未分类",
     ]),
-  ).filter(Boolean);
+  ).filter(Boolean), state.ordering?.categories);
   const chooseCategory = (
     <StyledSelect
       aria-label="修改分类"

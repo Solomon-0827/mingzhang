@@ -142,6 +142,34 @@ def state():
     return result
 
 
+class DisplayOrder(BaseModel):
+    accounts: list[str] = Field(max_length=1000)
+    categories: list[str] = Field(max_length=1000)
+    version: int = Field(ge=0)
+
+
+@app.put("/api/display-order", dependencies=[Depends(authenticated)])
+def save_display_order(body: DisplayOrder):
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        current = db.execute("SELECT value FROM settings WHERE key='display_order'").fetchone()
+        version = json.loads(current[0])["version"] if current else 0
+        if body.version != version:
+            fail("排序已在另一端修改，请关闭设置并刷新后重试", 409)
+        for values in [body.accounts, body.categories]:
+            if len(set(values)) != len(values) or any(not v.strip() or len(v) > 120 for v in values):
+                fail("排序项目不能为空或重复")
+        ids = {r[0] for r in db.execute("SELECT id FROM accounts")}
+        if not set(body.accounts) <= ids:
+            fail("排序包含不存在的账户")
+        payload = body.model_dump()
+        payload["version"] += 1
+        db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('display_order',?)",
+                   (json.dumps(payload, ensure_ascii=False),))
+        audit(db, "display_order.update", payload)
+    return {"ok": True}
+
+
 @app.post("/api/accounts", dependencies=[Depends(authenticated)])
 def create_account(body: Account):
     aid = str(uuid4())
