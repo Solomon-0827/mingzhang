@@ -146,6 +146,7 @@ export function EntryField({
           document.body,
         )}
       <Popover
+        destroyOnHidden
         zIndex={1200}
         trigger="click"
         open={open}
