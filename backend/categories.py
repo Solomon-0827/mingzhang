@@ -11,12 +11,16 @@ DEFAULTS = ['日常/餐饮', '日常/购物', '日常/交通', '居住/房租', 
 def catalog(db):
     row = db.execute("SELECT value FROM settings WHERE key='category_catalog'").fetchone()
     result = json.loads(row[0]) if row else {'items': {}, 'hidden': [], 'version': 0}
-    items = {p: (['income'] if p.startswith('收入/') else ['income', 'expense'] if p == '未分类' else ['expense'])
-             for p in DEFAULTS}
-    for row in db.execute("SELECT DISTINCT category,kind FROM entries WHERE category<>'' AND kind IN ('income','expense')"):
-        kinds = items.setdefault(row['category'], [])
-        if row['kind'] not in kinds:
-            kinds.append(row['kind'])
+    items = {}
+    # A complete imported catalog owns the active choices, including unused categories.
+    # Defaults and old transaction labels must not silently reappear after a sync.
+    if not result.get('authoritative', False):
+        items = {p: (['income'] if p.startswith('收入/') else ['income', 'expense'] if p == '未分类' else ['expense'])
+                 for p in DEFAULTS}
+        for row in db.execute("SELECT DISTINCT category,kind FROM entries WHERE category<>'' AND kind IN ('income','expense')"):
+            kinds = items.setdefault(row['category'], [])
+            if row['kind'] not in kinds:
+                kinds.append(row['kind'])
     items.update(result['items'])
     result.setdefault('retired', [])
     result.setdefault('removed_kinds', {})

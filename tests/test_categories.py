@@ -32,3 +32,33 @@ def test_category_lifecycle_keeps_history_and_versions(client):
     assert client.post('/api/categories', json=dict(action='delete', level='parent', path='奖金', version=0)).status_code == 409
     client.post('/api/logout')
     assert client.post('/api/categories', json=dict(action='delete', level='parent', path='奖金', version=0)).status_code == 401
+
+
+def test_imported_catalog_is_authoritative_and_stays_editable(client):
+    import json
+
+    from backend.db import connect
+
+    aid = client.post('/api/accounts', json={'name': '测试'}).json()['id']
+    entry = {'date': '2026-01-01', 'kind': 'expense', 'amount_cents': 100,
+             'account_id': aid, 'category': '历史/旧分类'}
+    assert client.post('/api/entries', json=entry).status_code == 200
+    before = client.get('/api/state').json()['entries']
+    with connect() as db:
+        db.execute("INSERT OR REPLACE INTO settings VALUES ('category_catalog',?)", (json.dumps({
+            'authoritative': True, 'items': {'日常/生活消费': ['expense'], '职业/工资': ['income']},
+            'hidden': ['历史/旧分类'], 'version': 1,
+        }),))
+    state = client.get('/api/state').json()
+    assert state['entries'] == before
+    assert list(state['category_catalog']['items']) == ['日常/生活消费', '职业/工资']
+    assert client.post('/api/categories', json=dict(
+        action='rename', level='child', path='日常/生活消费', name='日用', version=1,
+    )).status_code == 200
+    assert client.post('/api/categories', json=dict(
+        action='add', level='child', path='职业/奖金', kind='income', version=2,
+    )).status_code == 200
+    state = client.get('/api/state').json()
+    assert state['category_catalog']['authoritative'] is True
+    assert set(state['category_catalog']['items']) == {'日常/日用', '职业/工资', '职业/奖金'}
+    assert state['entries'] == before
