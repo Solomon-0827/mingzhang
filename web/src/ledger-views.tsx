@@ -1,12 +1,5 @@
+import { ChevronLeft, ChevronRight, ListFilter, PencilLine, Plus, Search, Trash2, Wallet, X } from "lucide-react";
 import { useRef, useState } from "react";
-import {
-  ChevronLeft,
-  ChevronRight,
-  Wallet,
-  Plus,
-  Search,
-  X,
-} from "lucide-react";
 import {
   Account,
   Entry,
@@ -106,7 +99,7 @@ export function BookList({
         <Sum entries={filtered} />
       </div>
       <div className="book-filters">
-        <button
+        <button aria-label="清除筛选" title="清除筛选"
           className="text-button"
           onClick={() => {
             setCategory("");
@@ -114,9 +107,7 @@ export function BookList({
             setQuery("");
             setPage(0);
           }}
-        >
-          全部
-        </button>
+        ><ListFilter size={18} aria-hidden="true" /></button>
         <StyledSelect
           size="small"
           aria-label="清单分类"
@@ -159,17 +150,14 @@ export function BookList({
           onChange={(e) => chooseMonth(e.target.value)}
         />
         <div className="book-search">
-          <button
+          <button title="搜索账目"
             ref={searchButton}
             className="book-search-toggle"
             aria-label="搜索账目"
             aria-expanded={searchOpen}
             aria-controls="book-search-field"
             onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
-          >
-            <Search size={16} />
-            <span>搜索</span>
-          </button>
+          ><Search size={18} aria-hidden="true" /></button>
           {searchOpen && (
             <div className="book-search-input">
               <input
@@ -243,8 +231,8 @@ export function BookList({
                 <th>类型</th>
                 <th className="numeric">金额</th>
                 <th>账户 / 对方账户</th>
-                <th>操作</th>
                 <th>日期</th>
+                <th>操作</th>
               </tr>
             </thead>
             {groups.map((date) => (
@@ -362,14 +350,6 @@ export function BookList({
                         )}
                       </td>
                       <td>
-                        <div
-                          className="row-actions"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <button onClick={() => onDelete(entry)}>删除</button>
-                        </div>
-                      </td>
-                      <td>
                         <EntryField
                           entry={entry}
                           state={state}
@@ -379,6 +359,14 @@ export function BookList({
                         >
                           {entry.date}
                         </EntryField>
+                      </td>
+                      <td>
+                        <div
+                          className="row-actions"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <button aria-label="删除账目" title="删除账目" onClick={() => onDelete(entry)}><Trash2 size={18} aria-hidden="true" /></button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -392,18 +380,14 @@ export function BookList({
             <span>
               共 {filtered.length} 笔 · {currentPage + 1} / {pages} 页
             </span>
-            <button
+            <button aria-label="上一页" title="上一页"
               disabled={!currentPage}
               onClick={() => setPage(currentPage - 1)}
-            >
-              上一页
-            </button>
-            <button
+            ><ChevronLeft size={18} aria-hidden="true" /></button>
+            <button aria-label="下一页" title="下一页"
               disabled={currentPage >= pages - 1}
               onClick={() => setPage(currentPage + 1)}
-            >
-              下一页
-            </button>
+            ><ChevronRight size={18} aria-hidden="true" /></button>
           </div>
           <p className="book-note">
             收支合计扣除退款；转账和借还款本金不计入收支。
@@ -469,7 +453,7 @@ export function AccountWorkspace({
       <div className="account-detail">
         <div className="account-detail-heading">
           <h2>{accountLabels[kind]}账户</h2>
-          <button
+          <button aria-label="添加账户" title="添加账户"
             className="primary"
             onClick={() =>
               onEdit({
@@ -481,10 +465,7 @@ export function AccountWorkspace({
                 version: 1,
               })
             }
-          >
-            <Plus size={16} />
-            添加账户
-          </button>
+          ><Plus size={18} aria-hidden="true" /></button>
         </div>
         <div className="account-flow">
           <div>
@@ -527,12 +508,10 @@ export function AccountWorkspace({
                   <td className="numeric">{money(account.balance_cents)}</td>
                   <td className="numeric">{money(account.opening_cents)}</td>
                   <td>
-                    <button
+                    <button aria-label="编辑账户" title="编辑账户"
                       className="text-button"
                       onClick={() => onEdit(account)}
-                    >
-                      编辑账户
-                    </button>
+                    ><PencilLine size={18} aria-hidden="true" /></button>
                   </td>
                 </tr>
               ))}

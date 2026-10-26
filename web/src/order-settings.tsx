@@ -1,7 +1,7 @@
+import { Check, ChevronRight, Folder, GripVertical, PencilLine, Plus, RotateCcw, Trash2, Undo2, X } from "lucide-react";
 import { motion } from "motion/react";
 import { PasswordSettings } from "./password-settings";
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { GripVertical, ChevronRight, Folder, Plus, PencilLine, Trash2, Check, X } from "lucide-react";
 import { Account, CategoryChange, DisplayOrder, State, ordered, accountLabels } from "./types";
 import { StyledSelect } from "./controls";
 import { categoryGroups, categoryLeaf } from "./category-groups";
@@ -94,7 +94,7 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
   // A path without "/" restores the whole first-level group: the group itself and all of its deleted children.
   const removedRow = (path: string, label: string, action = "恢复") => <div key={path} className={path.includes("/") ? "removed-child" : undefined}>
     <span>{label}</span>
-    {change?.action === "restore" && change.path === path ? inlineEditor() : <button disabled={busy || dirty} onClick={()=>start("restore",path.includes("/") ? "child" : "parent",path)}>{action}</button>}
+    {change?.action === "restore" && change.path === path ? inlineEditor() : <button aria-label={action} title={action} disabled={busy || dirty} onClick={()=>start("restore",path.includes("/") ? "child" : "parent",path)}><RotateCcw size={18} aria-hidden="true" /></button>}
   </div>;
   return <section className="panel settings-panel">
     <div className="settings-tabs" role="tablist" aria-label="设置">
@@ -122,7 +122,7 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
       </section>
     </div> : <div className="account-settings-list"><div className="settings-column-heading">账户 <small>{accounts.length} 个</small></div>
       <SortList scope="accounts" items={accounts} disabled={busy || !!change} onMove={(from,to) => {setAccounts(move(accounts,from,to));setDirty(true);}}
-        render={id => { const account = state.accounts.find(a => a.id === id)!; return <><div className="account-setting-name"><strong>{account.name}</strong><small>{accountLabels[account.kind]}</small></div><button type="button" className="text-button" disabled={busy} onClick={() => onEditAccount(account)}>编辑</button></>; }} />
+        render={id => { const account = state.accounts.find(a => a.id === id)!; return <><div className="account-setting-name"><strong>{account.name}</strong><small>{accountLabels[account.kind]}</small></div><button aria-label="编辑" title="编辑" type="button" className="text-button" disabled={busy} onClick={() => onEditAccount(account)}><PencilLine size={18} aria-hidden="true" /></button></>; }} />
     </div>}
     {section === "categories" && !!state.category_catalog?.hidden.length && <details className="category-removed"><summary>已删除分类（{state.category_catalog.hidden.length}）</summary>
       {categoryGroups(state.category_catalog.hidden).map(removed => removed.items.length === 1
@@ -134,8 +134,8 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
     </details>}
     {error && !change && <p role="alert" className="error">{error}</p>}
     <div className="settings-save"><span>{dirty ? "有未保存的排序调整，请先保存或撤销再编辑分类" : "顺序已保存，记账与编辑下拉列表共用。"}</span>
-      <button disabled={!dirty || busy} onClick={() => {setAccounts(state.accounts.map(a=>a.id));setCategories(initialCategories());setDirty(false);setError("");}}>撤销调整</button>
-      <button className="primary" disabled={!dirty || busy} onClick={async () => {setBusy(true);setError("");try {await onSave({accounts,categories,version:state.ordering?.version ?? 0});setDirty(false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}>{busy ? "保存中…" : "保存排序"}</button>
+      <button aria-label="撤销调整" title="撤销调整" disabled={!dirty || busy} onClick={() => {setAccounts(state.accounts.map(a=>a.id));setCategories(initialCategories());setDirty(false);setError("");}}><Undo2 size={18} aria-hidden="true" /></button>
+      <button aria-label={busy ? "保存中…" : "保存排序"} title={busy ? "保存中…" : "保存排序"} className="primary" disabled={!dirty || busy} onClick={async () => {setBusy(true);setError("");try {await onSave({accounts,categories,version:state.ordering?.version ?? 0});setDirty(false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}><Check size={18} aria-hidden="true" /></button>
     </div>
     </>}
   </section>;
