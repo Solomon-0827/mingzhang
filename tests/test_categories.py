@@ -83,3 +83,50 @@ def test_renaming_back_reactivates_previous_name(client):
     assert not {'日常/餐饮', '日常/购物'} & set(catalog['retired'])
     assert '日常/吃饭' not in catalog['items'] and '日用/餐饮' not in catalog['items']
     assert client.post('/api/entries', json=entry).status_code == 200
+
+
+def test_empty_group_placeholder_only_lives_while_group_is_empty(client):
+    aid = client.post('/api/accounts', json={'name': '测试'}).json()['id']
+    def change(action, level, path, **extra):
+        version = client.get('/api/state').json()['category_catalog']['version']
+        return client.post('/api/categories', json=dict(action=action, level=level, path=path, version=version, **extra))
+    def items():
+        return client.get('/api/state').json()['category_catalog']['items']
+    assert change('add', 'parent', '奖金', kind='income').status_code == 200
+    assert '奖金' in items()
+    assert change('add', 'child', '奖金/年终', kind='income').status_code == 200
+    assert '奖金' not in items()
+    assert change('delete', 'child', '奖金/年终').status_code == 200
+    assert '奖金' in items()
+    assert change('restore', 'child', '奖金/年终').status_code == 200
+    assert '奖金' not in items() and '奖金/年终' in items()
+    # A bare first-level category that history entries use stays selectable.
+    assert change('add', 'parent', '旅行').status_code == 200
+    assert client.post('/api/entries', json={'date': '2026-01-01', 'kind': 'expense', 'amount_cents': 100,
+                                             'account_id': aid, 'category': '旅行'}).status_code == 200
+    assert change('add', 'child', '旅行/机票').status_code == 200
+    assert {'旅行', '旅行/机票'} <= set(items())
+
+
+def test_parent_rename_moves_deleted_children_and_restores_as_group(client):
+    aid = client.post('/api/accounts', json={'name': '测试'}).json()['id']
+    entry = {'date': '2026-01-01', 'kind': 'expense', 'amount_cents': 100,
+             'account_id': aid, 'category': '日常/餐饮'}
+    assert client.post('/api/entries', json=entry).status_code == 200
+    def change(action, level, path, **extra):
+        version = client.get('/api/state').json()['category_catalog']['version']
+        return client.post('/api/categories', json=dict(action=action, level=level, path=path, version=version, **extra))
+    assert change('delete', 'child', '日常/餐饮').status_code == 200
+    assert change('rename', 'parent', '日常', name='日用').status_code == 200
+    state = client.get('/api/state').json()
+    assert state['entries'][0]['category'] == '日用/餐饮'
+    assert '日用/餐饮' in state['category_catalog']['hidden']
+    assert '日常/餐饮' not in state['category_catalog']['hidden']
+    assert change('delete', 'parent', '日用').status_code == 200
+    assert change('restore', 'parent', '日用').status_code == 200
+    catalog = client.get('/api/state').json()['category_catalog']
+    assert {'日用/餐饮', '日用/购物', '日用/交通'} <= set(catalog['items'])
+    assert '日用' not in catalog['items']
+    assert not any(p.startswith('日用') for p in catalog['hidden'])
+    assert catalog['items']['日用/餐饮'] == ['expense']
+    assert change('restore', 'parent', '日用').status_code == 400

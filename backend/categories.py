@@ -28,6 +28,15 @@ def catalog(db):
     return result
 
 
+def drop_placeholder(db, items, parent):
+    # An empty first-level category is kept as a bare item so its group stays visible.
+    # Once the group has second-level categories again, the bare item is no longer needed,
+    # unless ledger entries still use it.
+    if parent in items and any(p.startswith(parent + '/') for p in items):
+        if not db.execute('SELECT 1 FROM entries WHERE category=? LIMIT 1', (parent,)).fetchone():
+            items.pop(parent)
+
+
 class CategoryChange(BaseModel):
     action: Literal['add', 'rename', 'delete', 'restore']
     level: Literal['parent', 'child'] = 'child'
@@ -63,11 +72,16 @@ def change_category(db, body):
         items[path] = [body.kind]
         hidden.discard(path)
         value['retired'] = [p for p in value['retired'] if p != path]
+        drop_placeholder(db, items, path.split('/')[0])
     elif body.action == 'restore':
-        if path not in hidden:
+        # Restoring a first-level category brings back every deleted category in that group.
+        targets = [p for p in hidden if p == path or (body.level == 'parent' and p.startswith(path + '/'))]
+        if not targets:
             fail('分类不在已删除列表中')
-        hidden.remove(path)
-        items[path] = value['removed_kinds'].pop(path, None) or list({r[0] for r in db.execute("SELECT DISTINCT kind FROM entries WHERE category=? AND kind IN ('income','expense')", (path,))}) or [body.kind]
+        for p in targets:
+            hidden.remove(p)
+            items[p] = value['removed_kinds'].pop(p, None) or list({r[0] for r in db.execute("SELECT DISTINCT kind FROM entries WHERE category=? AND kind IN ('income','expense')", (p,))}) or [body.kind]
+        drop_placeholder(db, items, path.split('/')[0])
     else:
         if not affected:
             fail('分类不存在', 404)
@@ -88,11 +102,20 @@ def change_category(db, body):
                 fail('名称没有变化')
             if target in items or target in hidden or (body.level == 'parent' and target in parents):
                 fail('同名分类已存在（也可能在已删除列表中）')
-            mapping = {p: target + p[len(path):] for p in affected}
+            # Deleted categories in a renamed group move with it, so restoring them later
+            # (and their history entries) lands under the new first-level name.
+            moved_hidden = [p for p in hidden if body.level == 'parent' and (p == path or p.startswith(path + '/'))]
+            mapping = {p: target + p[len(path):] for p in affected + moved_hidden}
             if any(len(p) > 80 or p in hidden or (p in items and p not in affected) for p in mapping.values()):
                 fail('名称过长或与已有分类冲突')
             for old, new in mapping.items():
-                items[new] = items.pop(old)
+                if old in hidden:
+                    hidden.remove(old)
+                    hidden.add(new)
+                    if old in value['removed_kinds']:
+                        value['removed_kinds'][new] = value['removed_kinds'].pop(old)
+                else:
+                    items[new] = items.pop(old)
                 value['retired'].append(old)
                 db.execute('UPDATE entries SET category=?,version=version+1 WHERE category=?', (new, old))
             # Renaming back to an earlier name makes that name active again.

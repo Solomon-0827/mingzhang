@@ -54,6 +54,12 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [dirty, setDirty] = useState(false);
   useEffect(() => {setCategories(initialCategories());setDirty(false);}, [state.category_catalog?.version]);
+  // Follow accounts added or removed elsewhere; an unsaved drag order keeps its positions.
+  const accountIds = state.accounts.map(a => a.id).join("\n");
+  useEffect(() => {
+    const ids = accountIds ? accountIds.split("\n") : [];
+    setAccounts(current => dirty ? [...current.filter(id => ids.includes(id)), ...ids.filter(id => !current.includes(id))] : ids);
+  }, [accountIds]);
   const [change, setChange] = useState<Omit<CategoryChange, "version"> | null>(null);
   const [name, setName] = useState("");
   const start = (action: CategoryChange["action"], level: CategoryChange["level"], path: string) => {
@@ -76,7 +82,7 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
     {["add", "rename"].includes(change.action) ? <>
       <input autoFocus aria-label="分类名称" value={name} maxLength={40} onChange={e=>setName(e.target.value)} placeholder={change.level === "parent" ? "一级分类名称" : "二级分类名称"} disabled={busy}/>
       {change.action === "add" && change.level === "parent" && <StyledSelect aria-label="分类收支类型" value={change.kind} onChange={e=>setChange({...change,kind:e.target.value})}><option value="expense">支出</option><option value="income">收入</option></StyledSelect>}
-    </> : <span className="inline-delete-copy">{change.action === "delete" ? "删除此分类？历史账目保留，可恢复。" : "恢复此分类？"}</span>}
+    </> : <span className="inline-delete-copy">{change.action === "delete" ? "删除此分类？历史账目保留，可恢复。" : change.level === "parent" && (state.category_catalog?.hidden.filter(p => p.startsWith(change.path + "/")).length ?? 0) > 0 ? "恢复这一组全部已删除分类？" : "恢复此分类？"}</span>}
     <button className="category-tool confirm" title="确认（Enter）" aria-label="确认分类修改" disabled={busy}><Check size={17} strokeWidth={1.6}/></button>
     <button type="button" className="category-tool" title="取消（Esc）" aria-label="取消分类修改" disabled={busy} onClick={()=>{setChange(null);setError("");}}><X size={17} strokeWidth={1.6}/></button>
     {error && <small className="inline-category-error" role="alert">{error}</small>}
@@ -84,6 +90,11 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
   const rowTools = (level: "parent" | "child", path: string) => <div className="category-row-tools">
     <button className="category-tool" title="编辑" aria-label={`编辑分类：${path}`} disabled={busy || dirty} onClick={()=>start("rename",level,path)}><PencilLine size={16} strokeWidth={1.5}/></button>
     <button className="category-tool delete" title="删除" aria-label={`删除分类：${path}`} disabled={busy || dirty} onClick={()=>start("delete",level,path)}><Trash2 size={16} strokeWidth={1.5}/></button>
+  </div>;
+  // A path without "/" restores the whole first-level group: the group itself and all of its deleted children.
+  const removedRow = (path: string, label: string, action = "恢复") => <div key={path} className={path.includes("/") ? "removed-child" : undefined}>
+    <span>{label}</span>
+    {change?.action === "restore" && change.path === path ? inlineEditor() : <button disabled={busy || dirty} onClick={()=>start("restore",path.includes("/") ? "child" : "parent",path)}>{action}</button>}
   </div>;
   return <section className="panel settings-panel">
     <div className="settings-tabs" role="tablist" aria-label="设置">
@@ -114,7 +125,12 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
         render={id => { const account = state.accounts.find(a => a.id === id)!; return <><div className="account-setting-name"><strong>{account.name}</strong><small>{accountLabels[account.kind]}</small></div><button type="button" className="text-button" disabled={busy} onClick={() => onEditAccount(account)}>编辑</button></>; }} />
     </div>}
     {section === "categories" && !!state.category_catalog?.hidden.length && <details className="category-removed"><summary>已删除分类（{state.category_catalog.hidden.length}）</summary>
-      {state.category_catalog.hidden.map(path=><div key={path}><span>{path}</span>{change?.action === "restore" && change.path === path ? inlineEditor() : <button disabled={busy || dirty} onClick={()=>start("restore",path.includes("/") ? "child" : "parent",path)}>恢复</button>}</div>)}
+      {categoryGroups(state.category_catalog.hidden).map(removed => removed.items.length === 1
+        ? removedRow(removed.items[0], removed.items[0].includes("/") ? `${removed.name} · ${categoryLeaf(removed.items[0])}` : removed.name)
+        : <div key={removed.name} className="category-removed-group">
+          {removedRow(removed.name, removed.name, "整组恢复")}
+          {removed.items.filter(path => path.includes("/")).map(path => removedRow(path, categoryLeaf(path)))}
+        </div>)}
     </details>}
     {error && !change && <p role="alert" className="error">{error}</p>}
     <div className="settings-save"><span>{dirty ? "有未保存的排序调整，请先保存或撤销再编辑分类" : "顺序已保存，记账与编辑下拉列表共用。"}</span>

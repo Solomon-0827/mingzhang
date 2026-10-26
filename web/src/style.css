@@ -2077,7 +2077,10 @@ footer {
 .category-crud button { margin:0 8px 0 0; }
 .child-label .text-button { flex-shrink:0; }
 .category-removed { margin:20px 28px; color:#768473; font-size:13px; }
-.category-removed > div { display:flex; align-items:center; justify-content:space-between; padding:8px 0; }
+.category-removed > div { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; }
+.category-removed > .category-removed-group { display:block; padding:0; }
+.category-removed-group > div { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; }
+.category-removed-group > .removed-child { padding-left:18px; }
 /* Compact, in-place category tools. */
 .category-manager { grid-template-columns: minmax(310px,38%) minmax(0,1fr); }
 .parent-choice { min-width:0; flex:1; padding:8px 5px; gap:7px; }
