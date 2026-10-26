@@ -114,11 +114,11 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
           <button type="button" className={`parent-choice ${group?.name === parent ? "selected" : ""}`} onClick={() => {setSelected(parent);if(!busy){setChange(null);setError("");}}}>
             <Folder size={17} strokeWidth={1.5}/><strong>{parent}</strong><small>{groups.find(g => g.name === parent)!.items.length}</small></button>{rowTools("parent",parent)}<button type="button" className="category-tool" aria-label={`查看二级分类：${parent}`} onClick={() => {setSelected(parent);if(!busy){setChange(null);setError("");}}}><ChevronRight size={14}/></button></>} />
       </section>
-      <section className="child-column"><div className="settings-column-heading"><span>{group?.name} <ChevronRight size={14}/> 二级分类</span><button className="category-tool add" title="新增二级分类" aria-label="新增二级分类" disabled={busy || dirty || !group} onClick={()=>start("add","child",group.name)}><Plus size={19} strokeWidth={1.6}/></button></div>
+      <section className="child-column"><div className="settings-column-heading"><span>二级分类</span><button className="category-tool add" title="新增二级分类" aria-label="新增二级分类" disabled={busy || dirty || !group} onClick={()=>start("add","child",group.name)}><Plus size={19} strokeWidth={1.6}/></button></div>
         {change?.action === "add" && change.level === "child" && <div className="category-new-row">{inlineEditor()}</div>}
         {group && <SortList key={group.name} scope="children" items={group.items} disabled={busy || !!change} onMove={(from,to) => {
           setCategories(groups.flatMap(g => g.name === group.name ? move(g.items,from,to) : g.items)); setDirty(true);
-        }} render={id => change?.level === "child" && change.path === id && change.action !== "add" ? inlineEditor() : <div className="child-label"><span className="tree-branch">└</span><strong>{categoryLeaf(id)}</strong><small>属于 {group.name}</small>{id.includes("/") && rowTools("child",id)}</div>} />}
+        }} render={id => change?.level === "child" && change.path === id && change.action !== "add" ? inlineEditor() : <div className="child-label"><span className="tree-branch">└</span><strong>{categoryLeaf(id)}</strong>{id.includes("/") && rowTools("child",id)}</div>} />}
       </section>
     </div> : <div className="account-settings-list"><div className="settings-column-heading">账户 <small>{accounts.length} 个</small></div>
       <SortList scope="accounts" items={accounts} disabled={busy || !!change} onMove={(from,to) => {setAccounts(move(accounts,from,to));setDirty(true);}}
