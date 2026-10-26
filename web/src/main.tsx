@@ -6,6 +6,7 @@ import React, {
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { useFeedback } from "./feedback";
 import {
   Area,
   AreaChart,
@@ -101,9 +102,8 @@ function App() {
     [logged, setLogged] = useState(false),
     [checked, setChecked] = useState(false);
   const [password, setPassword] = useState(""),
-    [error, setError] = useState(""),
-    [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false);
+  const { setError, setNotice, clearConnectionError, toast } = useFeedback();
   const [bookMonth, setBookMonth] = useState(today().slice(0, 7));
   const [page, setPage] = useState("entry"),
     [period, setPeriod] = useState("month"),
@@ -145,6 +145,7 @@ function App() {
   const refresh = useCallback(async () => {
     const value = await api<State>("/state");
     setState(value);
+    clearConnectionError();
     setLogged(true);
     setLastSync(
       new Date().toLocaleTimeString("zh-CN", {
@@ -152,7 +153,7 @@ function App() {
         minute: "2-digit",
       }),
     );
-  }, []);
+  }, [clearConnectionError]);
   useEffect(() => {
     refresh()
       .catch((e) => {
@@ -340,11 +341,7 @@ function App() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
+          {toast}
           <button className="primary" disabled={busy}>
             {busy ? "正在登录…" : "打开我的账本"} <ArrowUpRight size={18} />
           </button>
@@ -465,22 +462,7 @@ function App() {
             )}
           </div>
         </header>
-        {error && (
-          <div className="banner error" role="alert">
-            {error}
-            <button aria-label="关闭错误" onClick={() => setError("")}>
-              <X size={16} />
-            </button>
-          </div>
-        )}
-        {notice && (
-          <div className="banner" role="status">
-            {notice}
-            <button aria-label="关闭提示" onClick={() => setNotice("")}>
-              <X size={16} />
-            </button>
-          </div>
-        )}
+        {toast}
         {page === "entry" && state && (
           <section className="entry-home">
             {state.accounts.length ? (

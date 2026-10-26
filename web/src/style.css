@@ -2102,3 +2102,45 @@ footer {
 .entry-home .entry-kinds button { color:#657d6d; }
 .entry-home .entry-kinds .selected { background:#d1e3d6; color:#225b43; }
 .entry-home .amount-input > div { border-bottom-color:#b4cbbb; }
+
+.feedback-toast {
+  position: fixed;
+  z-index: 3000;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 1px solid #cddfd1;
+  border-radius: 12px;
+  background: #f5faf6;
+  color: #35634b;
+  box-shadow: 0 8px 28px #183c2924;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.feedback-toast.error {
+  background: #fff7f4;
+  border-color: #efd1c7;
+  color: #ae4d3c;
+}
+.feedback-toast > svg { flex-shrink: 0; }
+.feedback-toast > span { overflow-wrap: anywhere; }
+.feedback-toast button {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.feedback-toast button:hover { background: #00000009; }
