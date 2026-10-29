@@ -14,6 +14,8 @@ export type Account = {
   name: string;
   kind: string;
   opening_cents: number;
+  target_balance_cents?: number;
+  expected_balance_cents?: number;
   balance_cents: number;
   version: number;
 };
@@ -76,7 +78,7 @@ export const labels: Record<Kind, string> = {
   lend: "借出",
   borrow: "借入",
   repay: "还款",
-  collect: "收回",
+  collect: "回款",
   balance_in: "余额调增",
   balance_out: "余额调减",
 };

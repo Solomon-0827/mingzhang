@@ -336,7 +336,7 @@ export function BookList({
                         </EntryField>
                         {entry.to_account_id && (
                           <small>
-                            →{" "}
+                            {entry.kind === "collect" ? "←" : "→"}{" "}
                             <EntryField
                               entry={entry}
                               state={state}
@@ -390,7 +390,7 @@ export function BookList({
             ><ChevronRight size={18} aria-hidden="true" /></button>
           </div>
           <p className="book-note">
-            收支合计扣除退款；转账和借还款本金不计入收支。
+            转账和借还款本金不计入收支。
           </p>
         </div>
       </div>
@@ -416,8 +416,10 @@ export function AccountWorkspace({
         inflow += entry.amount_cents;
       else outflow += entry.amount_cents;
     }
-    if (entry.kind === "transfer" && ids.has(entry.to_account_id || ""))
-      inflow += entry.amount_cents;
+    if (ids.has(entry.to_account_id || "")) {
+      if (["transfer", "repay"].includes(entry.kind)) inflow += entry.amount_cents;
+      if (entry.kind === "collect") outflow += entry.amount_cents;
+    }
   }
   return (
     <section className="account-workspace panel">
@@ -505,7 +507,9 @@ export function AccountWorkspace({
                     <Wallet size={18} />
                     {account.name}
                   </td>
-                  <td className="numeric">{money(account.balance_cents)}</td>
+                  <td className="numeric"><button className="text-button" title="修改当前余额"
+                    aria-label={`修改${account.name}当前余额`} onClick={() => onEdit(account)}>
+                    {money(account.balance_cents)}</button></td>
                   <td className="numeric">{money(account.opening_cents)}</td>
                   <td>
                     <button aria-label="编辑账户" title="编辑账户"
