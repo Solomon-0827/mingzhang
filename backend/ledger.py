@@ -30,6 +30,11 @@ class Account(BaseModel):
         return value.strip()
 
 
+class AccountUpdate(Account):
+    target_balance_cents: int | None = Field(default=None, ge=-(10**12), le=10**12, strict=True)
+    expected_balance_cents: int | None = Field(default=None, strict=True)
+
+
 class Entry(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     date: date
@@ -73,10 +78,24 @@ def validate_entry(db, data, exclude=None):
     if kind == "transfer":
         if not data["to_account_id"] or data["to_account_id"] == data["account_id"]:
             fail("转账需要两个不同的账户")
+    elif kind in ["repay", "collect"] and data["to_account_id"]:
+        if data["reference_id"]:
+            fail("不能同时关联账户和原交易")
+        source = db.execute("SELECT kind FROM accounts WHERE id=?", (data["account_id"],)).fetchone()
+        target = db.execute("SELECT * FROM accounts WHERE id=?", (data["to_account_id"],)).fetchone()
+        expected_kind = "liability" if kind == "repay" else "receivable"
+        if source["kind"] in ["receivable", "liability"] or target["kind"] != expected_kind:
+            fail("还款请选择付款资金账户和负债账户；回款请选择收款资金账户和债权账户")
+        if data["account_id"] == data["to_account_id"]:
+            fail("资金账户与往来账户不能相同")
+        data["counterparty"] = target["name"]
+        data["category"] = ""
     elif data["to_account_id"]:
-        fail("只有转账可以指定转入账户")
+        fail("只有转账、还款和回款可以关联另一账户")
     references = {"refund": "expense", "collect": "lend", "repay": "borrow"}
-    if kind in references:
+    if kind in ["repay", "collect"] and not data["to_account_id"] and not data["reference_id"]:
+        fail("请选择负债账户" if kind == "repay" else "请选择债权账户")
+    if kind in references and not data["to_account_id"]:
         original = db.execute("SELECT * FROM entries WHERE id=? AND deleted=0", (data["reference_id"],)).fetchone()
         if not original or original["kind"] != references[kind] or original["id"] == exclude:
             fail("请选择有效的原始交易")
@@ -166,8 +185,8 @@ def snapshot(db):
     for x in active:
         sign = 1 if x["kind"] in ["income", "refund", "borrow", "collect", "balance_in"] else -1
         balances[x["account_id"]] += sign * x["amount_cents"]
-        if x["kind"] == "transfer":
-            balances[x["to_account_id"]] += x["amount_cents"]
+        if x["to_account_id"] and x["kind"] in ["transfer", "repay", "collect"]:
+            balances[x["to_account_id"]] += (-1 if x["kind"] == "collect" else 1) * x["amount_cents"]
     receivable = payable = 0
     settled = {}
     for item in active:

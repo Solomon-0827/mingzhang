@@ -61,7 +61,8 @@ export function EntryField({
   }
   function ready(next: Entry) {
     if (next.kind === "transfer") return Boolean(next.to_account_id && next.to_account_id !== next.account_id);
-    if (["refund", "repay", "collect"].includes(next.kind)) return Boolean(next.reference_id);
+    if (next.kind === "refund") return Boolean(next.reference_id);
+    if (["repay", "collect"].includes(next.kind)) return Boolean(next.reference_id || next.to_account_id);
     if (["lend", "borrow"].includes(next.kind)) return Boolean(next.counterparty.trim());
     if (["balance_in", "balance_out"].includes(next.kind)) return true;
     return Boolean(next.category);
@@ -74,9 +75,7 @@ export function EntryField({
   }
   const set = <K extends keyof Entry>(key: K, value: Entry[K]) =>
     setDraft((old) => ({ ...old, [key]: value }));
-  const refKind = { refund: "expense", repay: "borrow", collect: "lend" }[
-    draft.kind as "refund" | "repay" | "collect"
-  ];
+  const refKind = draft.kind === "refund" ? "expense" : undefined;
   const categoryOptions = ordered(state.category_catalog ? Object.keys(state.category_catalog.items).filter(p => state.category_catalog!.items[p].includes(draft.kind)) : Array.from(
     new Set([
       ...(draft.kind === "income"
@@ -105,7 +104,7 @@ export function EntryField({
   );
   const chooseAccount = (target: "account_id" | "to_account_id") => (
     <StyledSelect
-      aria-label={target === "account_id" ? "修改账户" : "修改转入账户"}
+      aria-label={target === "account_id" ? "修改账户" : draft.kind === "repay" ? "修改负债账户" : draft.kind === "collect" ? "修改债权账户" : "修改转入账户"}
       value={draft[target] || ""}
       disabled={busy}
       onChange={(e) => selectField(target, e.target.value)}
@@ -114,7 +113,9 @@ export function EntryField({
       {state.accounts
         .filter(
           (account) =>
-            target !== "to_account_id" || account.id !== draft.account_id,
+            target === "account_id"
+              ? !["repay", "collect"].includes(draft.kind) || !["receivable", "liability"].includes(account.kind)
+              : account.id !== draft.account_id && (draft.kind === "repay" ? account.kind === "liability" : draft.kind === "collect" ? account.kind === "receivable" : true),
         )
         .map((account) => (
           <option key={account.id} value={account.id}>
@@ -239,6 +240,8 @@ export function EntryField({
                     const next = {
                       ...draft,
                       kind,
+                      account_id: ["repay", "collect"].includes(kind) && ["receivable", "liability"].includes(state.accounts.find(a => a.id === draft.account_id)?.kind || "")
+                        ? state.accounts.find(a => !["receivable", "liability"].includes(a.kind))?.id || "" : draft.account_id,
                       to_account_id: null,
                       reference_id: null,
                       category: kind === "income" ? "收入/工资" : kind === "expense" ? "日常/餐饮" : "",
@@ -247,7 +250,7 @@ export function EntryField({
                     if (ready(next)) void save(next);
                   }}
                 >
-                  {Object.entries(labels).map(([kind, label]) => (
+                  {Object.entries(labels).filter(([kind]) => !["refund", "balance_in", "balance_out"].includes(kind) || kind === entry.kind).map(([kind, label]) => (
                     <option key={kind} value={kind}>
                       {label}
                     </option>
@@ -256,8 +259,8 @@ export function EntryField({
                 {["income", "expense"].includes(draft.kind) && (
                   <label>分类{chooseCategory}</label>
                 )}
-                {draft.kind === "transfer" && (
-                  <label>转入账户{chooseAccount("to_account_id")}</label>
+                {["transfer", "repay", "collect"].includes(draft.kind) && (
+                  <label>{draft.kind === "repay" ? "负债账户" : draft.kind === "collect" ? "债权账户" : "转入账户"}{chooseAccount("to_account_id")}</label>
                 )}
                 {["lend", "borrow"].includes(draft.kind) && (
                   <label>

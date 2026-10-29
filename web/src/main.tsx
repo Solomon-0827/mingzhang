@@ -558,7 +558,7 @@ function App() {
               <Metric
                 label="本期结余"
                 value={report.net}
-                note="收入 − 支出（已抵扣退款）"
+                note="收入 − 支出"
                 tone="balance"
               />
             </div>
@@ -705,7 +705,7 @@ function App() {
                 </span>
                 <span>
                   <i className="amber-dot" />
-                  支出（扣除退款）
+                  支出
                 </span>
                 <small>单位：人民币元 · 转账及借还款本金不计入收支</small>
               </div>
@@ -938,7 +938,7 @@ function App() {
                           <td>
                             {accountName(x.account_id)}
                             {x.to_account_id && (
-                              <small>→ {accountName(x.to_account_id)}</small>
+                              <small>{x.kind === "collect" ? "←" : "→"} {accountName(x.to_account_id)}</small>
                             )}
                           </td>
                           <td
@@ -1064,7 +1064,7 @@ function App() {
                       待{x.kind === "lend" ? "收" : "还"} ¥{" "}
                       {money(x.remaining_cents)}
                     </span>
-                    <button aria-label={x.kind === "lend" ? "记录收回" : "记录还款"} title={x.kind === "lend" ? "记录收回" : "记录还款"}
+                    <button aria-label={x.kind === "lend" ? "记录回款" : "记录还款"} title={x.kind === "lend" ? "记录回款" : "记录还款"}
                       className="text-button"
                       onClick={() => {
                         setEditor({
@@ -1281,9 +1281,8 @@ function EntryDialog({
   const amountRef = useRef<HTMLInputElement>(null);
   const set = <K extends keyof Entry>(key: K, v: Entry[K]) =>
     setValue((old) => ({ ...old, [key]: v }));
-  const refKind = { refund: "expense", repay: "borrow", collect: "lend" }[
-    value.kind as "refund" | "repay" | "collect"
-  ];
+  const legacySettlement = Boolean(value.reference_id && ["repay", "collect"].includes(value.kind) && !value.to_account_id);
+  const refKind = value.kind === "refund" ? "expense" : undefined;
   const categoryOptions = ordered(catalog ? Object.keys(catalog.items).filter(p => catalog.items[p].includes(value.kind)) : Array.from(
     new Set([
       ...categories.filter((category) =>
@@ -1328,7 +1327,7 @@ function EntryDialog({
       }}
     >
       <div className="entry-kinds">
-        {Object.entries(labels).map(([k, v]) => (
+        {Object.entries(labels).filter(([k]) => !["refund", "balance_in", "balance_out"].includes(k) || (editing && k === initial.kind)).map(([k, v]) => (
           <button
             type="button"
             className={value.kind === k ? "selected" : ""}
@@ -1337,6 +1336,8 @@ function EntryDialog({
               setValue({
                 ...value,
                 kind: k as Kind,
+                account_id: ["repay", "collect"].includes(k) && ["receivable", "liability"].includes(selectedAccount?.kind || "")
+                  ? accounts.find(a => !["receivable", "liability"].includes(a.kind))?.id || "" : value.account_id,
                 to_account_id: null,
                 reference_id: null,
                 category: ["income", "expense"].includes(k)
@@ -1390,7 +1391,7 @@ function EntryDialog({
         </label>
         <label>
           <span className="entry-account-heading">
-            <span>{value.kind === "transfer" ? "转出账户" : "账户"}</span>
+            <span>{value.kind === "transfer" ? "转出账户" : value.kind === "repay" ? "付款账户" : value.kind === "collect" ? "收款账户" : "账户"}</span>
             {selectedAccount && <span className="entry-account-balance" role="status" aria-live="polite"
               title={`${selectedAccount.name}当前余额`}>
               余额 <motion.strong key={`${selectedAccount.id}-${selectedAccount.balance_cents}`} initial={{ opacity: 0.35 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }} className={selectedAccount.balance_cents < 0 ? "negative-balance" : undefined}>
@@ -1402,7 +1403,7 @@ function EntryDialog({
             value={value.account_id}
             onChange={(e) => set("account_id", e.target.value)}
           >
-            {accounts.map((a) => (
+            {accounts.filter(a => !["repay", "collect"].includes(value.kind) || !["receivable", "liability"].includes(a.kind)).map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
               </option>
@@ -1429,6 +1430,19 @@ function EntryDialog({
             <small>信用卡还本金也使用账户间转账。</small>
           </label>
         )}
+        {["repay", "collect"].includes(value.kind) && !legacySettlement && (
+          <label className="full">
+            {value.kind === "repay" ? "负债账户" : "债权账户"}
+            <StyledSelect required aria-label={value.kind === "repay" ? "负债账户" : "债权账户"}
+              value={value.to_account_id || ""} onChange={e => set("to_account_id", e.target.value)}>
+              <option value="">请选择{value.kind === "repay" ? "负债" : "债权"}账户</option>
+              {accounts.filter(a => a.kind === (value.kind === "repay" ? "liability" : "receivable") && a.id !== value.account_id)
+                .map(a => <option key={a.id} value={a.id}>{a.name} · ¥{money(a.balance_cents)}</option>)}
+            </StyledSelect>
+            <small>{value.kind === "repay" ? "付款账户余额减少，同时减少对应负债。" : "收款账户余额增加，同时减少对应债权。"}本金不计入收支。</small>
+          </label>
+        )}
+        {legacySettlement && <small>此历史记录保留原借款关联，避免重复调整余额。</small>}
         {refKind && (
           <label className="full">
             关联原交易
@@ -1498,7 +1512,7 @@ function AccountDialog({
   onSave: (value: Account) => Promise<void>;
 }) {
   const [value, setValue] = useState(initial),
-    [amount, setAmount] = useState(String(initial.opening_cents / 100)),
+    [amount, setAmount] = useState(String((initial.id ? initial.balance_cents : initial.opening_cents) / 100)),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   return (
@@ -1508,7 +1522,9 @@ function AccountDialog({
           e.preventDefault();
           setBusy(true);
           try {
-            await onSave({ ...value, opening_cents: cents(amount) });
+            await onSave(initial.id
+              ? { ...value, target_balance_cents: cents(amount), expected_balance_cents: initial.balance_cents }
+              : { ...value, opening_cents: cents(amount) });
           } catch (e) {
             setError((e as Error).message);
           } finally {
@@ -1541,7 +1557,7 @@ function AccountDialog({
           </StyledSelect>
         </label>
         <label>
-          期初余额（元）
+          {initial.id ? "当前余额（元）" : "初始余额（元）"}
           <input
             required
             inputMode="decimal"
@@ -1549,7 +1565,7 @@ function AccountDialog({
             onChange={(e) => setAmount(e.target.value)}
           />
           <small>
-            开始使用此账本之前的余额；信用卡欠款填负数。导入历史账单时，填写历史第一笔之前的余额。
+            填写账户实际余额，信用卡欠款填负数。修改后自动记录差额，不计入收入或支出。
           </small>
         </label>
         {error && (
@@ -1558,7 +1574,7 @@ function AccountDialog({
           </p>
         )}
         <div className="modal-footer">
-          <small>期初余额不计入收入。</small>
+          <small>余额调整不计入收支，按回车保存。</small>
           <button aria-label="保存账户" title="保存账户" className="primary" disabled={busy}><Check size={18} aria-hidden="true" /></button>
         </div>
       </form>

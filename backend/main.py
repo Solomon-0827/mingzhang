@@ -23,7 +23,7 @@ from backend.auth import authenticated, hash_password, token_hash, verify_passwo
 from backend.categories import CategoryChange, change_category
 from backend.db import backup, connect, db_path, initialize
 from backend.importing import commit_import, preview, read_file
-from backend.ledger import Account, Entry, audit, fail, report, save_entry, set_deleted, snapshot
+from backend.ledger import Account, AccountUpdate, Entry, audit, fail, report, save_entry, set_deleted, snapshot, today
 
 BACKUP_DIR = Path(os.environ.get("LEDGER_BACKUPS", "backups"))
 
@@ -222,7 +222,7 @@ def create_account(body: Account):
 
 
 @app.put("/api/accounts/{aid}", dependencies=[Depends(authenticated)])
-def update_account(aid: str, body: Account):
+def update_account(aid: str, body: AccountUpdate):
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT * FROM accounts WHERE id=?", (aid,)).fetchone()
@@ -230,6 +230,20 @@ def update_account(aid: str, body: Account):
             fail("账户不存在", 404)
         if row["version"] != body.version:
             fail("账户已被修改，请刷新", 409)
+        if body.target_balance_cents is not None:
+            current = next(a["balance_cents"] for a in snapshot(db)["accounts"] if a["id"] == aid)
+            if body.expected_balance_cents != current:
+                fail("账户余额已变化，请刷新后重新调整", 409)
+            if body.opening_cents != row["opening_cents"]:
+                fail("调整当前余额时不能同时修改期初余额")
+            difference = body.target_balance_cents - current
+            if abs(difference) > 10**12:
+                fail("单次余额调整差额过大")
+            if difference:
+                save_entry(db, Entry(
+                    date=today(), kind="balance_in" if difference > 0 else "balance_out",
+                    amount_cents=abs(difference), account_id=aid, memo="账户余额调整",
+                ))
         try:
             db.execute(
                 "UPDATE accounts SET name=?,kind=?,opening_cents=?,version=version+1 WHERE id=?",
@@ -365,7 +379,7 @@ def export_csv():
         lend="借出",
         borrow="借入",
         repay="还款",
-        collect="收回",
+        collect="回款",
     )
 
     def safe(value):
