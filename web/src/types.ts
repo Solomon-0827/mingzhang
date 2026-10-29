@@ -35,7 +35,7 @@ export type Entry = {
   deleted: number;
   remaining_cents: number;
 };
-export type DisplayOrder = { accounts: string[]; categories: string[]; version: number };
+export type DisplayOrder = { accounts: string[]; categories: string[]; favorites?: string[]; version: number };
 export function ordered(values: string[], order: string[] = []) {
   const ranks = new Map(order.map((v, i) => [v, i]));
   return [...values].sort((a, b) => (ranks.get(a) ?? order.length) - (ranks.get(b) ?? order.length));

@@ -2267,3 +2267,27 @@ footer {
 .login-form > .desktop-downloads { margin-top: 8px; }
 .login-form .desktop-download-menu { left: 0; right: auto; }
 footer > .desktop-downloads { margin-left: auto; }
+
+/* Personal category shortcuts */
+.entry-home .favorite-shortcuts { grid-column:1/-1; grid-row:3; display:flex; flex-wrap:wrap; align-items:center; gap:7px; padding-top:10px; border-top:1px solid #d6e5dc; }
+.favorite-caption { font-size:12px; color:#708778; margin-right:6px; }
+.favorite-shortcuts button { padding:7px 14px; border:1px solid #cbded2; background:#ffffffa8; color:#436653; border-radius:9px; transition:background .18s,transform .18s; }
+.favorite-shortcuts button:hover { background:#e0eee5; transform:translateY(-1px); }
+.favorite-shortcuts button.selected { color:#fff; background:#257864; border-color:#257864; }
+.favorites-manager { display:grid; grid-template-columns:minmax(280px,1fr) minmax(250px,.85fr); gap:24px; padding:0 28px 24px; }
+.favorites-picker { min-width:0; }
+.favorites-add { display:flex; gap:8px; margin:12px 0; }
+.favorites-add .ledger-select { flex:1; min-width:0; }
+.favorite-position { font-size:12px; color:#8d9a8c; min-width:16px; }
+.favorite-name { display:flex; flex:1; flex-direction:column; gap:3px; padding:8px 0; }
+.favorite-name small { font-size:11px; color:#829286; }
+.favorites-empty { padding:32px 16px; text-align:center; color:#819187; border:1px dashed #cbded2; border-radius:12px; }
+.favorites-preview { align-self:start; background:linear-gradient(140deg,#e8f2eb,#f5f4e9); border:1px solid #d9e5d9; border-radius:18px; padding:24px; }
+.favorites-preview h3 { font-size:22px; margin:14px 0 8px; }
+.favorites-preview p { color:#718275; font-size:13px; line-height:1.7; }
+.favorite-preview-buttons { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:24px; }
+.favorite-preview-buttons>span { background:#ffffffb5; border:1px solid #d3e0d5; border-radius:9px; padding:12px 8px; font-size:13px; overflow-wrap:anywhere; }
+.favorite-preview-buttons small { color:#90a394; margin-right:7px; }
+.settings-tabs button { display:inline-flex; align-items:center; gap:6px; }
+@media(max-width:700px) { .favorites-manager { grid-template-columns:1fr; padding:0 12px 16px; } .settings-tabs { gap:12px; padding:0 12px; flex-wrap:wrap; } .entry-home .favorite-shortcuts { grid-row:auto; } }
+@media(prefers-reduced-motion:reduce) { .favorite-shortcuts button { transition:none; } .favorite-shortcuts button:hover { transform:none; } }

@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from backend.auth import authenticated, hash_password, token_hash, verify_password
-from backend.categories import CategoryChange, change_category
+from backend.categories import CategoryChange, catalog, change_category
 from backend.db import backup, connect, db_path, initialize
 from backend.importing import commit_import, preview, read_file
 from backend.ledger import Account, AccountUpdate, Entry, audit, fail, report, save_entry, set_deleted, snapshot, today
@@ -181,6 +181,7 @@ def manage_categories(body: CategoryChange):
 class DisplayOrder(BaseModel):
     accounts: list[str] = Field(max_length=1000)
     categories: list[str] = Field(max_length=1000)
+    favorites: list[str] | None = Field(default=None, max_length=9)
     version: int = Field(ge=0)
 
 
@@ -199,6 +200,11 @@ def save_display_order(body: DisplayOrder):
         if not set(body.accounts) <= ids:
             fail("排序包含不存在的账户")
         payload = body.model_dump()
+        favorites = body.favorites if body.favorites is not None else (json.loads(current[0]).get("favorites", []) if current else [])
+        active = catalog(db)["items"]
+        if len(favorites) != len(set(favorites)) or any(p not in active for p in favorites):
+            fail("常用分类不能重复，且必须是未删除的分类")
+        payload["favorites"] = favorites
         payload["version"] += 1
         db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('display_order',?)",
                    (json.dumps(payload, ensure_ascii=False),))

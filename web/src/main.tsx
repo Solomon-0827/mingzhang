@@ -38,6 +38,7 @@ import {
   today,
 } from "./types";
 import { ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
+import { categoryLeaf } from "./category-groups";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import { OrderSettings } from "./order-settings";
@@ -461,6 +462,7 @@ function App() {
                 accounts={state.accounts}
                 entries={state.entries}
                 categoryOrder={state.ordering?.categories}
+                favorites={state.ordering?.favorites}
                 catalog={state.category_catalog}
                 onClose={() => {}}
                 onSave={async (value) => {
@@ -1109,6 +1111,7 @@ function App() {
           accounts={state.accounts}
           entries={state.entries}
                 categoryOrder={state.ordering?.categories}
+                favorites={state.ordering?.favorites}
                 catalog={state.category_catalog}
           onClose={() => setEditor(null)}
           onSave={async (value) => {
@@ -1255,6 +1258,7 @@ function EntryDialog({
   editing,
   accounts,
   categoryOrder = [],
+  favorites = [],
   catalog,
   entries,
   onClose,
@@ -1265,6 +1269,7 @@ function EntryDialog({
   editing: boolean;
   accounts: Account[];
   categoryOrder?: string[];
+  favorites?: string[];
   catalog?: CategoryCatalog;
   entries: Entry[];
   onClose: () => void;
@@ -1377,6 +1382,18 @@ function EntryDialog({
               onChange={e => set("category", e.target.value)} />
           </label>
         )}
+      {inline && ["income", "expense"].includes(value.kind) && favorites.some(p => categoryOptions.includes(p)) && (
+        <div className="favorite-shortcuts" role="group" aria-label="常用分类">
+          <span className="favorite-caption">常用分类</span>
+          {favorites.filter(p => categoryOptions.includes(p)).slice(0, 9).map(path => (
+            <button type="button" key={path} title={path} aria-pressed={value.category === path}
+              className={value.category === path ? "selected" : ""}
+              onClick={() => {set("category", path); amountRef.current?.focus();}}>
+              {path.includes("/") ? categoryLeaf(path) : path}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="form-grid">
         <label>
           日期

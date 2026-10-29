@@ -61,6 +61,7 @@ def change_category(db, body):
     if body.level == 'child' and '/' not in path:
         fail('请选择二级分类')
     parents = {p.split('/')[0] for p in items}
+    mapping = {}
     affected = [p for p in items if p == path or (body.level == 'parent' and p.startswith(path + '/'))]
     if body.action == 'add':
         if path in items or (body.level == 'parent' and path in parents):
@@ -124,8 +125,17 @@ def change_category(db, body):
             if row:
                 order = json.loads(row[0])
                 order['categories'] = list(dict.fromkeys(mapping.get(p, p) for p in order['categories']))
+                order['favorites'] = list(dict.fromkeys(mapping.get(p, p) for p in order.get('favorites', [])))
                 order['version'] += 1
                 db.execute("UPDATE settings SET value=? WHERE key='display_order'", (json.dumps(order, ensure_ascii=False),))
+    row = db.execute("SELECT value FROM settings WHERE key='display_order'").fetchone()
+    if row:
+        order = json.loads(row[0])
+        favorites = [p for p in order.get('favorites', []) if p in items and p not in hidden]
+        if favorites != order.get('favorites', []):
+            order['favorites'] = favorites
+            order['version'] += 1
+            db.execute("UPDATE settings SET value=? WHERE key='display_order'", (json.dumps(order, ensure_ascii=False),))
     value.update(hidden=sorted(hidden), version=value['version'] + 1)
     db.execute("INSERT OR REPLACE INTO settings VALUES ('category_catalog',?)", (json.dumps(value, ensure_ascii=False),))
     audit(db, 'category.' + body.action, body.model_dump())

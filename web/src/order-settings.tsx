@@ -1,9 +1,9 @@
-import { Check, ChevronRight, Folder, GripVertical, PencilLine, Plus, RotateCcw, Trash2, Undo2, X } from "lucide-react";
+import { Check, ChevronRight, Folder, GripVertical, Star, PencilLine, Plus, RotateCcw, Trash2, Undo2, X } from "lucide-react";
 import { motion } from "motion/react";
 import { PasswordSettings } from "./password-settings";
 import { useState, useRef, useEffect, type ReactNode } from "react";
 import { Account, CategoryChange, DisplayOrder, State, ordered, accountLabels } from "./types";
-import { StyledSelect } from "./controls";
+import { StyledSelect, CategorySelect } from "./controls";
 import { categoryGroups, categoryLeaf } from "./category-groups";
 
 function SortList({ items, scope, disabled, onMove, render }: {
@@ -13,7 +13,7 @@ function SortList({ items, scope, disabled, onMove, render }: {
   const [dragging, setDragging] = useState<number | null>(null);
   const [over, setOver] = useState<number | null>(null);
   const pointer = useRef<{ from: number; to: number; y: number } | null>(null);
-  return <ul className="sort-list" aria-label={scope === "accounts" ? "账户排序" : scope === "parents" ? "一级分类排序" : "二级分类排序"}>
+  return <ul className="sort-list" aria-label={scope === "favorites" ? "常用分类排序" : scope === "accounts" ? "账户排序" : scope === "parents" ? "一级分类排序" : "二级分类排序"}>
     {items.map((id, index) => <li key={id} className={`${dragging === index ? "is-dragging" : ""} ${over === index && dragging !== index ? "drop-target" : ""}`}>
       <button type="button" className="drag-handle" disabled={disabled}
         aria-label={`拖动排序：${id}`} title="拖动排序；也可按 Alt + 上下方向键"
@@ -47,13 +47,15 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
   const initialCategories = () => ordered(state.category_catalog ? Object.keys(state.category_catalog.items) : Array.from(new Set([...defaults, ...state.entries.filter(e => !e.deleted && ["income", "expense"].includes(e.kind)).map(e => e.category)])).filter(Boolean), state.ordering?.categories);
   const [accounts, setAccounts] = useState(state.accounts.map(a => a.id));
   const [categories, setCategories] = useState(initialCategories);
-  const [section, setSection] = useState("categories");
+  const [section, setSection] = useState("favorites");
+  const [favorites, setFavorites] = useState(state.ordering?.favorites ?? []);
+  const [candidate, setCandidate] = useState("");
   const groups = categoryGroups(categories);
   const [selected, setSelected] = useState(groups[0]?.name ?? "");
   const group = groups.find(g => g.name === selected) ?? groups[0];
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [dirty, setDirty] = useState(false);
-  useEffect(() => {setCategories(initialCategories());setDirty(false);}, [state.category_catalog?.version]);
+  useEffect(() => {setCategories(initialCategories());setFavorites(state.ordering?.favorites ?? []);setDirty(false);}, [state.category_catalog?.version]);
   // Follow accounts added or removed elsewhere; an unsaved drag order keeps its positions.
   const accountIds = state.accounts.map(a => a.id).join("\n");
   useEffect(() => {
@@ -98,14 +100,28 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
   </div>;
   return <section className="panel settings-panel">
     <div className="settings-tabs" role="tablist" aria-label="设置">
+      <button role="tab" aria-selected={section === "favorites"} onClick={() => setSection("favorites")}><Star size={16}/><span>常用分类</span>{section === "favorites" && <motion.i className="settings-tab-indicator" layoutId="settings-tab-active" />}</button>
       <button role="tab" aria-selected={section === "categories"} onClick={() => setSection("categories")}><span>分类管理</span>{section === "categories" && <motion.i className="settings-tab-indicator" layoutId="settings-tab-active" transition={{ type: "spring", stiffness: 450, damping: 34 }} />}</button>
       <button role="tab" aria-selected={section === "accounts"} onClick={() => setSection("accounts")}><span>账户管理</span>{section === "accounts" && <motion.i className="settings-tab-indicator" layoutId="settings-tab-active" transition={{ type: "spring", stiffness: 450, damping: 34 }} />}</button>
       <button role="tab" aria-selected={section === "password"} onClick={() => setSection("password")}><span>修改密码</span>{section === "password" && <motion.i className="settings-tab-indicator" layoutId="settings-tab-active" transition={{ type: "spring", stiffness: 450, damping: 34 }} />}</button>
     </div>
     {section === "password" ? <PasswordSettings onChanged={onPasswordChanged} /> : <>
-    <div className="settings-intro"><h2>{section === "categories" ? "分类层级与排序" : "账户排序与设置"}</h2>
-      <p>{section === "categories" ? "拖动左侧手柄调整顺序。一级分类整组移动，二级分类在所属组内移动。" : "拖动左侧手柄调整账户顺序，点击编辑修改账户信息。"}</p></div>
-    {section === "categories" ? <div className="category-manager">
+    <div className="settings-intro"><h2>{section === "favorites" ? "让常用分类触手可及" : section === "categories" ? "分类层级与排序" : "账户排序与设置"}</h2>
+      <p>{section === "favorites" ? "最多选择 9 个分类，拖动手柄调整按钮位置。记一笔会按当前收入或支出类型显示适用分类。" : section === "categories" ? "拖动左侧手柄调整顺序。一级分类整组移动，二级分类在所属组内移动。" : "拖动左侧手柄调整账户顺序，点击编辑修改账户信息。"}</p></div>
+    {section === "favorites" ? <div className="favorites-manager">
+      <section className="favorites-picker">
+        <div className="settings-column-heading"><span>常用分类 <small>{favorites.length} / 9</small></span></div>
+        <div className="favorites-add">
+          <CategorySelect options={categories.filter(p => !favorites.includes(p))} value={candidate} onChange={e => setCandidate(e.target.value)} />
+          <button type="button" aria-label="添加常用分类" title="添加常用分类" disabled={busy || favorites.length >= 9 || !categories.includes(candidate) || favorites.includes(candidate)} onClick={() => {setFavorites([...favorites, candidate]);setCandidate("");setDirty(true);}}><Plus size={18}/></button>
+        </div>
+        {favorites.length === 9 && <p className="muted">已选满 9 个，移除一项后可添加其他分类。</p>}
+        {!favorites.length && <p className="favorites-empty">添加最常用的分类，记账时一键选中。</p>}
+        <SortList scope="favorites" items={favorites} disabled={busy} onMove={(from,to) => {setFavorites(move(favorites,from,to));setDirty(true);}}
+          render={path => <><span className="favorite-position">{favorites.indexOf(path)+1}</span><div className="favorite-name"><strong>{path.includes("/") ? categoryLeaf(path) : path}</strong><small>{path.includes("/") ? path.split("/")[0] : "一级分类"}</small></div><button type="button" className="category-tool" title="移出常用" aria-label={`移出常用：${path}`} disabled={busy} onClick={() => {setFavorites(favorites.filter(p=>p!==path));setDirty(true);}}><X size={16}/></button></>} />
+      </section>
+      <div className="favorites-preview"><span className="favorite-caption">按钮顺序预览</span><h3>少找一次，多快一步</h3><p>按下方顺序展示，其他分类仍可通过下拉框选择。</p><div className="favorite-preview-buttons">{favorites.map((path,index) => <span key={path}><small>{index+1}</small>{path.includes("/") ? categoryLeaf(path) : path}</span>)}</div></div>
+    </div> : section === "categories" ? <div className="category-manager">
       <section className="parent-column"><div className="settings-column-heading"><span>一级分类 <small>{groups.length}</small></span><button className="category-tool add" title="新增一级分类" aria-label="新增一级分类" disabled={busy || dirty} onClick={()=>start("add","parent","")}><Plus size={19} strokeWidth={1.6}/></button></div>
         {change?.action === "add" && change.level === "parent" && <div className="category-new-row">{inlineEditor()}</div>}
         <SortList scope="parents" items={groups.map(g => g.name)} disabled={busy || !!change} onMove={(from,to) => {
@@ -133,9 +149,9 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
         </div>)}
     </details>}
     {error && !change && <p role="alert" className="error">{error}</p>}
-    <div className="settings-save"><span>{dirty ? "有未保存的排序调整，请先保存或撤销再编辑分类" : "顺序已保存，记账与编辑下拉列表共用。"}</span>
-      <button aria-label="撤销调整" title="撤销调整" disabled={!dirty || busy} onClick={() => {setAccounts(state.accounts.map(a=>a.id));setCategories(initialCategories());setDirty(false);setError("");}}><Undo2 size={18} aria-hidden="true" /></button>
-      <button aria-label={busy ? "保存中…" : "保存排序"} title={busy ? "保存中…" : "保存排序"} className="primary" disabled={!dirty || busy} onClick={async () => {setBusy(true);setError("");try {await onSave({accounts,categories,version:state.ordering?.version ?? 0});setDirty(false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}><Check size={18} aria-hidden="true" /></button>
+    <div className="settings-save"><span>{dirty ? "有未保存的常用项或排序调整" : "常用项用于快捷记账；分类与账户排序用于下拉列表。"}</span>
+      <button aria-label="撤销调整" title="撤销调整" disabled={!dirty || busy} onClick={() => {setAccounts(state.accounts.map(a=>a.id));setCategories(initialCategories());setFavorites(state.ordering?.favorites ?? []);setDirty(false);setError("");}}><Undo2 size={18} aria-hidden="true" /></button>
+      <button aria-label={busy ? "保存中…" : "保存排序"} title={busy ? "保存中…" : "保存排序"} className="primary" disabled={!dirty || busy} onClick={async () => {setBusy(true);setError("");try {await onSave({accounts,categories,favorites,version:state.ordering?.version ?? 0});setDirty(false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}><Check size={18} aria-hidden="true" /></button>
     </div>
     </>}
   </section>;
