@@ -99,6 +99,7 @@ function App() {
     [customEnd, setCustomEnd] = useState(today());
   const [report, setReport] = useState<Report>(emptyReport),
     [curve, setCurve] = useState("daily");
+  const [visibleCurves, setVisibleCurves] = useState({income:true, expense:true, cumulative:true});
   const [query, setQuery] = useState(""),
     [type, setType] = useState(""),
     [accountFilter, setAccountFilter] = useState(""),
@@ -624,6 +625,7 @@ function App() {
                       />
                       <Line
                         name="收入"
+                        hide={!visibleCurves.income}
                         type="monotone"
                         dataKey="income"
                         stroke="#257864"
@@ -632,6 +634,7 @@ function App() {
                       />
                       <Line
                         name="支出"
+                        hide={!visibleCurves.expense}
                         type="monotone"
                         dataKey="expense"
                         stroke="#d69957"
@@ -690,6 +693,7 @@ function App() {
                       <Tooltip formatter={(v) => `¥ ${money(Number(v))}`} />
                       <Area
                         name="累计结余"
+                        hide={!visibleCurves.cumulative}
                         type="monotone"
                         dataKey="cumulative"
                         stroke="#257864"
@@ -701,14 +705,20 @@ function App() {
                 </ResponsiveContainer>
               </div>
               <div className="chart-footer">
-                <span>
-                  <i className="green-dot" />
-                  收入
-                </span>
-                <span>
-                  <i className="amber-dot" />
-                  支出
-                </span>
+                <div className="chart-series-controls" role="group" aria-label="显示曲线">
+                  <span>显示曲线</span>
+                  {(curve === "daily" ? ["income", "expense"] as const : ["cumulative"] as const).map(key => (
+                    <button type="button" key={key} aria-pressed={visibleCurves[key]}
+                      className={visibleCurves[key] ? "selected" : ""}
+                      title={`${visibleCurves[key] ? "隐藏" : "显示"}${key === "income" ? "收入" : key === "expense" ? "支出" : "累计结余"}曲线`}
+                      onClick={() => setVisibleCurves(current => ({...current, [key]: !current[key]}))}>
+                      <i className={key === "expense" ? "amber-dot" : "green-dot"}/>
+                      {key === "income" ? "收入" : key === "expense" ? "支出" : "累计结余"}
+                      {visibleCurves[key] ? <Check size={14}/> : <span className="curve-hidden-mark">—</span>}
+                    </button>
+                  ))}
+                </div>
+                {(curve === "daily" ? !visibleCurves.income && !visibleCurves.expense : !visibleCurves.cumulative) && <span className="chart-empty-hint" role="status">曲线已全部隐藏，点击项目重新显示</span>}
                 <small>单位：人民币元 · 转账及借还款本金不计入收支</small>
               </div>
             </section>

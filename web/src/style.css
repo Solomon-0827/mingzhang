@@ -2290,3 +2290,13 @@ footer > .desktop-downloads { margin-left: auto; }
 .favorite-star:disabled { opacity:.3; }
 @media(max-width:700px) { .favorite-board {margin:0 12px 16px;padding:14px;} .settings-tabs {gap:12px;padding:0 12px;flex-wrap:wrap;} .entry-home .favorite-shortcuts {grid-row:auto;} }
 @media(prefers-reduced-motion:reduce) { .favorite-shortcuts button { transition:none; } .favorite-shortcuts button:hover { transform:none; } }
+
+.chart-footer { flex-wrap:wrap; }
+.chart-series-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.chart-series-controls > span { font-size:12px; color:#7b897f; }
+.chart-series-controls button { display:inline-flex; align-items:center; gap:7px; padding:6px 10px; border:1px solid #dce5dc; border-radius:8px; color:#7f8a82; background:#f6f7f4; }
+.chart-series-controls button.selected { background:#edf5ee; color:#315c48; border-color:#b9d2bf; }
+.chart-series-controls button:not(.selected) i { opacity:.3; }
+.chart-series-controls button:focus-visible { outline:2px solid #257864; outline-offset:2px; }
+.curve-hidden-mark { width:14px; text-align:center; }
+.chart-empty-hint { font-size:12px; color:#7b897f; }
