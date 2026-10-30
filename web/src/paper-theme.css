@@ -1,4 +1,4 @@
-/* Visual-only paper treatment: all workspace geometry remains in style.css. */
+/* Paper palette and workspace presentation; functional control geometry lives in style.css. */
 :root {
   --paper: #F9F7F0;
   --paper-light: #fffdf7;
@@ -238,3 +238,67 @@ button:disabled { box-shadow: none; transform: none; }
 .login-story { background: #f7f2e8; color: var(--ink); }
 .login-story p, .login-story small, .login-story .eyebrow,
 .login-story .brand span { color: var(--muted); }
+
+/* Continuous paper workspace: section rules replace inset rounded cards. */
+.shell > main { padding: 0; }
+.shell > main > header {
+  margin: 0;
+  padding: 24px 28px;
+  border-bottom: 1px solid var(--border);
+}
+.shell > .entry-workspace > header { padding: 16px 24px; }
+.shell > aside { box-shadow: none; }
+.shell main .panel, .shell main .book-list,
+.shell main .entry-home, .shell main .metric, .shell main .account-card {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.shell main .panel, .shell main .book-list {
+  margin-bottom: 0;
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+}
+.shell main .entry-home {
+  margin: 0;
+  padding-inline: 24px;
+  background: #f6f2e8;
+  border-bottom: 1px solid var(--border);
+}
+.shell main .period-bar { margin: 0; padding: 18px 24px; }
+.shell main .stats { gap: 0; margin: 0; border-bottom: 1px solid var(--border); }
+.shell main .metric { background: transparent; }
+.shell main .metric + .metric { border-left: 1px solid var(--border); }
+.shell main .two-columns { gap: 0; }
+.shell main .two-columns > :first-child { border-right: 1px solid var(--border); }
+.shell main .panel-head, .shell main .book-list-heading,
+.shell main .settings-tabs { background: transparent; }
+.shell main .book-entries, .shell main .table-wrap tbody,
+.shell main .account-detail, .shell main .child-column,
+.shell main .account-settings-list { background: transparent; }
+.shell main .category-manager, .shell main .account-settings-list,
+.shell main .favorite-board, .shell main .data-card {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.shell main .category-manager, .shell main .account-settings-list {
+  margin-inline: 0;
+  border-block: 1px solid var(--border);
+}
+.shell main .favorite-board { margin: 0; padding: 18px 28px; border-top: 1px solid var(--border); }
+.shell main .account-card:hover { box-shadow: none; transform: none; }
+@media (max-width: 700px) {
+  .shell > main > header { padding: 20px 16px; }
+  .shell > .entry-workspace > header { padding: 14px 16px; }
+  .shell main .entry-home { padding-inline: 16px; }
+  .shell main .period-bar { padding: 16px; }
+  .shell main .favorite-board { padding: 16px; }
+  .shell main .two-columns > :first-child { border-right: 0; }
+}
+.shell main .account-table { border: 0; border-radius: 0; }
+.shell main .account-table tbody { background: transparent; }
+.shell main > footer { padding: 16px 24px; margin: 0; }
+@media (max-width: 1100px) {
+  .shell main .two-columns > :first-child { border-right: 0; }
+}
