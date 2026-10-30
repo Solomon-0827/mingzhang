@@ -17,6 +17,11 @@ NSGraphicsContext.saveGraphicsState()
 NSBezierPath(roundedRect:NSRect(x:0,y:0,width:512,height:512),xRadius:115.2,yRadius:115.2).addClip()
 for x in [64,160,256,352,448] { rect(CGFloat(x),0,1,512,color(0,0,0,0.05)) }
 NSGraphicsContext.restoreGraphicsState()
+// Enlarge only the central mark and seal; preserve the tile and paper grid.
+context.saveGState()
+context.translateBy(x:272,y:264)
+context.scaleBy(x:1.18,y:1.18)
+context.translateBy(x:-272,y:-264)
 let ink = color(42,39,36)
 // 96 x 128 sun, 24pt gap, 112 x 192 moon, centred as in the original.
 for (x,y,w,h) in [(140.0,192.0,96.0,128.0),(260.0,160.0,112.0,192.0)] {
@@ -27,6 +32,7 @@ rect(270,220.667,92,10,ink); rect(270,281.333,92,10,ink)
 context.saveGState(); context.translateBy(x:384,y:348); context.rotate(by:3 * .pi/180)
 rect(-20,-20,40,40,color(166,64,54))
 color(255,255,255,0.2).setStroke(); let seal=NSBezierPath(rect:NSRect(x:-12,y:-12,width:24,height:24));seal.lineWidth=1;seal.stroke()
+context.restoreGState()
 context.restoreGState()
 NSGraphicsContext.restoreGraphicsState()
 try bitmap.representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:CommandLine.arguments[1]))

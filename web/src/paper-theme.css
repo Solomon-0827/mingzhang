@@ -222,6 +222,7 @@ button:disabled { box-shadow: none; transform: none; }
 }
 
 /* Compact favorites retain the paper treatment without oversized hit areas. */
+.entry-home:has(.favorite-shortcuts) { padding-bottom:7px; }
 .entry-home .favorite-shortcuts { gap:6px; padding-top:7px; }
 .entry-home .favorite-shortcuts button {
   min-height:28px; padding:3px 10px; font-size:13px; line-height:20px;

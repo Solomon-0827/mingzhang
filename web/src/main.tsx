@@ -279,7 +279,7 @@ function App() {
       <div className="login">
         <div className="login-story">
           <div className="brand">
-            <img src="/icon.png?v=paper" alt="" width={40} height={40} />
+            <img src="/icon.png?v=paper-large" alt="" width={40} height={40} />
             明账 <span>MINGZHANG</span>
           </div>
           <div>
@@ -346,7 +346,7 @@ function App() {
           {sidebarCollapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
         </button>
         <div className="brand">
-          <img src="/icon.png?v=paper" alt="" width={40} height={40} />
+          <img src="/icon.png?v=paper-large" alt="" width={40} height={40} />
           <b className="brand-name">明账</b><span>个人账本</span>
         </div>
         <div className="workspace">
