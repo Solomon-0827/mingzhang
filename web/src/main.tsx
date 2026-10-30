@@ -604,7 +604,7 @@ function App() {
                     >
                       <CartesianGrid
                         vertical={false}
-                        stroke="#cdd2c5"
+                        stroke="#d9d2c3"
                         strokeDasharray="3 4"
                       />
                       <XAxis
@@ -675,7 +675,7 @@ function App() {
                       </defs>
                       <CartesianGrid
                         vertical={false}
-                        stroke="#cdd2c5"
+                        stroke="#d9d2c3"
                         strokeDasharray="3 4"
                       />
                       <XAxis

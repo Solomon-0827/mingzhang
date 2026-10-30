@@ -35,7 +35,7 @@ function setupWindow() {
     height: 460,
     resizable: false,
     title: "连接明账",
-    backgroundColor: "#f6f7f3",
+    backgroundColor: "#F9F7F0",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -58,7 +58,7 @@ function openLedger(url) {
     minWidth: 880,
     minHeight: 650,
     title: "明账",
-    backgroundColor: "#f6f7f3",
+    backgroundColor: "#F9F7F0",
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
