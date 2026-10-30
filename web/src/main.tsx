@@ -1317,6 +1317,25 @@ function EntryDialog({
       setValue(old => ({...old, category: categoryOptions[0] ?? ""}));
     }
   }, [catalog, value.kind, value.category, editing]);
+  const amountField = (
+      <label className="amount-input">
+        金额（人民币）
+        <div>
+          <span>¥</span>
+          <input
+            aria-label="金额"
+            id={inline ? "home-amount" : undefined}
+            ref={amountRef}
+            autoFocus
+            required
+            inputMode="decimal"
+            placeholder="0.00"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+          />
+        </div>
+      </label>
+  );
   const form = (
     <form
       onSubmit={async (e) => {
@@ -1369,23 +1388,7 @@ function EntryDialog({
           </button>
         ))}
       </div>
-      <label className="amount-input">
-        金额（人民币）
-        <div>
-          <span>¥</span>
-          <input
-            aria-label="金额"
-            id={inline ? "home-amount" : undefined}
-            ref={amountRef}
-            autoFocus
-            required
-            inputMode="decimal"
-            placeholder="0.00"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-          />
-        </div>
-      </label>
+      {!inline && amountField}
         {["income", "expense"].includes(value.kind) && (
           <label className="entry-category">
             分类
@@ -1393,18 +1396,6 @@ function EntryDialog({
               onChange={e => set("category", e.target.value)} />
           </label>
         )}
-      {inline && ["income", "expense"].includes(value.kind) && favorites.some(p => categoryOptions.includes(p)) && (
-        <div className="favorite-shortcuts" role="group" aria-label="常用分类">
-          <span className="favorite-caption">常用分类</span>
-          {favorites.filter(p => categoryOptions.includes(p)).slice(0, 9).map(path => (
-            <button type="button" key={path} title={path} aria-pressed={value.category === path}
-              className={value.category === path ? "selected" : ""}
-              onClick={() => {set("category", path); amountRef.current?.focus();}}>
-              {path.includes("/") ? categoryLeaf(path) : path}
-            </button>
-          ))}
-        </div>
-      )}
       <div className="form-grid">
         <label>
           日期
@@ -1509,6 +1500,19 @@ function EntryDialog({
           </label>
         )}
       </div>
+      {inline && amountField}
+      {inline && ["income", "expense"].includes(value.kind) && favorites.some(p => categoryOptions.includes(p)) && (
+        <div className="favorite-shortcuts" role="group" aria-label="常用分类">
+          <span className="favorite-caption">常用分类</span>
+          {favorites.filter(p => categoryOptions.includes(p)).slice(0, 9).map(path => (
+            <button type="button" key={path} title={path} aria-pressed={value.category === path}
+              className={value.category === path ? "selected" : ""}
+              onClick={() => {set("category", path); amountRef.current?.focus();}}>
+              {path.includes("/") ? categoryLeaf(path) : path}
+            </button>
+          ))}
+        </div>
+      )}
       {error && (
         <p role="alert" className="error">
           {error}
