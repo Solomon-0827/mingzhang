@@ -1,11 +1,11 @@
 /* Visual-only paper treatment: all workspace geometry remains in style.css. */
 :root {
-  --paper: #e5e7de;
-  --paper-light: #f3f4ec;
+  --paper: #F9F7F0;
+  --paper-light: #fffdf7;
   --ink: #2a2724;
   --green: #4a5d4e;
-  --border: #cdd2c5;
-  --muted: #77756a;
+  --border: #d9d2c3;
+  --muted: #71695c;
   --income: #4a5d4e;
   --expense: #a64036;
   color: var(--ink);
@@ -18,26 +18,26 @@ body::after {
   inset: 0;
   z-index: 4000;
   pointer-events: none;
-  opacity: .085;
+  opacity: .035;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='paper'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.74' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath fill='%23000' filter='url(%23paper)' opacity='.65' d='M0 0h180v180H0z'/%3E%3C/svg%3E");
 }
 .shell {
-  background: radial-gradient(ellipse at 80% 0%, #f6f8ef45, transparent 65%), var(--paper);
+  background: var(--paper);
 }
 .shell > aside {
-  background: linear-gradient(160deg, #dfe4d8, #d9dfd2);
+  background: linear-gradient(160deg, #f2ede1, #ece5d6);
   box-shadow: 1px 0 0 #ffffff50;
 }
 h1, h2, h3, .brand { color: var(--ink); }
 .brand { font-weight: 500; }
 .panel, .book-list, .metric, .account-card {
-  background: #f3f4ec;
+  background: #fffdf7;
   border-color: var(--border);
   box-shadow: 0 3px 14px #40371f05;
 }
 .entry-home {
-  background: linear-gradient(110deg, #dce3d4, #e7ebdf);
-  box-shadow: inset 0 2px 0 #cdd2c5, 0 4px 18px #40371f06;
+  background: linear-gradient(110deg, #eee7d6, #f4efe3);
+  box-shadow: inset 0 2px 0 #d9d2c3, 0 4px 18px #40371f06;
 }
 .shell .primary, .primary {
   background: var(--ink);
@@ -56,12 +56,12 @@ h1, h2, h3, .brand { color: var(--ink); }
   box-shadow: 1px 1px 0 #2a272422;
 }
 .nav-selection, .kind-selection {
-  background: #cfd8c7;
+  background: #e4d9c3;
   box-shadow: inset 0 1px 0 #fffdf566;
 }
 .shell > aside nav button.active { color: var(--ink); }
 .shell > aside nav button:hover > svg { transform: none; }
-.metric.balance { background: #d9e1d1; color: var(--ink); border-color: var(--border); }
+.metric.balance { background: #e9e3d1; color: var(--ink); border-color: var(--border); }
 .metric.balance > div, .metric.balance > p { color: var(--muted); }
 .metric.income > strong, .income-text, .book-in { color: var(--income); }
 .metric.expense > strong, .book-out, .negative-balance { color: var(--expense); }
@@ -89,19 +89,19 @@ input:focus, select:focus, textarea:focus { border-color: #827a5d; box-shadow: 0
   font-variant-numeric: oldstyle-nums proportional-nums;
 }
 
-/* Layer the ledger like separate sheets on a muted green paper ground. */
-.book-list-heading { background: #e6eadd; }
-.book-filters { background: #eef1e7; }
-.book-entries { background: #f7f7f0; }
-.book-entries th { background: #edf0e5; }
-.book-day td { background: #e5eadd; }
-.month-rail { background: #e2e7d9; }
-.month-rail > button { background: #edf0e6; }
-.month-rail > button.active { background: #f8f8f1; }
+/* Layer the ledger like separate sheets on a warm ivory paper ground. */
+.book-list-heading { background: #f1ebde; }
+.book-filters { background: #f7f3e9; }
+.book-entries { background: #fffdf7; }
+.book-entries th { background: #f4eee1; }
+.book-day td { background: #f2ecdf; }
+.month-rail { background: #eee7d8; }
+.month-rail > button { background: #f5f0e5; }
+.month-rail > button.active { background: #fffdf7; }
 .book-kind.book-in { background: #dde7d8; }
 .book-kind.book-out { background: #eee1d9; }
-.book-kind.book-neutral { background: #e6e8df; }
-.entry-home .favorite-shortcuts button:not(.selected) { background: #f4f6ec; }
+.book-kind.book-neutral { background: #eee9df; }
+.entry-home .favorite-shortcuts button:not(.selected) { background: #fffaf0; }
 .amount-input input:focus, .amount-input input:focus-visible {
   outline: none;
   border: 0;
@@ -110,27 +110,27 @@ input:focus, select:focus, textarea:focus { border-color: #827a5d; box-shadow: 0
 .amount-input > div:focus-within { border-bottom-color: var(--income); }
 
 /* Shared paper hierarchy across overview, reports, accounts and settings. */
-.panel-head, .settings-tabs { background: #e6eadd; }
-.chart-footer, .panel-actions, .settings-save { background: #edf0e6; border-color: var(--border); }
-.table-wrap th { background: #e7ecdf; }
-.table-wrap tbody { background: #f7f8f0; }
-.table-wrap tbody tr:hover { background: #eef2e6; }
+.panel-head, .settings-tabs { background: #f1ebde; }
+.chart-footer, .panel-actions, .settings-save { background: #f5f0e5; border-color: var(--border); }
+.table-wrap th { background: #f1ebde; }
+.table-wrap tbody { background: #fffdf7; }
+.table-wrap tbody tr:hover { background: #f4eddf; }
 .metric.income { background: #e4ebdc; }
 .metric.expense { background: #f0e7df; }
-.metric.balance { background: #d9e1d1; }
-.account-rail, .parent-column { background: #e0e6d8; }
-.account-detail, .child-column, .account-settings-list { background: #f7f8f0; }
-.settings-column-heading, .category-crud { background: #edf0e6; }
-.account-card { background: #f7f8f0; }
-.account-card:hover, .parent-choice.selected { background: #dce5d2; }
-.data-card { background: #f3f5eb; }
-.feature-icon { background: #dce5d2; color: var(--income); }
+.metric.balance { background: #e9e3d1; }
+.account-rail, .parent-column { background: #eae2d2; }
+.account-detail, .child-column, .account-settings-list { background: #fffdf7; }
+.settings-column-heading, .category-crud { background: #f5f0e5; }
+.account-card { background: #fffdf7; }
+.account-card:hover, .parent-choice.selected { background: #e9dfc9; }
+.data-card { background: #faf6ed; }
+.feature-icon { background: #e9dfc9; color: var(--income); }
 .feature-icon.warm, .transaction-icon.expense { background: #eee1d9; color: var(--expense); }
 .transaction-icon.income, .transaction-icon.refund { background: #dde7d8; color: var(--income); }
-.favorite-board { background: #e6ecde; }
-input, select, textarea, .secondary, .icon-button { background: #f7f8f0; border-color: var(--border); }
+.favorite-board { background: #f2ebdb; }
+input, select, textarea, .secondary, .icon-button { background: #fffdf7; border-color: var(--border); }
 .amount-input input { background: transparent; }
-.recharts-default-tooltip { background: #f7f8f0 !important; border-color: #cdd2c5 !important; border-radius: 7px; }
+.recharts-default-tooltip { background: #fffdf7 !important; border-color: #d9d2c3 !important; border-radius: 7px; }
 .recharts-text, .category-row b, .asset-overview b, .asset-overview strong,
 .account-flow strong, .account-rail b, .entry-account-balance strong,
 .month-rail small, .loan-row strong {
@@ -141,7 +141,7 @@ input, select, textarea, .secondary, .icon-button { background: #f7f8f0; border-
 input::file-selector-button {
   font: inherit;
   color: var(--ink);
-  background: #e0e6d8;
+  background: #eae2d2;
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 5px 10px;
@@ -158,7 +158,7 @@ input::file-selector-button {
 }
 
 /* Offset grey paper backing for raised actions; layout and hit areas stay intact. */
-:root { --button-backing: #bfc3b8; }
+:root { --button-backing: #cfc5b2; }
 .shell .primary, .primary,
 .secondary, .icon-button, .favorite-shortcuts button,
 .favorite-button-order button, .chart-series-controls button,
@@ -185,7 +185,7 @@ input::file-selector-button {
 }
 .segments .selected, .kind-selection, .nav-selection {
   border-radius: 3px;
-  box-shadow: 2px 2px 0 #bfc3b880;
+  box-shadow: 2px 2px 0 #cfc5b280;
 }
 button:disabled { box-shadow: none; transform: none; }
 @media (prefers-reduced-motion: reduce) {
@@ -200,14 +200,14 @@ button:disabled { box-shadow: none; transform: none; }
 }
 .account-rail > button:hover, .account-rail > button:focus-visible {
   z-index: 1;
-  background: #edf0e6;
+  background: #f5f0e5;
   box-shadow: 3px 3px 0 var(--button-backing);
   transform: translate(-1px, -1px);
 }
-.account-rail > button.active:hover, .account-rail > button.active:focus-visible { background: #f7f8f0; }
+.account-rail > button.active:hover, .account-rail > button.active:focus-visible { background: #fffdf7; }
 .account-rail > button:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--button-backing); }
 .account-table tbody tr { transition: background-color .2s ease; }
-.account-table tbody tr:hover, .account-table tbody tr:focus-within { background: #e8edde; }
+.account-table tbody tr:hover, .account-table tbody tr:focus-within { background: #f1eadb; }
 .account-table tbody td:first-child { transition: transform .2s var(--ease-out); }
 .account-table tbody tr:hover td:first-child,
 .account-table tbody tr:focus-within td:first-child { transform: translateX(3px); }
