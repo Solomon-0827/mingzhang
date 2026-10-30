@@ -22,11 +22,11 @@ export function ControlTheme({ children }: { children: React.ReactNode }) {
           controlHeight: 44,
           fontSize: 14,
           fontFamily: '"Playfair Display", "Noto Serif SC", "Songti SC", "STSong", serif',
-          colorPrimaryBg: "#eee4cf",
+          colorPrimaryBg: "#f3ecdd",
           boxShadowSecondary: "0 12px 36px rgba(51,45,30,.12)",
         },
         components: {
-          Select: { optionSelectedBg: "#eee4cf", optionHeight: 38 },
+          Select: { optionSelectedBg: "#f3ecdd", optionHeight: 38 },
           DatePicker: { cellHeight: 34 },
         },
       }}
