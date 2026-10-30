@@ -41,6 +41,7 @@ import { ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./contro
 import { categoryLeaf } from "./category-groups";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
+import "./paper-theme.css";
 import { OrderSettings } from "./order-settings";
 
 const categories = [
@@ -278,7 +279,7 @@ function App() {
       <div className="login">
         <div className="login-story">
           <div className="brand">
-            <img src="/icon.png" alt="" width={40} height={40} />
+            <img src="/icon.png?v=paper" alt="" width={40} height={40} />
             明账 <span>MINGZHANG</span>
           </div>
           <div>
@@ -345,7 +346,7 @@ function App() {
           {sidebarCollapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
         </button>
         <div className="brand">
-          <img src="/icon.png" alt="" width={40} height={40} />
+          <img src="/icon.png?v=paper" alt="" width={40} height={40} />
           <b className="brand-name">明账</b><span>个人账本</span>
         </div>
         <div className="workspace">
@@ -378,7 +379,7 @@ function App() {
                 setCategoryFilter("");
               }}
             >
-              {page === id && <motion.span className="nav-selection" layoutId="main-navigation-active" transition={{ type: "spring", stiffness: 420, damping: 34 }} />}
+              {page === id && <motion.span className="nav-selection" layoutId="main-navigation-active" transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }} />}
               {React.createElement(Icon as typeof Wallet, { size: 19 })}
               <span className="nav-text">{String(label)}</span>
             </button>
@@ -603,7 +604,7 @@ function App() {
                     >
                       <CartesianGrid
                         vertical={false}
-                        stroke="#e9ede9"
+                        stroke="#cdd2c5"
                         strokeDasharray="3 4"
                       />
                       <XAxis
@@ -628,7 +629,7 @@ function App() {
                         hide={!visibleCurves.income}
                         type="monotone"
                         dataKey="income"
-                        stroke="#257864"
+                        stroke="#4a5d4e"
                         strokeWidth={2.5}
                         dot={false}
                       />
@@ -637,7 +638,7 @@ function App() {
                         hide={!visibleCurves.expense}
                         type="monotone"
                         dataKey="expense"
-                        stroke="#d69957"
+                        stroke="#a64036"
                         strokeWidth={2.5}
                         dot={false}
                       />
@@ -662,19 +663,19 @@ function App() {
                         >
                           <stop
                             offset="0%"
-                            stopColor="#257864"
+                            stopColor="#4a5d4e"
                             stopOpacity={0.22}
                           />
                           <stop
                             offset="100%"
-                            stopColor="#257864"
+                            stopColor="#4a5d4e"
                             stopOpacity={0}
                           />
                         </linearGradient>
                       </defs>
                       <CartesianGrid
                         vertical={false}
-                        stroke="#e9ede9"
+                        stroke="#cdd2c5"
                         strokeDasharray="3 4"
                       />
                       <XAxis
@@ -696,7 +697,7 @@ function App() {
                         hide={!visibleCurves.cumulative}
                         type="monotone"
                         dataKey="cumulative"
-                        stroke="#257864"
+                        stroke="#4a5d4e"
                         fill="url(#balanceFill)"
                         strokeWidth={2.5}
                       />
@@ -958,7 +959,7 @@ function App() {
                               "numeric " +
                               (["income", "refund"].includes(x.kind)
                                 ? "income-text"
-                                : "")
+                                : x.kind === "expense" ? "book-out" : "")
                             }
                           >
                             {["income", "refund"].includes(x.kind)
@@ -1218,8 +1219,8 @@ function Modal({
       }}
     >
       <motion.section
-        initial={{ opacity: 0, y: 14, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ type: "spring", stiffness: 420, damping: 34 }}
+        initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
         className="modal"
         ref={dialogRef}
         onKeyDown={(event) => {
@@ -1363,7 +1364,7 @@ function EntryDialog({
               })
             }
           >
-            {value.kind === k && <motion.span className="kind-selection" layoutId={`entry-kind-${kindMotionId}`} transition={{ type: "spring", stiffness: 500, damping: 36 }} />}
+            {value.kind === k && <motion.span className="kind-selection" layoutId={`entry-kind-${kindMotionId}`} transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }} />}
             <span className="kind-label">{v}</span>
           </button>
         ))}
@@ -1517,7 +1518,7 @@ function EntryDialog({
         <small>
           {inline ? "Enter 保存 · 连续记账" : "保存失败时，输入内容会保留。"}
         </small>
-        <button aria-label={busy ? "正在保存…" : "保存交易"} title={busy ? "正在保存…" : "保存交易"} className="primary" disabled={busy}><Check size={18} aria-hidden="true" /></button>
+        <button aria-label={busy ? "正在保存…" : "记一笔"} title={busy ? "正在保存…" : "记一笔"} className="primary" disabled={busy}>{busy ? "正在保存…" : "记一笔"}</button>
       </div>
     </form>
   );

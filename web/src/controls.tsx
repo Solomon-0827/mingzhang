@@ -13,19 +13,20 @@ export function ControlTheme({ children }: { children: React.ReactNode }) {
       locale={zhCN}
       theme={{
         token: {
-          colorPrimary: "#257864",
-          colorText: "#2d443a",
-          colorBorder: "#dfe5dd",
-          colorBgElevated: "#ffffff",
+          colorPrimary: "#4a5d4e",
+          colorText: "#2a2724",
+          colorBorder: "#cdd2c5",
+          colorBgElevated: "#f7f8f0",
+          colorBgContainer: "#f5f7ee",
           borderRadius: 10,
           controlHeight: 44,
           fontSize: 14,
-          fontFamily: "inherit",
-          colorPrimaryBg: "#eaf3ec",
-          boxShadowSecondary: "0 12px 36px rgba(30,65,48,.14)",
+          fontFamily: '"Playfair Display", "Noto Serif SC", "Songti SC", "STSong", serif',
+          colorPrimaryBg: "#dfe7d6",
+          boxShadowSecondary: "0 12px 36px rgba(51,45,30,.12)",
         },
         components: {
-          Select: { optionSelectedBg: "#eaf3ec", optionHeight: 38 },
+          Select: { optionSelectedBg: "#dfe7d6", optionHeight: 38 },
           DatePicker: { cellHeight: 34 },
         },
       }}

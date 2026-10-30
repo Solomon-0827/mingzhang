@@ -1,0 +1,222 @@
+/* Visual-only paper treatment: all workspace geometry remains in style.css. */
+:root {
+  --paper: #e5e7de;
+  --paper-light: #f3f4ec;
+  --ink: #2a2724;
+  --green: #4a5d4e;
+  --border: #cdd2c5;
+  --muted: #77756a;
+  --income: #4a5d4e;
+  --expense: #a64036;
+  color: var(--ink);
+  background: var(--paper);
+  font-variant-numeric: oldstyle-nums proportional-nums;
+}
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  pointer-events: none;
+  opacity: .085;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='paper'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.74' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath fill='%23000' filter='url(%23paper)' opacity='.65' d='M0 0h180v180H0z'/%3E%3C/svg%3E");
+}
+.shell {
+  background: radial-gradient(ellipse at 80% 0%, #f6f8ef45, transparent 65%), var(--paper);
+}
+.shell > aside {
+  background: linear-gradient(160deg, #dfe4d8, #d9dfd2);
+  box-shadow: 1px 0 0 #ffffff50;
+}
+h1, h2, h3, .brand { color: var(--ink); }
+.brand { font-weight: 500; }
+.panel, .book-list, .metric, .account-card {
+  background: #f3f4ec;
+  border-color: var(--border);
+  box-shadow: 0 3px 14px #40371f05;
+}
+.entry-home {
+  background: linear-gradient(110deg, #dce3d4, #e7ebdf);
+  box-shadow: inset 0 2px 0 #cdd2c5, 0 4px 18px #40371f06;
+}
+.shell .primary, .primary {
+  background: var(--ink);
+  color: #fbf8ef;
+  box-shadow: 3px 3px 0 #2a27241a;
+  transition: background .2s, box-shadow .2s, transform .2s var(--ease-out);
+}
+.shell .primary:hover:not(:disabled), .primary:hover:not(:disabled) {
+  background: var(--expense);
+  filter: none;
+  box-shadow: 4px 5px 0 #2a272422;
+  transform: translateY(-1px);
+}
+.shell .primary:active:not(:disabled), .primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 1px 1px 0 #2a272422;
+}
+.nav-selection, .kind-selection {
+  background: #cfd8c7;
+  box-shadow: inset 0 1px 0 #fffdf566;
+}
+.shell > aside nav button.active { color: var(--ink); }
+.shell > aside nav button:hover > svg { transform: none; }
+.metric.balance { background: #d9e1d1; color: var(--ink); border-color: var(--border); }
+.metric.balance > div, .metric.balance > p { color: var(--muted); }
+.metric.income > strong, .income-text, .book-in { color: var(--income); }
+.metric.expense > strong, .book-out, .negative-balance { color: var(--expense); }
+.green-dot { background: var(--income); }
+.amber-dot { background: var(--expense); }
+.metric.expense svg { color: var(--expense); background: #efe0d7; }
+.metric.income svg { color: var(--income); background: #e4e7db; }
+.favorite-shortcuts button.selected { background: var(--ink); border-color: var(--ink); }
+.settings-tab-indicator { background: var(--ink); height: 2px; }
+.account-card:hover { transform: translateY(-1px); box-shadow: 0 5px 18px #40371f0d; }
+.modal { background: var(--paper-light); border-color: var(--border); box-shadow: 0 20px 65px #2a272426; }
+.modal-backdrop { background: #2a27244d; }
+button:focus-visible, a:focus-visible { outline-color: #827a5d; }
+input:focus, select:focus, textarea:focus { border-color: #827a5d; box-shadow: 0 0 0 3px #827a5d18; }
+@media (prefers-reduced-motion: reduce) {
+  .primary, .shell .primary, .account-card { transition: none; }
+  .primary:hover:not(:disabled), .shell .primary:hover:not(:disabled), .account-card:hover { transform: none; }
+}
+@media print { body::after { display: none; } }
+
+/* Display numerals echo the reference while Chinese labels retain their serif face. */
+.numeric, .book-sums b, .book-amount, .metric > strong, .amount-input input,
+.account-card > strong, .book-day-heading strong, .month-rail strong {
+  font-family: "Playfair Display", "Noto Serif SC", Georgia, serif;
+  font-variant-numeric: oldstyle-nums proportional-nums;
+}
+
+/* Layer the ledger like separate sheets on a muted green paper ground. */
+.book-list-heading { background: #e6eadd; }
+.book-filters { background: #eef1e7; }
+.book-entries { background: #f7f7f0; }
+.book-entries th { background: #edf0e5; }
+.book-day td { background: #e5eadd; }
+.month-rail { background: #e2e7d9; }
+.month-rail > button { background: #edf0e6; }
+.month-rail > button.active { background: #f8f8f1; }
+.book-kind.book-in { background: #dde7d8; }
+.book-kind.book-out { background: #eee1d9; }
+.book-kind.book-neutral { background: #e6e8df; }
+.entry-home .favorite-shortcuts button:not(.selected) { background: #f4f6ec; }
+.amount-input input:focus, .amount-input input:focus-visible {
+  outline: none;
+  border: 0;
+  box-shadow: none;
+}
+.amount-input > div:focus-within { border-bottom-color: var(--income); }
+
+/* Shared paper hierarchy across overview, reports, accounts and settings. */
+.panel-head, .settings-tabs { background: #e6eadd; }
+.chart-footer, .panel-actions, .settings-save { background: #edf0e6; border-color: var(--border); }
+.table-wrap th { background: #e7ecdf; }
+.table-wrap tbody { background: #f7f8f0; }
+.table-wrap tbody tr:hover { background: #eef2e6; }
+.metric.income { background: #e4ebdc; }
+.metric.expense { background: #f0e7df; }
+.metric.balance { background: #d9e1d1; }
+.account-rail, .parent-column { background: #e0e6d8; }
+.account-detail, .child-column, .account-settings-list { background: #f7f8f0; }
+.settings-column-heading, .category-crud { background: #edf0e6; }
+.account-card { background: #f7f8f0; }
+.account-card:hover, .parent-choice.selected { background: #dce5d2; }
+.data-card { background: #f3f5eb; }
+.feature-icon { background: #dce5d2; color: var(--income); }
+.feature-icon.warm, .transaction-icon.expense { background: #eee1d9; color: var(--expense); }
+.transaction-icon.income, .transaction-icon.refund { background: #dde7d8; color: var(--income); }
+.favorite-board { background: #e6ecde; }
+input, select, textarea, .secondary, .icon-button { background: #f7f8f0; border-color: var(--border); }
+.amount-input input { background: transparent; }
+.recharts-default-tooltip { background: #f7f8f0 !important; border-color: #cdd2c5 !important; border-radius: 7px; }
+.recharts-text, .category-row b, .asset-overview b, .asset-overview strong,
+.account-flow strong, .account-rail b, .entry-account-balance strong,
+.month-rail small, .loan-row strong {
+  font-family: "Playfair Display", "Noto Serif SC", Georgia, serif;
+  font-variant-numeric: oldstyle-nums proportional-nums;
+}
+
+input::file-selector-button {
+  font: inherit;
+  color: var(--ink);
+  background: #e0e6d8;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 10px;
+  margin-right: 10px;
+  cursor: pointer;
+}
+
+/* Latin/digits use Playfair everywhere; Chinese falls through to Noto Serif SC.
+   Ant Design sets tabular figures on controls, so explicitly reset those too. */
+:root, .ant-select, .ant-picker, .ant-select-dropdown, .ant-picker-dropdown {
+  font-family: "Playfair Display", "Noto Serif SC", "Songti SC", serif;
+  font-variant-numeric: oldstyle-nums proportional-nums;
+  font-feature-settings: "onum" 1, "lnum" 0, "pnum" 1, "tnum" 0;
+}
+
+/* Offset grey paper backing for raised actions; layout and hit areas stay intact. */
+:root { --button-backing: #bfc3b8; }
+.shell .primary, .primary,
+.secondary, .icon-button, .favorite-shortcuts button,
+.favorite-button-order button, .chart-series-controls button,
+.book-pagination button, .category-tool.add {
+  border-radius: 3px;
+  box-shadow: 4px 4px 0 var(--button-backing);
+  transition: transform .18s ease, box-shadow .18s ease, background-color .18s ease;
+}
+.shell .primary:hover:not(:disabled), .primary:hover:not(:disabled),
+.secondary:hover:not(:disabled), .icon-button:hover:not(:disabled),
+.favorite-shortcuts button:hover:not(:disabled),
+.favorite-button-order button:hover:not(:disabled), .chart-series-controls button:hover:not(:disabled),
+.book-pagination button:hover:not(:disabled), .category-tool.add:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 5px 5px 0 var(--button-backing);
+}
+.shell .primary:active:not(:disabled), .primary:active:not(:disabled),
+.secondary:active:not(:disabled), .icon-button:active:not(:disabled),
+.favorite-shortcuts button:active:not(:disabled),
+.favorite-button-order button:active:not(:disabled), .chart-series-controls button:active:not(:disabled),
+.book-pagination button:active:not(:disabled), .category-tool.add:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: 1px 1px 0 var(--button-backing);
+}
+.segments .selected, .kind-selection, .nav-selection {
+  border-radius: 3px;
+  box-shadow: 2px 2px 0 #bfc3b880;
+}
+button:disabled { box-shadow: none; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .shell button, .shell .primary, .shell .secondary { transition: none; }
+}
+
+/* Account headings and totals share the sheet; only navigation/table headers are tinted. */
+.account-detail-heading, .account-flow { background: transparent; }
+.account-rail > button {
+  position: relative;
+  transition: background-color .2s ease, box-shadow .2s ease, transform .2s var(--ease-out);
+}
+.account-rail > button:hover, .account-rail > button:focus-visible {
+  z-index: 1;
+  background: #edf0e6;
+  box-shadow: 3px 3px 0 var(--button-backing);
+  transform: translate(-1px, -1px);
+}
+.account-rail > button.active:hover, .account-rail > button.active:focus-visible { background: #f7f8f0; }
+.account-rail > button:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--button-backing); }
+.account-table tbody tr { transition: background-color .2s ease; }
+.account-table tbody tr:hover, .account-table tbody tr:focus-within { background: #e8edde; }
+.account-table tbody td:first-child { transition: transform .2s var(--ease-out); }
+.account-table tbody tr:hover td:first-child,
+.account-table tbody tr:focus-within td:first-child { transform: translateX(3px); }
+.account-table .text-button { transition: color .2s ease; }
+.account-table .text-button:hover { color: var(--income); }
+@media (prefers-reduced-motion: reduce) {
+  .account-rail > button, .account-table tbody tr, .account-table tbody td:first-child,
+  .account-table .text-button { transition: none; }
+  .account-rail > button:hover, .account-rail > button:focus-visible, .account-rail > button:active,
+  .account-table tbody tr:hover td:first-child,
+  .account-table tbody tr:focus-within td:first-child { transform: none; }
+}
