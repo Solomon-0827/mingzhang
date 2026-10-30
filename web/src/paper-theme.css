@@ -232,3 +232,9 @@ button:disabled { box-shadow: none; transform: none; }
 .entry-home .favorite-shortcuts button:active:not(:disabled) { transform:translate(1px,1px); box-shadow:1px 1px 0 var(--button-backing); }
 .favorite-button-order { min-height:30px; gap:7px; }
 .favorite-button-order button { padding:5px 10px; font-size:13px; line-height:20px; gap:6px; }
+
+/* Keep the welcome screen in the same ivory palette as the workspace. */
+.login { background: var(--paper); }
+.login-story { background: #f0e9da; color: var(--ink); }
+.login-story p, .login-story small, .login-story .eyebrow,
+.login-story .brand span { color: var(--muted); }
