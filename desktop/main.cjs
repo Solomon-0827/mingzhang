@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, dialog, nativeImage } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
@@ -120,6 +120,12 @@ if (!app.requestSingleInstanceLock()) {
     } else setupWindow();
   });
   app.whenReady().then(() => {
+    // Explicitly refresh the running Dock icon after an installed app is upgraded.
+    // macOS may otherwise retain the icon from the previous bundle registration.
+    if (process.platform === "darwin") {
+      const icon = nativeImage.createFromPath(path.join(__dirname, "dock-icon.png"));
+      if (!icon.isEmpty()) app.dock.setIcon(icon);
+    }
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([
         {

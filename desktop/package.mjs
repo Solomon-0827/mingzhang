@@ -18,6 +18,7 @@ const stage = await mkdtemp(path.join(tmpdir(), 'mingzhang-package-'));
 for (const name of ['main.cjs', 'preload.cjs', 'setup.js', 'setup.html']) {
   await copyFile(path.join(dir, name), path.join(stage, name));
 }
+await copyFile(path.join(dir, '..', 'web', 'public', 'icon.png'), path.join(stage, 'dock-icon.png'));
 await writeFile(path.join(stage, 'package.json'), JSON.stringify({
   name: metadata.name, productName: metadata.productName, version: metadata.version,
   description: metadata.description, main: metadata.main,
