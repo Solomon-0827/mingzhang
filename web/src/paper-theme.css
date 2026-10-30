@@ -302,3 +302,25 @@ button:disabled { box-shadow: none; transform: none; }
 @media (max-width: 1100px) {
   .shell main .two-columns > :first-child { border-right: 0; }
 }
+
+/* Follow the entry flow from category/date/account to the amount on the right. */
+.entry-home form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; align-items: end; }
+.entry-home .form-grid { display: contents; }
+.entry-home .form-grid label, .entry-home .form-grid label:last-child { grid-column: auto; min-width: 0; }
+.entry-home .entry-kinds { grid-column: 1 / -1; margin: 0; }
+.entry-home .amount-input { grid-column: 2; margin: 0; min-width: 0; }
+.entry-home .amount-input input { text-align: right; padding-right: 0; }
+.entry-home .favorite-shortcuts { grid-column: 1 / -1; grid-row: auto; justify-content: flex-end; }
+.entry-home .modal-footer { grid-column: 1 / -1; grid-row: auto; margin: 0; }
+.entry-home form > .error { grid-column: 1 / -1; }
+@media (min-width: 1100px) {
+  .entry-home form { grid-template-columns: minmax(140px, 1fr) minmax(170px, 1fr) minmax(180px, 1.2fr) minmax(180px, 1.2fr); }
+  .entry-home .entry-kinds { grid-column: 1 / 4; grid-row: 1; align-self: center; }
+  .entry-home .entry-category { grid-column: 1; grid-row: 2; }
+  .entry-home .form-grid label { grid-row: 2; }
+  .entry-home .amount-input { grid-column: 4; grid-row: 2; }
+  .entry-home .modal-footer { grid-column: 4; grid-row: 1; align-items: center; gap: 14px; }
+  .entry-home .modal-footer > small { position: static; font-size: 10px; }
+  .entry-home .modal-footer .primary { min-width: 90px; height: 34px; }
+  .entry-home .favorite-shortcuts { grid-row: 3; }
+}
