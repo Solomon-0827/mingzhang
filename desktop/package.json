@@ -7,7 +7,9 @@
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
-    "package": "node package.mjs"
+    "package": "node package.mjs",
+    "publish": "node publish.mjs",
+    "release": "node package.mjs && node publish.mjs"
   },
   "devDependencies": {
     "electron": "^42.0.0",

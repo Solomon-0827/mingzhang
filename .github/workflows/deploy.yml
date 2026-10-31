@@ -22,11 +22,11 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: pip install uv
       - run: uv sync --frozen
-      - run: uv run ruff check backend scripts tests
+      - run: uv run ruff check backend scripts tests deploy/publish-desktop.py
       - run: uv run pytest -q
       - run: npm --prefix web ci
       - run: npm --prefix web run build
-      - run: node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/setup.js
+      - run: node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/setup.js && node --check desktop/publish.mjs
       - run: bash -n deploy/upgrade.sh
       - run: docker run --rm -v "$PWD:/source:ro" python:3.12-slim bash /source/tests/deploy-smoke.sh
       - name: Package application only

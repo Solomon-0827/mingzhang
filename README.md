@@ -139,12 +139,35 @@ PR 运行验证，合并到 `feat/first-release` 后构建部署包，使用 pro
 Windows 版解压整个文件夹后运行「明账.exe」；Mac 版解压后拖入应用程序。两者均连接已配置的账本服务。
 当前 Mac 使用 ad-hoc 签名但未公证，Windows 未做发行商代码签名；不声称已通过 Windows 11 真机验收。
 
-GitHub Actions 分别在 macOS、Windows runner 构建客户端，再将两份压缩包及 SHA256 校验文件放入
-网页的 `/downloads/`；任一平台失败均阻止部署，避免发布空下载链接。ZIP 和用户数据不进入 Git。
-仅包含应用代码，不包含开发机连接配置、会话或账本。
+客户端由本地手动打包并通过 SSH 上传到现有阿里云服务器，GitHub 不构建客户端。
+网页继续使用固定的 `/downloads/mingzhang-mac-arm64.zip` 和
+`/downloads/mingzhang-windows11-x64.zip`，无需修改下载链接或增加存储服务。
+网页升级会保留已上传的安装包。ZIP、SSH 私钥和用户数据不进入 Git。
 
-本地打包使用 `npm --prefix desktop run package`，在 macOS 生成 arm64 包，在 Windows 生成 x64 包；
-产物位于 `desktop/out/downloads/`。网页本地预览需将下载产物复制到 `web/dist/downloads/`，重新构建网页后要重新复制。
+在 macOS 打包 Mac arm64，在 Windows 打包 Windows x64（需要 Node.js 和 OpenSSH）：
+
+```sh
+npm --prefix desktop ci
+npm --prefix desktop run package
+```
+
+产物在 `desktop/out/downloads/`，附 SHA256 校验文件，仅包含应用代码。
+发布前在本机环境变量中配置 `DESKTOP_SSH_TARGET`（部署用户@服务器）、
+`DESKTOP_SSH_KEY`（专用私钥路径）、`DESKTOP_KNOWN_HOSTS`（已核验主机公钥文件）。
+使用现有部署身份，不新增服务器权限。随后运行：
+
+```sh
+npm --prefix desktop run publish
+# 也可一键打包并发布当前平台：
+npm --prefix desktop run release
+# 上传另一台机器打好的 Windows 包（校验文件需在相邻位置）：
+npm --prefix desktop run publish -- win32 /absolute/path/mingzhang-windows11-x64.zip
+```
+
+上传前后均核对 SHA256，服务端检查 ZIP 完整性后原子替换安装包文件。
+发布与网页部署共用锁，只更新所选平台，不改账本或重启服务。
+安装包与校验文件依次替换；若下载恰逢发布导致校验不符，重新下载两份文件即可。
+普通网页改动无需重打客户端；仅外壳、图标等变化时手动发布。
 
 ## 账户余额与借还款
 
