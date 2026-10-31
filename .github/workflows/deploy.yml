@@ -26,47 +26,21 @@ jobs:
       - run: uv run pytest -q
       - run: npm --prefix web ci
       - run: npm --prefix web run build
+      - run: node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/setup.js
       - run: bash -n deploy/upgrade.sh
       - run: docker run --rm -v "$PWD:/source:ro" python:3.12-slim bash /source/tests/deploy-smoke.sh
       - name: Package application only
+        if: github.event_name != 'pull_request'
         run: tar --exclude=__pycache__ --exclude='*.pyc' -czf mingzhang.tar.gz backend scripts deploy web/dist
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
         with:
           name: mingzhang-${{ github.sha }}
           path: mingzhang.tar.gz
-          retention-days: 14
-  desktop:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-latest
-            platform: darwin
-            arch: arm64
-          - runner: windows-latest
-            platform: win32
-            arch: x64
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: desktop/package-lock.json
-      - run: npm --prefix desktop ci
-      - run: node --check desktop/main.cjs
-      - run: node --check desktop/preload.cjs
-      - run: node --check desktop/setup.js
-      - run: npm --prefix desktop run package -- ${{ matrix.platform }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
-          path: desktop/out/downloads/*
-          compression-level: 0
-          retention-days: 14
+          retention-days: 1
+  # Desktop packaging is paused. Existing server downloads are preserved on upgrade.
   deploy:
-    needs: [verify, desktop]
+    needs: [verify]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release'
     runs-on: ubuntu-24.04
     environment: production
@@ -77,22 +51,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: mingzhang-${{ github.sha }}
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: desktop-*
-          path: desktop-downloads
-          merge-multiple: true
-      - name: Include both desktop downloads in the website
-        run: |
-          mkdir bundle
-          tar -xzf mingzhang.tar.gz -C bundle
-          mkdir -p bundle/web/dist/downloads
-          cp desktop-downloads/* bundle/web/dist/downloads/
-          cd bundle/web/dist/downloads
-          sha256sum -c mingzhang-mac-arm64.zip.sha256
-          sha256sum -c mingzhang-windows11-x64.zip.sha256
-          cd ../../..
-          tar -czf ../mingzhang.tar.gz backend scripts deploy web/dist
       - name: Reject stale deployment
         env:
           GH_TOKEN: ${{ github.token }}

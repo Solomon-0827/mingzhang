@@ -4,6 +4,8 @@ set -euo pipefail
 mkdir -p /opt/mingzhang/{app,venv,backups,data} /fixture/{backend,scripts,web/dist,deploy} /stubs
 groupadd mingzhang
 useradd -g mingzhang mingzhang
+mkdir -p /opt/mingzhang/app/web/dist/downloads
+printf 'existing installer\n' > /opt/mingzhang/app/web/dist/downloads/mingzhang-mac-arm64.zip
 printf 'old\n' > /opt/mingzhang/app/marker
 printf 'old\n' > /opt/mingzhang/venv/marker
 printf 'LEDGER_DB=/opt/mingzhang/data/ledger.sqlite3\n' > /opt/mingzhang/config.env
@@ -29,7 +31,15 @@ bash deploy/upgrade.sh aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 first_app=$(readlink -f /opt/mingzhang/app)
 first_venv=$(readlink -f /opt/mingzhang/venv)
 test -f "$first_app/REVISION"
-runuser -u mingzhang -- "$first_venv/bin/python" -c "from pathlib import Path; assert Path('/opt/mingzhang/app/REVISION').read_text().strip() == 'a' * 40"
+test "$(cat "$first_app/web/dist/downloads/mingzhang-mac-arm64.zip")" = 'existing installer'
+# Explicit future installer releases must replace, rather than inherit, downloads.
+mkdir -p web/dist/downloads
+printf 'replacement installer\n' > web/dist/downloads/mingzhang-mac-arm64.zip
+bash deploy/upgrade.sh cccccccccccccccccccccccccccccccccccccccc
+first_app=$(readlink -f /opt/mingzhang/app)
+first_venv=$(readlink -f /opt/mingzhang/venv)
+test "$(cat "$first_app/web/dist/downloads/mingzhang-mac-arm64.zip")" = 'replacement installer'
+runuser -u mingzhang -- "$first_venv/bin/python" -c "from pathlib import Path; assert Path('/opt/mingzhang/app/REVISION').read_text().strip() == 'c' * 40"
 # Force health-check failure: both application and Python environment must roll back.
 if FAIL_HEALTH=1 bash deploy/upgrade.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; then
   echo 'Expected deployment to fail' >&2; exit 1
