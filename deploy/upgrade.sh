@@ -13,6 +13,10 @@ install -d -m 750 -o root -g mingzhang "$root/releases"
 release="$root/releases/$revision-$(date -u +%Y%m%dT%H%M%S)"
 mkdir -p "$release/app"
 cp -R backend scripts web deploy "$release/app/"
+# Web-only releases keep the last published installers without rebuilding/uploading them.
+if [[ ! -d "$release/app/web/dist/downloads" && -d "$root/app/web/dist/downloads" ]]; then
+  cp -R "$root/app/web/dist/downloads" "$release/app/web/dist/downloads"
+fi
 # Install in a new environment; a dependency failure cannot damage the running version.
 python3 -m venv "$release/venv"
 "$release/venv/bin/pip" install --disable-pip-version-check -r "$release/app/deploy/requirements.txt"
