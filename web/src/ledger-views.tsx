@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import {
   Account,
   Entry,
+  Kind,
   State,
   accountLabels,
   labels,
@@ -59,6 +60,7 @@ export function BookList({
     [query, setQuery] = useState(""),
     [searchOpen, setSearchOpen] = useState(false),
     [page, setPage] = useState(0);
+  const [kinds, setKinds] = useState<Kind[]>([]);
   const searchButton = useRef<HTMLButtonElement>(null);
   const closeSearch = () => {
     setSearchOpen(false);
@@ -71,6 +73,7 @@ export function BookList({
   const filtered = active.filter(
     (entry) =>
       entry.date.startsWith(month) &&
+      (kinds.length === 0 || kinds.includes(entry.kind)) &&
       (!category || entry.category === category) &&
       (!account ||
         entry.account_id === account ||
@@ -98,10 +101,31 @@ export function BookList({
         </h2>
         <Sum entries={filtered} />
       </div>
+      <div className="entry-kinds book-type-filters" role="group" aria-label="清单类型筛选（可多选）">
+        <button type="button" aria-pressed={kinds.length === 0}
+          className={kinds.length === 0 ? "selected" : ""}
+          onClick={() => { setKinds([]); setPage(0); }}>
+          {kinds.length === 0 && <span className="kind-selection" />}
+          <span className="kind-label">全部</span>
+        </button>
+        {(["income", "expense", "transfer", "lend", "borrow", "repay", "collect"] as Kind[]).map(kind => (
+          <button key={kind} type="button" aria-pressed={kinds.includes(kind)}
+            className={kinds.includes(kind) ? "selected" : ""}
+            onClick={() => {
+              setKinds(current => current.includes(kind) ? current.filter(item => item !== kind) : [...current, kind]);
+              setPage(0);
+            }}>
+            {kinds.includes(kind) && <span className="kind-selection" />}
+            <span className="kind-label">{labels[kind]}</span>
+          </button>
+        ))}
+        <span className="book-type-hint">可多选</span>
+      </div>
       <div className="book-filters">
         <button aria-label="清除筛选" title="清除筛选"
           className="text-button"
           onClick={() => {
+            setKinds([]);
             setCategory("");
             setAccount("");
             setQuery("");
