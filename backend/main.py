@@ -180,6 +180,7 @@ def manage_categories(body: CategoryChange):
 
 class DisplayOrder(BaseModel):
     accounts: list[str] = Field(max_length=1000)
+    account_groups: list[str] | None = Field(default=None, max_length=1000)
     categories: list[str] = Field(max_length=1000)
     favorites: list[str] | None = Field(default=None, max_length=9)
     version: int = Field(ge=0)
@@ -200,6 +201,11 @@ def save_display_order(body: DisplayOrder):
         if not set(body.accounts) <= ids:
             fail("排序包含不存在的账户")
         payload = body.model_dump()
+        groups = body.account_groups if body.account_groups is not None else (json.loads(current[0]).get("account_groups", []) if current else [])
+        known_groups = {r[0] for r in db.execute("SELECT id FROM account_groups")}
+        if len(groups) != len(set(groups)) or not set(groups) <= known_groups:
+            fail("账户类型排序包含重复或不存在的类型")
+        payload["account_groups"] = groups
         favorites = body.favorites if body.favorites is not None else (json.loads(current[0]).get("favorites", []) if current else [])
         active = catalog(db)["items"]
         if len(favorites) != len(set(favorites)) or any(p not in active for p in favorites):
@@ -235,6 +241,33 @@ def create_account_group(body: AccountGroup):
             db.execute("INSERT INTO account_groups(id,name,kind) VALUES (?,?,?)", (gid, name, body.kind))
         audit(db, "account_group.create", body.model_dump())
     return {"id": gid}
+
+
+class AccountGroupRename(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    expected_name: str
+
+
+@app.put("/api/account-groups/{gid}", dependencies=[Depends(authenticated)])
+def rename_account_group(gid: str, body: AccountGroupRename):
+    name = body.name.strip()
+    if not name:
+        fail("账户类型名称不能为空")
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        group = db.execute("SELECT * FROM account_groups WHERE id=?", (gid,)).fetchone()
+        if not group:
+            fail("账户类型不存在", 404)
+        if group["name"] != body.expected_name:
+            fail("账户类型已被修改，请刷新后重试", 409)
+        if group["deleted"] and not db.execute("SELECT 1 FROM accounts WHERE COALESCE(group_id,kind)=?", (gid,)).fetchone():
+            fail("账户类型已删除，请刷新", 409)
+        try:
+            db.execute("UPDATE account_groups SET name=? WHERE id=?", (name, gid))
+        except sqlite3.IntegrityError:
+            fail("账户类型名称已存在")
+        audit(db, "account_group.rename", {"id": gid, "name": name})
+    return {"ok": True}
 
 
 @app.post("/api/account-groups/{gid}/delete", dependencies=[Depends(authenticated)])

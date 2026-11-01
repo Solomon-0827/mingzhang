@@ -206,10 +206,13 @@ def snapshot(db):
     liabilities = -sum(min(0, n) for n in balances.values()) + payable
     receivable += sum(max(0, a["balance_cents"]) for a in accounts if a["kind"] == "receivable")
     payable += sum(max(0, -a["balance_cents"]) for a in accounts if a["kind"] == "liability")
+    groups = [dict(g) for g in db.execute(
+        "SELECT * FROM account_groups WHERE deleted=0 OR id IN (SELECT COALESCE(group_id,kind) FROM accounts) ORDER BY rowid")]
+    group_ranks = {gid: i for i, gid in enumerate(ordering.get("account_groups", []))}
+    groups.sort(key=lambda g: group_ranks.get(g["id"], len(group_ranks)))
     return dict(
         accounts=accounts,
-        account_groups=[dict(g) for g in db.execute(
-            "SELECT * FROM account_groups WHERE deleted=0 OR id IN (SELECT COALESCE(group_id,kind) FROM accounts) ORDER BY rowid")],
+        account_groups=groups,
         ordering=ordering,
         category_catalog=catalog(db),
         entries=entries,

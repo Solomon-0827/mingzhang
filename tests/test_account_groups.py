@@ -56,3 +56,32 @@ def test_old_database_migration_preserves_balance(client):
     state = client.get('/api/state').json()
     assert state['accounts'][0]['balance_cents'] == 12345
     assert state['accounts'][0]['group_id'] is None
+
+
+def test_type_rename_preserves_accounts_and_rejects_conflicts(client):
+    account(client)
+    before = client.get('/api/state').json()
+    renamed = client.put('/api/account-groups/bank', json={'name': '储蓄账户', 'expected_name': '银行卡'})
+    assert renamed.status_code == 200
+    after = client.get('/api/state').json()
+    assert after['accounts'] == before['accounts']
+    assert after['assets'] == before['assets']
+    assert next(g for g in after['account_groups'] if g['id'] == 'bank')['name'] == '储蓄账户'
+    assert client.put('/api/account-groups/bank', json={'name': '旧端修改', 'expected_name': '银行卡'}).status_code == 409
+    assert client.put('/api/account-groups/bank', json={'name': '现金', 'expected_name': '储蓄账户'}).status_code == 400
+    assert client.put('/api/account-groups/bank', json={'name': ' ', 'expected_name': '储蓄账户'}).status_code == 400
+
+
+def test_type_order_persists_and_legacy_order_updates_preserve_it(client):
+    state = client.get('/api/state').json()
+    ids = [g['id'] for g in state['account_groups']][::-1]
+    payload = {'accounts': [], 'categories': [], 'favorites': [], 'account_groups': ids, 'version': 0}
+    assert client.put('/api/display-order', json=payload).status_code == 200
+    assert [g['id'] for g in client.get('/api/state').json()['account_groups']] == ids
+    assert client.put('/api/display-order', json=payload).status_code == 409
+    payload.pop('account_groups')
+    payload['version'] = 1
+    assert client.put('/api/display-order', json=payload).status_code == 200
+    assert [g['id'] for g in client.get('/api/state').json()['account_groups']] == ids
+    for invalid in [['missing'], ['bank', 'bank']]:
+        assert client.put('/api/display-order', json={**payload, 'version': 2, 'account_groups': invalid}).status_code == 400
