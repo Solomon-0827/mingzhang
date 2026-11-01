@@ -330,3 +330,12 @@ button:disabled { box-shadow: none; transform: none; }
 .book-type-filters button { padding: 7px 14px; font-size: 13px; color: var(--muted); }
 .book-type-filters button.selected { color: var(--ink); }
 .book-type-hint { margin-left: 8px; color: var(--muted); font-size: 11px; }
+
+/* Keep the entry title and actions on the same toolbar as transaction kinds. */
+.entry-home .entry-kinds { align-items: center; }
+.entry-home .entry-inline-title { margin: 0 24px 0 0; font-size: 26px; line-height: 1.2; white-space: nowrap; }
+.entry-home .modal-footer .icon-button { flex-shrink: 0; width: 34px; height: 34px; padding: 0; }
+@media (max-width: 600px) {
+  .entry-home .entry-inline-title { margin-right: 12px; font-size: 22px; }
+}
+.entry-home .modal-footer { justify-content: flex-end; gap: 14px; }

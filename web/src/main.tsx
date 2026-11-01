@@ -402,7 +402,7 @@ function App() {
         </div>
       </aside>
       <motion.main key={page} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.22 }} className={page === "entry" ? "entry-workspace" : undefined}>
-        <header>
+        {(page !== "entry" || !state?.accounts.length) && <header>
           <div>
             <p className="eyebrow">
               {page === "overview"
@@ -452,13 +452,14 @@ function App() {
               <button aria-label="记一笔（⌘ N）" title="记一笔（⌘ N）" className="primary" onClick={openNew}><Plus size={18} aria-hidden="true" /></button>
             )}
           </div>
-        </header>
+        </header>}
         {toast}
         {page === "entry" && state && (
           <section className="entry-home">
             {state.accounts.length ? (
               <EntryDialog
                 inline
+                onRefresh={() => refresh().then(() => setNotice("已同步最新账本")).catch((e) => setError(e.message))}
                 initial={newEntry(state.accounts[0].id)}
                 editing={false}
                 accounts={state.accounts}
@@ -1265,6 +1266,7 @@ function Modal({
 }
 function EntryDialog({
   inline = false,
+  onRefresh,
   initial,
   editing,
   accounts,
@@ -1276,6 +1278,7 @@ function EntryDialog({
   onSave,
 }: {
   inline?: boolean;
+  onRefresh?: () => void;
   initial: Entry;
   editing: boolean;
   accounts: Account[];
@@ -1362,6 +1365,7 @@ function EntryDialog({
       }}
     >
       <div className="entry-kinds">
+        {inline && <h1 className="entry-inline-title">记一笔</h1>}
         {Object.entries(labels).filter(([k]) => !["refund", "balance_in", "balance_out"].includes(k) || (editing && k === initial.kind)).map(([k, v]) => (
           <button
             type="button"
@@ -1522,6 +1526,7 @@ function EntryDialog({
         <small>
           {inline ? "Enter 保存 · 连续记账" : "保存失败时，输入内容会保留。"}
         </small>
+        {inline && <button type="button" className="icon-button" aria-label="刷新账本" title="刷新账本" onClick={onRefresh}><RefreshCw size={18} /></button>}
         <button aria-label={busy ? "正在保存…" : "记一笔"} title={busy ? "正在保存…" : "记一笔"} className="primary" disabled={busy}>{busy ? "正在保存…" : "记一笔"}</button>
       </div>
     </form>
