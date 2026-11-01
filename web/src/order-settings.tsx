@@ -13,7 +13,7 @@ function SortList({ items, scope, disabled, onMove, render }: {
   const [dragging, setDragging] = useState<number | null>(null);
   const [over, setOver] = useState<number | null>(null);
   const pointer = useRef<{ from: number; to: number; y: number } | null>(null);
-  return <ul className="sort-list" aria-label={scope === "favorites" ? "常用分类排序" : scope === "accounts" ? "账户排序" : scope === "parents" ? "一级分类排序" : "二级分类排序"}>
+  return <ul className="sort-list" aria-label={scope === "favorites" ? "常用分类排序" : scope === "account-groups" ? "账户类型排序" : scope === "accounts" ? "账户排序" : scope === "parents" ? "一级分类排序" : "二级分类排序"}>
     {items.map((id, index) => <li key={id} className={`${dragging === index ? "is-dragging" : ""} ${over === index && dragging !== index ? "drop-target" : ""}`}>
       <button type="button" className="drag-handle" disabled={disabled}
         aria-label={`拖动排序：${id}`} title="拖动排序；也可按 Alt + 上下方向键"
@@ -63,14 +63,16 @@ function FavoriteButtons({ items, disabled, onMove }: {
 const move = (items: string[], from: number, to: number) => {
   const result = [...items]; const [item] = result.splice(from, 1); result.splice(to, 0, item); return result;
 };
-export function OrderSettings({ state, defaults, onSave, onEditAccount, onCategoryChange, onPasswordChanged, onDeleteAccount, onAccountGroupChange }: {
+export function OrderSettings({ state, defaults, onSave, onEditAccount, onCategoryChange, onPasswordChanged, onDeleteAccount, onAccountGroupChange, onRenameAccountGroup }: {
   onPasswordChanged: () => void;
+  onRenameAccountGroup: (id: string, name: string, expectedName: string) => Promise<void>;
   onDeleteAccount: (account: Account) => Promise<void>;
   onAccountGroupChange: (id: string | null, value?: {name:string;kind:string}) => Promise<void>;
   onCategoryChange: (value: CategoryChange) => Promise<void>;
   state: State; defaults: string[]; onSave: (value: DisplayOrder) => Promise<void>; onEditAccount: (value: Account) => void;
 }) {
   const initialCategories = () => ordered(state.category_catalog ? Object.keys(state.category_catalog.items) : Array.from(new Set([...defaults, ...state.entries.filter(e => !e.deleted && ["income", "expense"].includes(e.kind)).map(e => e.category)])).filter(Boolean), state.ordering?.categories);
+  const [accountGroups,setAccountGroups]=useState(state.account_groups.map(g=>g.id));
   const [accounts, setAccounts] = useState(state.accounts.map(a => a.id));
   const [categories, setCategories] = useState(initialCategories);
   const [section, setSection] = useState("categories");
@@ -80,20 +82,29 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
   const group = groups.find(g => g.name === selected) ?? groups[0];
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const saving = useRef(false);
-  useEffect(() => {setCategories(initialCategories());setFavorites(state.ordering?.favorites ?? []);setAccounts(state.accounts.map(a=>a.id));}, [state.category_catalog?.version, state.ordering?.version, state.accounts]);
+  useEffect(() => {setCategories(initialCategories());setFavorites(state.ordering?.favorites ?? []);setAccounts(state.accounts.map(a=>a.id));setAccountGroups(state.account_groups.map(g=>g.id));}, [state.category_catalog?.version, state.ordering?.version, state.accounts, state.account_groups]);
   const saveOrder = async (next: Partial<DisplayOrder>) => {
     if (saving.current) return;
     saving.current=true;setBusy(true);setError("");
-    const previous={accounts,categories,favorites};
+    const previous={accounts,categories,favorites,account_groups:accountGroups};
     const value={...previous,...next,version:state.ordering?.version ?? 0};
-    setAccounts(value.accounts);setCategories(value.categories);setFavorites(value.favorites);
-    try {await onSave(value);} catch(e) {setAccounts(previous.accounts);setCategories(previous.categories);setFavorites(previous.favorites);setError((e as Error).message);} finally {saving.current=false;setBusy(false);}
+    setAccounts(value.accounts);setCategories(value.categories);setFavorites(value.favorites);setAccountGroups(value.account_groups);
+    try {await onSave(value);} catch(e) {setAccounts(previous.accounts);setCategories(previous.categories);setFavorites(previous.favorites);setAccountGroups(previous.account_groups);setError((e as Error).message);} finally {saving.current=false;setBusy(false);}
   };
   const [selectedAccountGroup,setSelectedAccountGroup]=useState("");
   const accountGroup=state.account_groups.find(g=>g.id===selectedAccountGroup) ?? state.account_groups[0];
   const groupAccounts=accounts.filter(id=>{const a=state.accounts.find(a=>a.id===id);return a && (a.group_id || a.kind)===accountGroup?.id;});
   const [addingGroup,setAddingGroup]=useState(false), [groupName,setGroupName]=useState(""), [groupKind,setGroupKind]=useState("bank");
   const accountAction=async(action:()=>Promise<void>)=>{if(saving.current)return;saving.current=true;setBusy(true);setError("");try{await action();}catch(e){setError((e as Error).message);}finally{saving.current=false;setBusy(false);}};
+  const [editingGroup,setEditingGroup]=useState<{id:string;name:string} | null>(null);
+  const [editGroupName,setEditGroupName]=useState("");
+  const cancelGroupEdit=useRef(false);
+  const saveGroupName=()=>{
+    if (!editingGroup || cancelGroupEdit.current || saving.current) return;
+    const name=editGroupName.trim();
+    if(name===editingGroup.name){setEditingGroup(null);return;}
+    void accountAction(async()=>{await onRenameAccountGroup(editingGroup.id,name,editingGroup.name);setEditingGroup(null);});
+  };
   const addAccount=()=>{if(accountGroup)onEditAccount({id:"",name:"",kind:accountGroup.kind,group_id:accountGroup.id,opening_cents:0,balance_cents:0,version:1});};
   const [change, setChange] = useState<Omit<CategoryChange, "version"> | null>(null);
   const [name, setName] = useState("");
@@ -174,10 +185,19 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
           <StyledSelect aria-label="账户性质" value={groupKind} disabled={busy} onChange={e=>setGroupKind(e.target.value)}>{Object.entries(accountLabels).map(([k,v])=><option key={k} value={k}>{v}{["credit","liability"].includes(k)?"（负债）":k==="receivable"?"（应收）":"（资产）"}</option>)}</StyledSelect>
           <button className="category-tool" title="添加（Enter）" aria-label="添加账户类型" disabled={busy}><Check size={17}/></button><button type="button" className="category-tool" title="取消" aria-label="取消添加账户类型" onClick={()=>setAddingGroup(false)}><X size={17}/></button>
         </form>}
-        <ul className="sort-list">{state.account_groups.map(g=><li key={g.id}>
-          <button type="button" className={`parent-choice ${g.id===accountGroup?.id?"selected":""}`} onClick={()=>setSelectedAccountGroup(g.id)}><Folder size={17}/><strong>{g.name}</strong><small>{state.accounts.filter(a=>(a.group_id||a.kind)===g.id).length}</small></button>
-          <button className="category-tool delete" title="删除类型（需为空）" aria-label={`删除账户类型：${g.name}`} disabled={busy} onClick={()=>void accountAction(()=>onAccountGroupChange(g.id))}><Trash2 size={16}/></button><ChevronRight size={14}/>
-        </li>)}</ul>
+        <SortList scope="account-groups" items={accountGroups} disabled={busy || !!editingGroup || addingGroup}
+          onMove={(from,to)=>void saveOrder({account_groups:move(accountGroups,from,to)})}
+          render={id=>{const g=state.account_groups.find(g=>g.id===id);if(!g)return null;
+            return editingGroup?.id===id ? <form className="category-inline-editor" onSubmit={e=>{e.preventDefault();saveGroupName();}}>
+              <input autoFocus aria-label="编辑账户类型名称" value={editGroupName} maxLength={60} disabled={busy}
+                onChange={e=>setEditGroupName(e.target.value)} onBlur={saveGroupName}
+                onKeyDown={e=>{if(e.key==="Escape"){e.preventDefault();cancelGroupEdit.current=true;setEditingGroup(null);setError("");}}}/>
+            </form> : <>
+              <button type="button" className={`parent-choice ${g.id===accountGroup?.id?"selected":""}`} onClick={()=>setSelectedAccountGroup(g.id)}><Folder size={17}/><strong>{g.name}</strong><small>{state.accounts.filter(a=>(a.group_id||a.kind)===g.id).length}</small></button>
+              <div className="category-row-tools"><button className="category-tool" title="编辑类型名称" aria-label={`编辑账户类型：${g.name}`} disabled={busy || !!editingGroup} onClick={()=>{cancelGroupEdit.current=false;setEditingGroup({id:g.id,name:g.name});setEditGroupName(g.name);setError("");}}><PencilLine size={16}/></button>
+              <button className="category-tool delete" title="删除类型（需为空）" aria-label={`删除账户类型：${g.name}`} disabled={busy || !!editingGroup} onClick={()=>void accountAction(()=>onAccountGroupChange(g.id))}><Trash2 size={16}/></button></div><ChevronRight size={14}/>
+            </>;
+          }}/>
       </section>
       <section className="child-column"><div className="settings-column-heading"><span>具体账户</span><button className="category-tool add" aria-label="新增账户" title="新增账户" disabled={busy || !accountGroup} onClick={addAccount}><Plus size={19}/></button></div>
         <SortList scope="accounts" items={groupAccounts} disabled={busy} onMove={(from,to)=>{const next=move(groupAccounts,from,to);let index=0;void saveOrder({accounts:accounts.map(id=>groupAccounts.includes(id)?next[index++]:id)});}} render={id=>{const account=state.accounts.find(a=>a.id===id)!;return <>

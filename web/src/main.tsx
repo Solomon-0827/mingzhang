@@ -1085,6 +1085,7 @@ function App() {
           onCategoryChange={async value => { await run(() => api("/categories", value)); }}
           onPasswordChanged={() => { setLogged(false); setState(null); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
           onEditAccount={setAccountEditor}
+          onRenameAccountGroup={async (id,name,expected_name) => {await run(() => api(`/account-groups/${id}`, {name,expected_name}, "PUT"));}}
           onAccountGroupChange={async (id, value) => { await run(() => api(id ? `/account-groups/${id}/delete` : "/account-groups", value ?? {})); }}
           onDeleteAccount={async account => { await run(() => api(`/accounts/${account.id}/delete`, {version:account.version})); }}
           onSave={async value => { await run(() => api("/display-order", value, "PUT")); }} />}
