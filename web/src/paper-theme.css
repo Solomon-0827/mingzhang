@@ -335,7 +335,7 @@ button:disabled { box-shadow: none; transform: none; }
 .entry-home .modal-footer { justify-content: flex-end; gap: 14px; }
 
 /* Give the entry toolbar breathing room without separating it from the ledger. */
-.shell main .entry-home { padding-top: 28px; padding-bottom: 24px; }
+.shell main .entry-home, .shell main .entry-home:has(.favorite-shortcuts) { padding-top: 28px; padding-bottom: 24px; }
 .entry-home form { row-gap: 18px; }
 .entry-home .favorite-shortcuts { padding-top: 12px; }
 .book-filters .book-category-select { width: 240px; max-width: 100%; }
