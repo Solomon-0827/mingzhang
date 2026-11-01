@@ -1,6 +1,8 @@
 import { Download, Apple, Monitor } from "lucide-react";
 
 export function DesktopDownloads() {
+  // Existing Electron clients expose their runtime in the user agent; no shell update needed.
+  if (/\bElectron\//.test(navigator.userAgent)) return null;
   return <details className="desktop-downloads">
     <summary><Download size={16} />客户端下载</summary>
     <div className="desktop-download-menu">
