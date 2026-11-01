@@ -127,9 +127,24 @@ export function CategorySelect({ options, value, onChange, disabled, "aria-label
 }) {
   return <Select className="ledger-select category-select" aria-label={label} value={value} disabled={disabled}
     virtual={false} listHeight={420} showSearch optionFilterProp="searchText" popupMatchSelectWidth={280}
-    options={categoryGroups(options).map(group => ({ label: <strong className="category-heading">{group.name}</strong>,
-      options: group.items.map(item => ({ value: item, searchText: item,
-        label: <span className="category-option"><span className="category-parent">{group.name}</span><span>{categoryLeaf(item)}</span></span> })) }))}
+    options={categorySelectOptions(options)}
     onChange={next => onChange({target:{value:next}})}
+    getPopupContainer={trigger => trigger.parentElement!} />;
+}
+
+function categorySelectOptions(options: string[]) {
+  return categoryGroups(options).map(group => ({ label: <strong className="category-heading">{group.name}</strong>,
+      options: group.items.map(item => ({ value: item, searchText: item,
+        label: <span className="category-option"><span className="category-parent">{group.name}</span><span>{categoryLeaf(item)}</span></span> })) }));
+}
+
+export function CategoryMultiSelect({ options, value, onChange }: {
+  options: string[]; value: string[]; onChange: (value: string[]) => void;
+}) {
+  return <Select className="ledger-select category-select book-category-select"
+    aria-label="清单分类" mode="multiple" size="small" placeholder="全部分类"
+    value={value} onChange={onChange} options={categorySelectOptions(options)}
+    allowClear maxTagCount="responsive" virtual={false} listHeight={420}
+    showSearch optionFilterProp="searchText" popupMatchSelectWidth={300}
     getPopupContainer={trigger => trigger.parentElement!} />;
 }

@@ -325,12 +325,6 @@ button:disabled { box-shadow: none; transform: none; }
   .entry-home .favorite-shortcuts { grid-row: 3; }
 }
 
-/* Ledger filters share the entry kind buttons, with independent multi-selection. */
-.book-type-filters { margin: 0; padding: 8px 20px; gap: 6px; align-items: center; }
-.book-type-filters button { padding: 7px 14px; font-size: 13px; color: var(--muted); }
-.book-type-filters button.selected { color: var(--ink); }
-.book-type-hint { margin-left: 8px; color: var(--muted); font-size: 11px; }
-
 /* Keep the entry title and actions on the same toolbar as transaction kinds. */
 .entry-home .entry-kinds { align-items: center; }
 .entry-home .entry-inline-title { margin: 0 24px 0 0; font-size: 26px; line-height: 1.2; white-space: nowrap; }
@@ -339,3 +333,9 @@ button:disabled { box-shadow: none; transform: none; }
   .entry-home .entry-inline-title { margin-right: 12px; font-size: 22px; }
 }
 .entry-home .modal-footer { justify-content: flex-end; gap: 14px; }
+
+/* Give the entry toolbar breathing room without separating it from the ledger. */
+.shell main .entry-home { padding-top: 28px; padding-bottom: 24px; }
+.entry-home form { row-gap: 18px; }
+.entry-home .favorite-shortcuts { padding-top: 12px; }
+.book-filters .book-category-select { width: 240px; max-width: 100%; }
