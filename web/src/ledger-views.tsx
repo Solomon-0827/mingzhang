@@ -3,7 +3,6 @@ import { useRef, useState } from "react";
 import {
   Account,
   Entry,
-  Kind,
   State,
   accountLabels,
   labels,
@@ -11,7 +10,7 @@ import {
   today,
 } from "./types";
 import { EntryField } from "./entry-field";
-import { StyledSelect, StyledDate } from "./controls";
+import { StyledSelect, StyledDate, CategoryMultiSelect } from "./controls";
 
 function totals(entries: Entry[]) {
   return entries.reduce(
@@ -55,12 +54,11 @@ export function BookList({
   onDelete: (entry: Entry) => void;
   onSave: (entry: Entry) => Promise<void>;
 }) {
-  const [category, setCategory] = useState(""),
+  const [categories, setCategories] = useState<string[]>([]),
     [account, setAccount] = useState(""),
     [query, setQuery] = useState(""),
     [searchOpen, setSearchOpen] = useState(false),
     [page, setPage] = useState(0);
-  const [kinds, setKinds] = useState<Kind[]>([]);
   const searchButton = useRef<HTMLButtonElement>(null);
   const closeSearch = () => {
     setSearchOpen(false);
@@ -73,8 +71,7 @@ export function BookList({
   const filtered = active.filter(
     (entry) =>
       entry.date.startsWith(month) &&
-      (kinds.length === 0 || kinds.includes(entry.kind)) &&
-      (!category || entry.category === category) &&
+      (categories.length === 0 || categories.includes(entry.category)) &&
       (!account ||
         entry.account_id === account ||
         entry.to_account_id === account) &&
@@ -101,55 +98,21 @@ export function BookList({
         </h2>
         <Sum entries={filtered} />
       </div>
-      <div className="entry-kinds book-type-filters" role="group" aria-label="清单类型筛选（可多选）">
-        <button type="button" aria-pressed={kinds.length === 0}
-          className={kinds.length === 0 ? "selected" : ""}
-          onClick={() => { setKinds([]); setPage(0); }}>
-          {kinds.length === 0 && <span className="kind-selection" />}
-          <span className="kind-label">全部</span>
-        </button>
-        {(["income", "expense", "transfer", "lend", "borrow", "repay", "collect"] as Kind[]).map(kind => (
-          <button key={kind} type="button" aria-pressed={kinds.includes(kind)}
-            className={kinds.includes(kind) ? "selected" : ""}
-            onClick={() => {
-              setKinds(current => current.includes(kind) ? current.filter(item => item !== kind) : [...current, kind]);
-              setPage(0);
-            }}>
-            {kinds.includes(kind) && <span className="kind-selection" />}
-            <span className="kind-label">{labels[kind]}</span>
-          </button>
-        ))}
-        <span className="book-type-hint">可多选</span>
-      </div>
       <div className="book-filters">
         <button aria-label="清除筛选" title="清除筛选"
           className="text-button"
           onClick={() => {
-            setKinds([]);
-            setCategory("");
+            setCategories([]);
             setAccount("");
             setQuery("");
             setPage(0);
           }}
         ><ListFilter size={18} aria-hidden="true" /></button>
-        <StyledSelect
-          size="small"
-          aria-label="清单分类"
-          value={category}
-          onChange={(e) => {
-            setCategory(e.target.value);
-            setPage(0);
-          }}
-        >
-          <option value="">全部分类</option>
-          {Array.from(new Set(active.map((entry) => entry.category)))
-            .filter(Boolean)
-            .map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-        </StyledSelect>
+        <CategoryMultiSelect
+          options={Array.from(new Set(active.map(entry => entry.category))).filter(Boolean)}
+          value={categories}
+          onChange={next => { setCategories(next); setPage(0); }}
+        />
         <StyledSelect
           size="small"
           aria-label="清单账户"
@@ -413,9 +376,7 @@ export function BookList({
               onClick={() => setPage(currentPage + 1)}
             ><ChevronRight size={18} aria-hidden="true" /></button>
           </div>
-          <p className="book-note">
-            转账和借还款本金不计入收支。
-          </p>
+
         </div>
       </div>
     </section>
