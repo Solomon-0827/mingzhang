@@ -32,6 +32,9 @@ def initialize():
         CREATE TABLE IF NOT EXISTS accounts(
           id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
           opening_cents INTEGER NOT NULL, version INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS account_groups(
+          id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+          deleted INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS entries(
           id TEXT PRIMARY KEY, date TEXT NOT NULL, kind TEXT NOT NULL, amount_cents INTEGER NOT NULL,
           account_id TEXT NOT NULL REFERENCES accounts(id), to_account_id TEXT REFERENCES accounts(id),
@@ -46,6 +49,13 @@ def initialize():
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, action TEXT NOT NULL, payload TEXT NOT NULL,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
         """)
+
+        columns = {r[1] for r in db.execute("PRAGMA table_info(accounts)")}
+        if "group_id" not in columns:
+            db.execute("ALTER TABLE accounts ADD COLUMN group_id TEXT")
+        for kind, name in [("bank", "银行卡"), ("wallet", "电子钱包"), ("cash", "现金"),
+                           ("credit", "信用卡"), ("receivable", "债权"), ("liability", "负债")]:
+            db.execute("INSERT OR IGNORE INTO account_groups(id,name,kind) VALUES (?,?,?)", (kind, name, kind))
 
 
 def backup(destination):

@@ -13,6 +13,7 @@ export type Account = {
   id: string;
   name: string;
   kind: string;
+  group_id?: string | null;
   opening_cents: number;
   target_balance_cents?: number;
   expected_balance_cents?: number;
@@ -42,7 +43,9 @@ export function ordered(values: string[], order: string[] = []) {
 }
 export type CategoryCatalog = { items: Record<string, string[]>; hidden: string[]; version: number };
 export type CategoryChange = { action: "add" | "rename" | "delete" | "restore"; level: "parent" | "child"; path: string; name?: string; kind?: string; version: number };
+export type AccountGroup = { id: string; name: string; kind: string; deleted?: number };
 export type State = {
+  account_groups: AccountGroup[];
   category_catalog?: CategoryCatalog;
   ordering?: DisplayOrder;
   demo: boolean;

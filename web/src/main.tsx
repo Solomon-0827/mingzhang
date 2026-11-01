@@ -436,22 +436,6 @@ function App() {
               }
             </p>
           </div>
-          <div className="header-actions">
-            <button
-              className="icon-button"
-              aria-label="刷新账本" title="刷新账本"
-              onClick={() =>
-                refresh()
-                  .then(() => setNotice("已同步最新账本"))
-                  .catch((e) => setError(e.message))
-              }
-            >
-              <RefreshCw size={18} />
-            </button>
-            {page !== "entry" && (
-              <button aria-label="记一笔（⌘ N）" title="记一笔（⌘ N）" className="primary" onClick={openNew}><Plus size={18} aria-hidden="true" /></button>
-            )}
-          </div>
         </header>}
         {toast}
         {page === "entry" && state && (
@@ -1101,6 +1085,8 @@ function App() {
           onCategoryChange={async value => { await run(() => api("/categories", value)); }}
           onPasswordChanged={() => { setLogged(false); setState(null); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
           onEditAccount={setAccountEditor}
+          onAccountGroupChange={async (id, value) => { await run(() => api(id ? `/account-groups/${id}/delete` : "/account-groups", value ?? {})); }}
+          onDeleteAccount={async account => { await run(() => api(`/accounts/${account.id}/delete`, {version:account.version})); }}
           onSave={async value => { await run(() => api("/display-order", value, "PUT")); }} />}
         {page === "data" && state && (
           <DataPage
@@ -1141,6 +1127,7 @@ function App() {
       {accountEditor && (
         <AccountDialog
           initial={accountEditor}
+          groups={state?.account_groups ?? []}
           onClose={() => setAccountEditor(null)}
           onSave={async (value) => {
             await run(() =>
@@ -1541,14 +1528,20 @@ function EntryDialog({
 }
 function AccountDialog({
   initial,
+  groups,
   onClose,
   onSave,
 }: {
   initial: Account;
+  groups: import("./types").AccountGroup[];
   onClose: () => void;
   onSave: (value: Account) => Promise<void>;
 }) {
-  const [value, setValue] = useState(initial),
+  const [value, setValue] = useState(() => {
+    if (initial.id) return initial;
+    const group = groups.find(g => g.id === initial.group_id) ?? groups.find(g => g.kind === initial.kind) ?? groups[0];
+    return group ? {...initial,group_id:group.id,kind:group.kind} : initial;
+  }),
     [amount, setAmount] = useState(String((initial.id ? initial.balance_cents : initial.opening_cents) / 100)),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
@@ -1557,6 +1550,7 @@ function AccountDialog({
       <form
         onSubmit={async (e) => {
           e.preventDefault();
+          if (!groups.length) return;
           setBusy(true);
           try {
             await onSave(initial.id
@@ -1583,14 +1577,10 @@ function AccountDialog({
         <label>
           账户类型
           <StyledSelect
-            value={value.kind}
-            onChange={(e) => setValue({ ...value, kind: e.target.value })}
+            value={value.group_id || value.kind}
+            onChange={(e) => {const group=groups.find(g=>g.id===e.target.value);if(group)setValue({ ...value, group_id:group.id, kind:group.kind });}}
           >
-            {Object.entries(accountLabels).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
+            {groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
           </StyledSelect>
         </label>
         <label>
@@ -1610,9 +1600,10 @@ function AccountDialog({
             {error}
           </p>
         )}
+        {!groups.length && <p role="alert" className="error">请先在设置的账户管理中添加账户类型。</p>}
         <div className="modal-footer">
           <small>余额调整不计入收支，按回车保存。</small>
-          <button aria-label="保存账户" title="保存账户" className="primary" disabled={busy}><Check size={18} aria-hidden="true" /></button>
+          <button aria-label="保存账户" title="保存账户" className="primary" disabled={busy || !groups.length}><Check size={18} aria-hidden="true" /></button>
         </div>
       </form>
     </Modal>
