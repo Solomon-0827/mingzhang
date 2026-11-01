@@ -212,14 +212,66 @@ def save_display_order(body: DisplayOrder):
     return {"ok": True}
 
 
+class AccountGroup(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    kind: str
+
+
+@app.post("/api/account-groups", dependencies=[Depends(authenticated)])
+def create_account_group(body: AccountGroup):
+    name = body.name.strip()
+    if not name or body.kind not in {"bank", "wallet", "cash", "credit", "receivable", "liability"}:
+        fail("请填写类型名称并选择账户性质")
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        existing = db.execute("SELECT * FROM account_groups WHERE name=?", (name,)).fetchone()
+        if existing:
+            if not existing["deleted"] or existing["kind"] != body.kind:
+                fail("账户类型名称已存在")
+            gid = existing["id"]
+            db.execute("UPDATE account_groups SET deleted=0 WHERE id=?", (gid,))
+        else:
+            gid = str(uuid4())
+            db.execute("INSERT INTO account_groups(id,name,kind) VALUES (?,?,?)", (gid, name, body.kind))
+        audit(db, "account_group.create", body.model_dump())
+    return {"id": gid}
+
+
+@app.post("/api/account-groups/{gid}/delete", dependencies=[Depends(authenticated)])
+def delete_account_group(gid: str):
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM account_groups WHERE id=? AND deleted=0", (gid,)).fetchone():
+            fail("账户类型不存在", 404)
+        if db.execute("SELECT 1 FROM accounts WHERE COALESCE(group_id,kind)=?", (gid,)).fetchone():
+            fail("请先移走或删除该类型下的账户")
+        db.execute("UPDATE account_groups SET deleted=1 WHERE id=?", (gid,))
+        audit(db, "account_group.delete", {"id": gid})
+    return {"ok": True}
+
+
+def resolve_account_group(db, body):
+    gid = body.group_id or body.kind
+    group = db.execute("SELECT * FROM account_groups WHERE id=?", (gid,)).fetchone()
+    populated = db.execute("SELECT 1 FROM accounts WHERE COALESCE(group_id,kind)=?", (gid,)).fetchone()
+    if not group or (group["deleted"] and body.group_id and not populated):
+        fail("账户类型不存在，请刷新")
+    if group["kind"] != body.kind:
+        fail("账户性质与所属类型不一致")
+    db.execute("UPDATE account_groups SET deleted=0 WHERE id=?", (gid,))
+    return gid
+
+
 @app.post("/api/accounts", dependencies=[Depends(authenticated)])
 def create_account(body: Account):
     aid = str(uuid4())
     with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        gid = resolve_account_group(db, body)
         try:
             db.execute(
-                "INSERT INTO accounts(id,name,kind,opening_cents) VALUES (?,?,?,?)",
-                (aid, body.name, body.kind, body.opening_cents),
+                "INSERT INTO accounts(id,name,kind,opening_cents,group_id) VALUES (?,?,?,?,?)",
+                (aid, body.name, body.kind, body.opening_cents, gid),
             )
         except sqlite3.IntegrityError:
             fail("账户名称已存在")
@@ -236,6 +288,7 @@ def update_account(aid: str, body: AccountUpdate):
             fail("账户不存在", 404)
         if row["version"] != body.version:
             fail("账户已被修改，请刷新", 409)
+        gid = resolve_account_group(db, body)
         if body.target_balance_cents is not None:
             current = next(a["balance_cents"] for a in snapshot(db)["accounts"] if a["id"] == aid)
             if body.expected_balance_cents != current:
@@ -252,8 +305,8 @@ def update_account(aid: str, body: AccountUpdate):
                 ))
         try:
             db.execute(
-                "UPDATE accounts SET name=?,kind=?,opening_cents=?,version=version+1 WHERE id=?",
-                (body.name, body.kind, body.opening_cents, aid),
+                "UPDATE accounts SET name=?,kind=?,opening_cents=?,group_id=?,version=version+1 WHERE id=?",
+                (body.name, body.kind, body.opening_cents, gid, aid),
             )
         except sqlite3.IntegrityError:
             fail("账户名称已存在")
@@ -279,6 +332,24 @@ def update_entry(eid: str, body: Entry):
 
 class Version(BaseModel):
     version: int
+
+
+@app.post("/api/accounts/{aid}/delete", dependencies=[Depends(authenticated)])
+def delete_account(aid: str, body: Version):
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM accounts WHERE id=?", (aid,)).fetchone()
+        if not row:
+            fail("账户不存在", 404)
+        if row["version"] != body.version:
+            fail("账户已被修改，请刷新", 409)
+        if db.execute("SELECT 1 FROM entries WHERE account_id=? OR to_account_id=?", (aid, aid)).fetchone():
+            fail("账户有历史流水，不能删除；可修改名称或所属类型")
+        if row["opening_cents"]:
+            fail("账户余额不为零，不能删除")
+        db.execute("DELETE FROM accounts WHERE id=?", (aid,))
+        audit(db, "account.delete", dict(row))
+    return {"ok": True}
 
 
 @app.post("/api/entries/{eid}/delete", dependencies=[Depends(authenticated)])

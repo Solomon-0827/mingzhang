@@ -436,22 +436,6 @@ function App() {
               }
             </p>
           </div>
-          <div className="header-actions">
-            <button
-              className="icon-button"
-              aria-label="刷新账本" title="刷新账本"
-              onClick={() =>
-                refresh()
-                  .then(() => setNotice("已同步最新账本"))
-                  .catch((e) => setError(e.message))
-              }
-            >
-              <RefreshCw size={18} />
-            </button>
-            {page !== "entry" && (
-              <button aria-label="记一笔（⌘ N）" title="记一笔（⌘ N）" className="primary" onClick={openNew}><Plus size={18} aria-hidden="true" /></button>
-            )}
-          </div>
         </header>}
         {toast}
         {page === "entry" && state && (
@@ -1101,6 +1085,8 @@ function App() {
           onCategoryChange={async value => { await run(() => api("/categories", value)); }}
           onPasswordChanged={() => { setLogged(false); setState(null); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
           onEditAccount={setAccountEditor}
+          onAccountGroupChange={async (id, value) => { await run(() => api(id ? `/account-groups/${id}/delete` : "/account-groups", value ?? {})); }}
+          onDeleteAccount={async account => { await run(() => api(`/accounts/${account.id}/delete`, {version:account.version})); }}
           onSave={async value => { await run(() => api("/display-order", value, "PUT")); }} />}
         {page === "data" && state && (
           <DataPage
@@ -1141,6 +1127,7 @@ function App() {
       {accountEditor && (
         <AccountDialog
           initial={accountEditor}
+          groups={state?.account_groups ?? []}
           onClose={() => setAccountEditor(null)}
           onSave={async (value) => {
             await run(() =>
@@ -1541,10 +1528,12 @@ function EntryDialog({
 }
 function AccountDialog({
   initial,
+  groups,
   onClose,
   onSave,
 }: {
   initial: Account;
+  groups: import("./types").AccountGroup[];
   onClose: () => void;
   onSave: (value: Account) => Promise<void>;
 }) {
@@ -1583,14 +1572,10 @@ function AccountDialog({
         <label>
           账户类型
           <StyledSelect
-            value={value.kind}
-            onChange={(e) => setValue({ ...value, kind: e.target.value })}
+            value={value.group_id || value.kind}
+            onChange={(e) => {const group=groups.find(g=>g.id===e.target.value);if(group)setValue({ ...value, group_id:group.id, kind:group.kind });}}
           >
-            {Object.entries(accountLabels).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
+            {groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
           </StyledSelect>
         </label>
         <label>

@@ -21,6 +21,7 @@ class Account(BaseModel):
     kind: Literal["bank", "wallet", "cash", "credit", "receivable", "liability"] = "bank"
     opening_cents: int = Field(default=0, ge=-(10**12), le=10**12, strict=True)
     version: int = 1
+    group_id: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -207,6 +208,8 @@ def snapshot(db):
     payable += sum(max(0, -a["balance_cents"]) for a in accounts if a["kind"] == "liability")
     return dict(
         accounts=accounts,
+        account_groups=[dict(g) for g in db.execute(
+            "SELECT * FROM account_groups WHERE deleted=0 OR id IN (SELECT COALESCE(group_id,kind) FROM accounts) ORDER BY rowid")],
         ordering=ordering,
         category_catalog=catalog(db),
         entries=entries,
