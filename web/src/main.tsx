@@ -1537,7 +1537,11 @@ function AccountDialog({
   onClose: () => void;
   onSave: (value: Account) => Promise<void>;
 }) {
-  const [value, setValue] = useState(initial),
+  const [value, setValue] = useState(() => {
+    if (initial.id) return initial;
+    const group = groups.find(g => g.id === initial.group_id) ?? groups.find(g => g.kind === initial.kind) ?? groups[0];
+    return group ? {...initial,group_id:group.id,kind:group.kind} : initial;
+  }),
     [amount, setAmount] = useState(String((initial.id ? initial.balance_cents : initial.opening_cents) / 100)),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
@@ -1546,6 +1550,7 @@ function AccountDialog({
       <form
         onSubmit={async (e) => {
           e.preventDefault();
+          if (!groups.length) return;
           setBusy(true);
           try {
             await onSave(initial.id
@@ -1595,9 +1600,10 @@ function AccountDialog({
             {error}
           </p>
         )}
+        {!groups.length && <p role="alert" className="error">请先在设置的账户管理中添加账户类型。</p>}
         <div className="modal-footer">
           <small>余额调整不计入收支，按回车保存。</small>
-          <button aria-label="保存账户" title="保存账户" className="primary" disabled={busy}><Check size={18} aria-hidden="true" /></button>
+          <button aria-label="保存账户" title="保存账户" className="primary" disabled={busy || !groups.length}><Check size={18} aria-hidden="true" /></button>
         </div>
       </form>
     </Modal>
