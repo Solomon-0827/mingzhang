@@ -327,10 +327,31 @@ button:disabled { box-shadow: none; transform: none; }
 
 /* Keep the entry title and actions on the same toolbar as transaction kinds. */
 .entry-home .entry-kinds { align-items: center; }
+.entry-home .entry-kinds button {
+  transition: color .18s ease, background-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+.entry-home .entry-kinds button:hover:not(:disabled) {
+  color: var(--ink);
+  background: #fffaf0;
+  box-shadow: 3px 3px 0 var(--button-backing);
+  transform: translate(-1px, -1px);
+}
+.entry-home .entry-kinds button.selected:hover:not(:disabled) {
+  background: transparent;
+  box-shadow: 3px 3px 0 #d8cdb8;
+}
+.entry-home .entry-kinds button:active:not(:disabled) {
+  box-shadow: 1px 1px 0 var(--button-backing);
+  transform: translate(1px, 1px);
+}
 .entry-home .entry-inline-title { margin: 0 24px 0 0; font-size: 26px; line-height: 1.2; white-space: nowrap; }
 .entry-home .modal-footer .icon-button { flex-shrink: 0; width: 34px; height: 34px; padding: 0; }
 @media (max-width: 600px) {
   .entry-home .entry-inline-title { margin-right: 12px; font-size: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .entry-home .entry-kinds button:hover:not(:disabled),
+  .entry-home .entry-kinds button:active:not(:disabled) { transform: none; }
 }
 .entry-home .modal-footer { justify-content: flex-end; gap: 14px; }
 
