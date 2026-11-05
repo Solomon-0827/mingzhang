@@ -108,34 +108,43 @@ if ! ROOT="$root" python3 - <<'PY'
 import os, shutil, stat, tempfile
 from pathlib import Path
 root = Path(os.environ["ROOT"])
-for downloads in root.joinpath("releases").glob("**/web/dist/downloads"):
-    if downloads.is_symlink() or not downloads.is_dir():
-        continue
-    main = downloads.parents[2] / "backend/main.py"
-    if not main.is_file():
-        continue
+for main in root.joinpath("releases").glob("*/app/backend/main.py"):
+    downloads = main.parents[1] / "web/dist/downloads"
     old = "StaticFiles(directory=DIST, html=True)"
+    new = "StaticFiles(directory=DIST, html=True, follow_symlink=True)"
     source = main.read_text()
-    if old not in source:
+    if old in source:
+        updated = source.replace(old, new)
+    elif new in source:
+        updated = source
+    else:
         continue
-    updated = source.replace(old, "StaticFiles(directory=DIST, html=True, follow_symlink=True)")
     compile(updated, str(main), "exec")
-    metadata = main.stat()
-    temporary = None
-    try:
-        descriptor, temporary = tempfile.mkstemp(prefix=".main-", suffix=".py", dir=main.parent)
-        with os.fdopen(descriptor, "w") as stream:
-            stream.write(updated)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
-        os.chown(temporary, metadata.st_uid, metadata.st_gid)
-        os.replace(temporary, main)
-    except Exception:
-        if temporary:
-            Path(temporary).unlink(missing_ok=True)
-        continue
-    shutil.rmtree(downloads)
+    if updated != source:
+        metadata = main.stat()
+        temporary = None
+        try:
+            descriptor, temporary = tempfile.mkstemp(prefix=".main-", suffix=".py", dir=main.parent)
+            with os.fdopen(descriptor, "w") as stream:
+                stream.write(updated)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
+            os.chown(temporary, metadata.st_uid, metadata.st_gid)
+            os.replace(temporary, main)
+        except Exception:
+            if temporary:
+                Path(temporary).unlink(missing_ok=True)
+            continue
+    if downloads.is_symlink():
+        if downloads.resolve(strict=False) == (root / "downloads").resolve(strict=False):
+            continue
+        downloads.unlink()
+    elif downloads.exists():
+        if not downloads.is_dir():
+            continue
+        shutil.rmtree(downloads)
+    downloads.parent.mkdir(parents=True, exist_ok=True)
     downloads.symlink_to(root / "downloads")
 PY
 then
