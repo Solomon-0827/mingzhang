@@ -6,7 +6,7 @@ try {
   Wait-Process -Id $ProcessId -ErrorAction SilentlyContinue
   Expand-Archive -LiteralPath $Archive -DestinationPath $work -Force
   $candidate = Get-ChildItem -LiteralPath $work -Directory | Select-Object -First 1
-  if (-not $candidate) { throw "更新包中没有应用程序" }
+  if (-not $candidate) { throw "Update package has no application directory" }
   if (-not (Test-Path -LiteralPath (Join-Path $Target ".mingzhang-managed"))) { throw "Current application directory is unmanaged" }
   if (-not (Test-Path -LiteralPath (Join-Path $candidate.FullName ".mingzhang-managed"))) { throw "Update package is unmanaged" }
   Move-Item -LiteralPath $Target -Destination $backup

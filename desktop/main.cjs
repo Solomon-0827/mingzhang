@@ -6,6 +6,7 @@ const { checkForUpdate, downloadUpdate, launchInstaller } = require("./updater.c
 let main, setup;
 let updateState = { status: "idle", currentVersion: app.getVersion() };
 let checkingUpdate = null;
+let updateEpoch = 0;
 let ledgerOrigin = "";
 const configFile = () => path.join(app.getPath("userData"), "connection.json");
 function readURL() {
@@ -110,11 +111,14 @@ function setUpdateState(next) {
 }
 async function runUpdateCheck() {
   if (!app.isPackaged || ["downloading", "installing"].includes(updateState.status) || checkingUpdate) return checkingUpdate || updateState;
+  const epoch = updateEpoch;
   checkingUpdate = (async () => {
     try {
       const release = await checkForUpdate({ currentVersion: app.getVersion() });
+      if (epoch !== updateEpoch || ["downloading", "installing"].includes(updateState.status)) return updateState;
       return setUpdateState(release ? { status: "available", release, error: undefined } : { status: "idle", release: undefined, error: undefined });
     } catch (error) {
+      if (epoch !== updateEpoch || ["downloading", "installing"].includes(updateState.status)) return updateState;
       return setUpdateState({ status: "idle", error: error.message });
     } finally {
       checkingUpdate = null;
@@ -153,6 +157,7 @@ ipcMain.handle("update:install", async (event) => {
   if (!app.isPackaged || senderOrigin !== ledgerOrigin || event.sender !== main?.webContents || event.senderFrame !== main?.webContents.mainFrame || updateState.status !== "available" || !updateState.release) throw Error("当前没有可安装的更新");
   try {
     const release = updateState.release;
+    updateEpoch += 1;
     setUpdateState({ status: "downloading", error: undefined });
     const updates = path.join(app.getPath("userData"), "updates");
     fs.mkdirSync(updates, { recursive: true, mode: 0o700 });
