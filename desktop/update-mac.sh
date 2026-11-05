@@ -5,7 +5,7 @@ pid="$1"
 archive="$2"
 target="$3"
 version="$4"
-work="$(mktemp -d "${TMPDIR:-/tmp}/mingzhang-update.XXXXXX")"
+work="$(mktemp -d "$(dirname "$target")/.mingzhang-update.XXXXXX")"
 backup="${target}.previous.$$"
 trap 'rm -rf "$work"' EXIT
 
@@ -26,6 +26,7 @@ if mv "$candidate" "$target"; then
     exit 1
   fi
 else
+  rm -rf "$target"
   mv "$backup" "$target"
   exit 1
 fi

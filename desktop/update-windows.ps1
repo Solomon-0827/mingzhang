@@ -1,6 +1,6 @@
 param([int]$ProcessId, [string]$Archive, [string]$Target, [string]$Version)
 $ErrorActionPreference = "Stop"
-$work = Join-Path $env:TEMP ("mingzhang-update-" + [guid]::NewGuid())
+$work = Join-Path (Split-Path -Parent $Target) (".mingzhang-update-" + [guid]::NewGuid())
 $backup = "$Target.previous-$([guid]::NewGuid())"
 try {
   Wait-Process -Id $ProcessId -ErrorAction SilentlyContinue
@@ -15,13 +15,13 @@ try {
     $executable = Get-ChildItem -LiteralPath $Target -Filter "*.exe" | Where-Object { $_.Name -notmatch "Helper" } | Select-Object -First 1
     if (-not $executable) { throw "Application executable is missing" }
     Start-Process -FilePath $executable.FullName
-    Remove-Item -LiteralPath $backup -Recurse -Force
-    Remove-Item -LiteralPath $Archive -Force
   } catch {
     if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Recurse -Force }
     Move-Item -LiteralPath $backup -Destination $Target
     throw
   }
+  Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $Archive -Force -ErrorAction SilentlyContinue
 } finally {
   if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 }
