@@ -4,8 +4,9 @@ set -euo pipefail
 mkdir -p /opt/mingzhang/{app,venv,backups,data} /fixture/{backend,scripts,web/dist,deploy} /stubs
 groupadd mingzhang
 useradd -g mingzhang mingzhang
-mkdir -p /opt/mingzhang/app/web/dist/downloads
+mkdir -p /opt/mingzhang/app/web/dist/downloads /opt/mingzhang/app/backend
 printf 'existing installer\n' > /opt/mingzhang/app/web/dist/downloads/mingzhang-mac-arm64.zip
+printf 'app.mount("/", StaticFiles(directory=DIST, html=True), name="web")\n' > /opt/mingzhang/app/backend/main.py
 printf 'old\n' > /opt/mingzhang/app/marker
 printf 'old\n' > /opt/mingzhang/venv/marker
 printf 'LEDGER_DB=/opt/mingzhang/data/ledger.sqlite3\n' > /opt/mingzhang/config.env
@@ -41,6 +42,7 @@ first_venv=$(readlink -f /opt/mingzhang/venv)
 test -L "$first_app/web/dist/downloads"
 test "$(cat "$first_app/web/dist/downloads/mingzhang-mac-arm64.zip")" = 'existing installer'
 test "$(find /opt/mingzhang -type f -name 'mingzhang-*.zip' | wc -l)" -eq 1
+test -z "$(find /opt/mingzhang/releases -type d -path '*/web/dist/downloads' -print -quit)"
 runuser -u mingzhang -- "$first_venv/bin/python" -c "from pathlib import Path; assert Path('/opt/mingzhang/app/REVISION').read_text().strip() == 'c' * 40"
 # Force health-check failure: both application and Python environment must roll back.
 if FAIL_HEALTH=1 bash deploy/upgrade.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; then

@@ -105,19 +105,36 @@ trap - ERR
 # Older rollback releases embedded their own installers. Only after the new app
 # is healthy, point them at the shared directory and enable symlink serving.
 if ! ROOT="$root" python3 - <<'PY'
-import os, shutil
+import os, shutil, stat, tempfile
 from pathlib import Path
 root = Path(os.environ["ROOT"])
 for downloads in root.joinpath("releases").glob("**/web/dist/downloads"):
     if downloads.is_symlink() or not downloads.is_dir():
         continue
     main = downloads.parents[2] / "backend/main.py"
-    if main.is_file():
-        source = main.read_text().replace(
-            "StaticFiles(directory=DIST, html=True)",
-            "StaticFiles(directory=DIST, html=True, follow_symlink=True)",
-        )
-        main.write_text(source)
+    if not main.is_file():
+        continue
+    old = "StaticFiles(directory=DIST, html=True)"
+    source = main.read_text()
+    if old not in source:
+        continue
+    updated = source.replace(old, "StaticFiles(directory=DIST, html=True, follow_symlink=True)")
+    compile(updated, str(main), "exec")
+    metadata = main.stat()
+    temporary = None
+    try:
+        descriptor, temporary = tempfile.mkstemp(prefix=".main-", suffix=".py", dir=main.parent)
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(updated)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
+        os.chown(temporary, metadata.st_uid, metadata.st_gid)
+        os.replace(temporary, main)
+    except Exception:
+        if temporary:
+            Path(temporary).unlink(missing_ok=True)
+        continue
     shutil.rmtree(downloads)
     downloads.symlink_to(root / "downloads")
 PY
