@@ -108,7 +108,12 @@ if ! ROOT="$root" python3 - <<'PY'
 import os, shutil, stat, tempfile
 from pathlib import Path
 root = Path(os.environ["ROOT"])
-for main in root.joinpath("releases").glob("*/app/backend/main.py"):
+release_roots = root.joinpath("releases")
+rollback_mains = [
+    *release_roots.glob("*/app/backend/main.py"),
+    *release_roots.glob("legacy-app-*/backend/main.py"),
+]
+for main in rollback_mains:
     downloads = main.parents[1] / "web/dist/downloads"
     old = "StaticFiles(directory=DIST, html=True)"
     new = "StaticFiles(directory=DIST, html=True, follow_symlink=True)"
