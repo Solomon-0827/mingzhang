@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 DESKTOP = Path(__file__).parents[1] / "desktop"
 
 
