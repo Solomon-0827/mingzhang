@@ -1,4 +1,4 @@
-import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, BookOpen, ChartNoAxesCombined, Check, ChevronLeft, ChevronRight, Copy, Database, Download, FileUp, Import, LayoutDashboard, LogIn, LogOut, PanelLeftClose, PanelLeftOpen, PencilLine, Plus, RefreshCw, RotateCcw, ScanEye, Search, Settings, Trash2, Undo2, Wallet, X } from "lucide-react";
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, BookOpen, ChartNoAxesCombined, Check, ChevronLeft, ChevronRight, CircleArrowUp, Copy, Database, Download, FileUp, Import, LayoutDashboard, LoaderCircle, LogIn, LogOut, PanelLeftClose, PanelLeftOpen, PencilLine, Plus, RefreshCw, RotateCcw, ScanEye, Search, Settings, Trash2, Undo2, Wallet, X } from "lucide-react";
 import { DesktopDownloads } from "./desktop-downloads";
 import { motion, MotionConfig } from "motion/react";
 import React, {
@@ -43,6 +43,23 @@ import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import "./paper-theme.css";
 import { OrderSettings } from "./order-settings";
+
+type DesktopUpdateState = {
+  status: "idle" | "available" | "downloading" | "installing";
+  currentVersion: string;
+  release?: { version: string };
+  error?: string;
+};
+declare global {
+  interface Window {
+    mingzhangUpdate?: {
+      getState(): Promise<DesktopUpdateState>;
+      check(): Promise<DesktopUpdateState>;
+      install(): Promise<boolean>;
+      onState(listener: (state: DesktopUpdateState) => void): () => void;
+    };
+  }
+}
 
 const categories = [
   "日常/餐饮",
@@ -112,6 +129,7 @@ function App() {
     [accountEditor, setAccountEditor] = useState<Account | null>(null);
   const [lastSync, setLastSync] = useState(""),
     [online, setOnline] = useState(navigator.onLine);
+  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState | null>(null);
   const range = useMemo(() => {
     const [y, m] = anchor.split("-").map(Number);
     const startMonth =
@@ -170,6 +188,14 @@ function App() {
       window.removeEventListener("online", fn);
       window.removeEventListener("offline", fn);
     };
+  }, []);
+  useEffect(() => {
+    const updater = window.mingzhangUpdate;
+    if (!updater) return;
+    const receive = (value: DesktopUpdateState) => setDesktopUpdate(value);
+    const unsubscribe = updater.onState(receive);
+    updater.getState().then(receive).then(() => updater.check()).then(receive).catch(() => undefined);
+    return unsubscribe;
   }, []);
   useEffect(() => {
     let current = true;
@@ -386,6 +412,19 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
+          {desktopUpdate && desktopUpdate.status !== "idle" && (
+            <button
+              className="desktop-update"
+              data-mingzhang-update-action="install"
+              aria-label={desktopUpdate.status === "available" ? `更新到明账 ${desktopUpdate.release?.version}` : "正在更新明账"}
+              title={desktopUpdate.status === "available" ? `有新版本 ${desktopUpdate.release?.version}，点击自动更新` : "正在下载并安装更新"}
+              disabled={desktopUpdate.status !== "available"}
+              onClick={() => window.mingzhangUpdate?.install().catch((error: Error) => setError(error.message))}
+            >
+              {desktopUpdate.status === "available" ? <CircleArrowUp size={19} aria-hidden="true" /> : <LoaderCircle className="spin" size={19} aria-hidden="true" />}
+              <span className="nav-text">{desktopUpdate.status === "available" ? `更新到 ${desktopUpdate.release?.version}` : "正在更新…"}</span>
+            </button>
+          )}
           <div className={"sync " + (!online ? "offline" : "")} title={online ? `最近同步 ${lastSync}` : "当前离线"}>
             <i />
             <span className="nav-text">{online ? `最近同步 ${lastSync}` : "当前离线，恢复联网后再保存"}</span>

@@ -534,5 +534,11 @@ def download_backup():
 
 
 DIST = Path(__file__).resolve().parent.parent / "web/dist"
-if DIST.exists():
-    app.mount("/", StaticFiles(directory=DIST, html=True), name="web")
+
+
+def mount_web(application: FastAPI, directory: Path):
+    if directory.exists():
+        application.mount("/", StaticFiles(directory=directory, html=True, follow_symlink=True), name="web")
+
+
+mount_web(app, DIST)

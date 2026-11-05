@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -23,10 +25,22 @@ jobs:
       - run: pip install uv
       - run: uv sync --frozen
       - run: uv run ruff check backend scripts tests deploy/publish-desktop.py
-      - run: uv run pytest -q
       - run: npm --prefix web ci
       - run: npm --prefix web run build
-      - run: node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/setup.js && node --check desktop/publish.mjs
+      - run: uv run pytest -q
+      - run: npm --prefix desktop ci --ignore-scripts
+      - run: npm --prefix desktop test
+      - name: Require a higher version for desktop changes
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if ! git diff --quiet "$BASE_SHA" HEAD -- desktop/main.cjs desktop/preload.cjs desktop/updater.cjs desktop/update-mac.sh desktop/update-windows.ps1 desktop/package.mjs desktop/setup.html desktop/setup.js desktop/package.json desktop/package-lock.json desktop/icon.icns desktop/icon.ico web/public/icon.png; then
+            old=$(git show "$BASE_SHA:desktop/package.json" | node -e "let s='';process.stdin.on('data',x=>s+=x).on('end',()=>console.log(JSON.parse(s).version))")
+            new=$(node -p "require('./desktop/package.json').version")
+            node -e "const p=v=>v.split('.').map(Number); const a=p(process.argv[1]),b=p(process.argv[2]); if (!a.some((x,i)=>x!==b[i]&&x>b[i]&&a.slice(0,i).every((y,j)=>y===b[j]))) process.exit(1)" "$new" "$old"
+          fi
+      - run: node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/setup.js && node --check desktop/updater.cjs
       - run: bash -n deploy/upgrade.sh
       - run: docker run --rm -v "$PWD:/source:ro" python:3.12-slim bash /source/tests/deploy-smoke.sh
       - name: Package application only
@@ -38,19 +52,63 @@ jobs:
           name: mingzhang-${{ github.sha }}
           path: mingzhang.tar.gz
           retention-days: 1
-  # Desktop packaging is paused. Existing server downloads are preserved on upgrade.
-  deploy:
+  package-mac:
     needs: [verify]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm --prefix desktop ci
+      - run: npm --prefix desktop run package -- darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mingzhang-mac-${{ github.sha }}
+          path: desktop/out/downloads/mingzhang-mac-arm64.zip*
+          retention-days: 1
+  package-windows:
+    needs: [verify]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm --prefix desktop ci
+      - run: npm --prefix desktop run package -- win32
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mingzhang-windows-${{ github.sha }}
+          path: desktop/out/downloads/mingzhang-windows11-x64.zip*
+          retention-days: 1
+  deploy:
+    needs: [verify, package-mac, package-windows]
+    if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release' && needs.verify.result == 'success' && needs.package-mac.result == 'success' && needs.package-windows.result == 'success'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: write
     environment: production
     concurrency:
       group: mingzhang-production
-      cancel-in-progress: false
+      queue: max
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: mingzhang-${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mingzhang-*-${{ github.sha }}
+          path: desktop-artifacts
+          merge-multiple: true
       - name: Reject stale deployment
         env:
           GH_TOKEN: ${{ github.token }}
@@ -79,6 +137,52 @@ jobs:
           target="$DEPLOY_USER@$DEPLOY_HOST"
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes mingzhang.tar.gz "$target:mingzhang-$REVISION.tar.gz"
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "set -eu; mkdir -p releases/$REVISION; tar -xzf mingzhang-$REVISION.tar.gz -C releases/$REVISION; cd releases/$REVISION; sudo -n bash deploy/upgrade.sh $REVISION; cd; rm -f -- mingzhang-$REVISION.tar.gz; rm -rf -- releases/$REVISION"
+      - name: Publish desktop clients
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          REVISION: ${{ github.sha }}
+          RELEASE_SIGNING_KEY: ${{ secrets.DESKTOP_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SIGNING_KEY"
+          node <<'NODE'
+          const { createHash, sign } = require('node:crypto');
+          const { execFileSync } = require('node:child_process');
+          const { readFileSync, writeFileSync } = require('node:fs');
+          const version = require('./desktop/package.json').version;
+          if (!/^\d+\.\d+\.\d+$/.test(version)) throw Error('Invalid desktop version');
+          const digest = name => createHash('sha256').update(readFileSync(`desktop-artifacts/${name}`)).digest('hex');
+          const source = execFileSync('git', ['ls-files', '-s', 'desktop/main.cjs', 'desktop/preload.cjs', 'desktop/updater.cjs', 'desktop/update-mac.sh', 'desktop/update-windows.ps1', 'desktop/package.mjs', 'desktop/setup.html', 'desktop/setup.js', 'desktop/package.json', 'desktop/package-lock.json', 'desktop/icon.icns', 'desktop/icon.ico', 'web/public/icon.png']);
+          const payload = Buffer.from(JSON.stringify({
+            schema: 1,
+            source_hash: createHash('sha256').update(source).digest('hex'),
+            platforms: {
+              'darwin-arm64': { version, url: '/downloads/mingzhang-mac-arm64.zip', sha256: digest('mingzhang-mac-arm64.zip') },
+              'win32-x64': { version, url: '/downloads/mingzhang-windows11-x64.zip', sha256: digest('mingzhang-windows11-x64.zip') },
+            },
+          }));
+          const privateKey = Buffer.from(process.env.RELEASE_SIGNING_KEY, 'base64').toString('utf8');
+          const envelope = { schema: 1, payload: payload.toString('base64'), signature: sign(null, payload, privateKey).toString('base64') };
+          writeFileSync('desktop-artifacts/latest.json', JSON.stringify(envelope) + '\n');
+          NODE
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          stage="desktop-$REVISION"
+          cleanup() { ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "rm -rf -- '$stage'" || true; }
+          trap cleanup EXIT
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "mkdir -p '$stage'"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes desktop-artifacts/* "$target:$stage/"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "sudo -n python3 /opt/mingzhang/app/deploy/publish-desktop.py '$stage/mingzhang-mac-arm64.zip' '$stage/mingzhang-windows11-x64.zip' '$stage/latest.json'"
       - name: Remove runner credentials
         if: always()
         run: rm -f ~/.ssh/id_ed25519
+      - name: Remove temporary workflow artifacts
+        if: success()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          gh api --paginate "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[].id' |
+            while read -r id; do gh api --method DELETE "repos/$REPOSITORY/actions/artifacts/$id"; done

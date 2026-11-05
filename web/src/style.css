@@ -254,6 +254,19 @@ nav .active {
   color: #71695c;
   font-size: 12px;
 }
+.sidebar-bottom .desktop-update {
+  color: #a8483c;
+  font-weight: 600;
+  animation: update-arrive .28s var(--ease-out) both;
+}
+.sidebar-bottom .desktop-update:hover:not(:disabled) { color: #7e3028; transform: translateY(-1px); }
+.sidebar-bottom .desktop-update:disabled { opacity: .72; cursor: wait; }
+.desktop-update .spin { animation: update-spin 1s linear infinite; }
+@keyframes update-arrive { from { opacity: 0; transform: translateY(5px) scale(.96); } }
+@keyframes update-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-bottom .desktop-update, .desktop-update .spin { animation: none; }
+}
 .sidebar-bottom small {
   font-size: 9px;
   white-space: nowrap;

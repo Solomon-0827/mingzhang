@@ -13,10 +13,23 @@ install -d -m 750 -o root -g mingzhang "$root/releases"
 release="$root/releases/$revision-$(date -u +%Y%m%dT%H%M%S)"
 mkdir -p "$release/app"
 cp -R backend scripts web deploy "$release/app/"
-# Web-only releases keep the last published installers without rebuilding/uploading them.
-if [[ ! -d "$release/app/web/dist/downloads" && -d "$root/app/web/dist/downloads" ]]; then
-  cp -R "$root/app/web/dist/downloads" "$release/app/web/dist/downloads"
+# Desktop installers live outside web releases so rollbacks and release retention
+# cannot duplicate or rewind them.
+install -d -m 755 "$root/desktop-releases"
+if [[ ! -e "$root/downloads" && ! -L "$root/downloads" ]]; then
+  legacy="$root/desktop-releases/legacy-$(date -u +%Y%m%dT%H%M%S)"
+  install -d -m 755 "$legacy"
+  if [[ -d "$root/app/web/dist/downloads" ]]; then
+    cp -R "$root/app/web/dist/downloads/." "$legacy/"
+  fi
+  ln -s "$legacy" "$root/downloads"
+elif [[ -d "$root/downloads" && ! -L "$root/downloads" ]]; then
+  legacy="$root/desktop-releases/legacy-$(date -u +%Y%m%dT%H%M%S)"
+  mv "$root/downloads" "$legacy"
+  ln -s "$legacy" "$root/downloads"
 fi
+rm -rf "$release/app/web/dist/downloads"
+ln -s "$root/downloads" "$release/app/web/dist/downloads"
 # Install in a new environment; a dependency failure cannot damage the running version.
 python3 -m venv "$release/venv"
 "$release/venv/bin/pip" install --disable-pip-version-check -r "$release/app/deploy/requirements.txt"
@@ -89,6 +102,59 @@ done
 [[ $healthy == true ]]
 systemctl is-active --quiet mingzhang
 trap - ERR
+# Older rollback releases embedded their own installers. Only after the new app
+# is healthy, point them at the shared directory and enable symlink serving.
+if ! ROOT="$root" python3 - <<'PY'
+import os, shutil, stat, tempfile
+from pathlib import Path
+root = Path(os.environ["ROOT"])
+release_roots = root.joinpath("releases")
+rollback_mains = [
+    *release_roots.glob("*/app/backend/main.py"),
+    *release_roots.glob("legacy-app-*/backend/main.py"),
+]
+for main in rollback_mains:
+    downloads = main.parents[1] / "web/dist/downloads"
+    old = "StaticFiles(directory=DIST, html=True)"
+    new = "StaticFiles(directory=DIST, html=True, follow_symlink=True)"
+    source = main.read_text()
+    if old in source:
+        updated = source.replace(old, new)
+    elif new in source:
+        updated = source
+    else:
+        continue
+    compile(updated, str(main), "exec")
+    if updated != source:
+        metadata = main.stat()
+        temporary = None
+        try:
+            descriptor, temporary = tempfile.mkstemp(prefix=".main-", suffix=".py", dir=main.parent)
+            with os.fdopen(descriptor, "w") as stream:
+                stream.write(updated)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
+            os.chown(temporary, metadata.st_uid, metadata.st_gid)
+            os.replace(temporary, main)
+        except Exception:
+            if temporary:
+                Path(temporary).unlink(missing_ok=True)
+            continue
+    if downloads.is_symlink():
+        if downloads.resolve(strict=False) == (root / "downloads").resolve(strict=False):
+            continue
+        downloads.unlink()
+    elif downloads.exists():
+        if not downloads.is_dir():
+            continue
+        shutil.rmtree(downloads)
+    downloads.parent.mkdir(parents=True, exist_ok=True)
+    downloads.symlink_to(root / "downloads")
+PY
+then
+  echo 'Warning: old embedded desktop installers could not be cleaned.' >&2
+fi
 # Cleanup never runs after failed health checks. A cleanup error does not undo a healthy release.
 if ! python3 "$release/app/deploy/prune-releases.py" "$root" "$previous_app" "$previous_venv"; then
   echo 'Warning: release cleanup failed; application remains healthy.' >&2

@@ -2,7 +2,13 @@ const { app, BrowserWindow, Menu, ipcMain, dialog, nativeImage } = require("elec
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { checkForUpdate, downloadUpdate, launchInstaller } = require("./updater.cjs");
 let main, setup;
+let updateState = { status: "idle", currentVersion: app.getVersion() };
+let checkingUpdate = null;
+let installingUpdate = false;
+let updateEpoch = 0;
+let ledgerOrigin = "";
 const configFile = () => path.join(app.getPath("userData"), "connection.json");
 function readURL() {
   try {
@@ -60,6 +66,7 @@ function openLedger(url) {
     title: "明账",
     backgroundColor: "#F9F7F0",
     webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -89,9 +96,36 @@ function openLedger(url) {
     },
   );
   main.loadURL(url);
+  ledgerOrigin = url;
+  main.webContents.once("did-finish-load", () => {
+    main.webContents.send("update:state", updateState);
+    void runUpdateCheck();
+  });
   main.on("closed", () => {
     main = null;
   });
+}
+function setUpdateState(next) {
+  updateState = { ...updateState, ...next, currentVersion: app.getVersion() };
+  if (main && !main.isDestroyed()) main.webContents.send("update:state", updateState);
+  return updateState;
+}
+async function runUpdateCheck() {
+  if (!app.isPackaged || installingUpdate || ["downloading", "installing"].includes(updateState.status) || checkingUpdate) return checkingUpdate || updateState;
+  const epoch = updateEpoch;
+  checkingUpdate = (async () => {
+    try {
+      const release = await checkForUpdate({ currentVersion: app.getVersion() });
+      if (epoch !== updateEpoch || ["downloading", "installing"].includes(updateState.status)) return updateState;
+      return setUpdateState(release ? { status: "available", release, error: undefined } : { status: "idle", release: undefined, error: undefined });
+    } catch (error) {
+      if (epoch !== updateEpoch || ["downloading", "installing"].includes(updateState.status)) return updateState;
+      return setUpdateState({ status: "idle", release: undefined, error: error.message });
+    } finally {
+      checkingUpdate = null;
+    }
+  })();
+  return checkingUpdate;
 }
 ipcMain.handle("connection:read", (event) => {
   if (event.sender !== setup?.webContents) throw Error("无权限");
@@ -109,6 +143,65 @@ ipcMain.handle("connection:save", (event, value) => {
   openLedger(url);
   setup.close();
   return true;
+});
+ipcMain.handle("update:state", (event) => {
+  if (event.sender !== main?.webContents) throw Error("无权限");
+  return updateState;
+});
+ipcMain.handle("update:check", (event) => {
+  if (event.sender !== main?.webContents) throw Error("无权限");
+  return runUpdateCheck();
+});
+ipcMain.handle("update:install", async (event) => {
+  let senderOrigin = "";
+  try { senderOrigin = new URL(event.senderFrame.url).origin; } catch {}
+  if (!app.isPackaged || installingUpdate || senderOrigin !== ledgerOrigin || event.sender !== main?.webContents || event.senderFrame !== main?.webContents.mainFrame || updateState.status !== "available" || !updateState.release) throw Error("当前没有可安装的更新");
+  installingUpdate = true;
+  try {
+    let release = updateState.release;
+    updateEpoch += 1;
+    setUpdateState({ status: "downloading", release, error: undefined });
+    const latest = await checkForUpdate({ currentVersion: app.getVersion() });
+    if (!latest) {
+      setUpdateState({ status: "idle", release: undefined, error: undefined });
+      throw Error("当前已经是最新版本");
+    }
+    release = latest;
+    setUpdateState({ status: "downloading", release, error: undefined });
+    const updates = path.join(app.getPath("userData"), "updates");
+    fs.mkdirSync(updates, { recursive: true, mode: 0o700 });
+    let archive = "";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      setUpdateState({ status: "downloading", release, error: undefined });
+      archive = path.join(updates, `mingzhang-${release.version}.zip`);
+      try {
+        await downloadUpdate(release, archive);
+        break;
+      } catch (error) {
+        if (attempt || !error.message.includes("校验失败")) throw error;
+        const previousHash = release.sha256;
+        const refreshed = await checkForUpdate({ currentVersion: app.getVersion() });
+        if (!refreshed || refreshed.sha256 === previousHash) throw error;
+        release = refreshed;
+      }
+    }
+    setUpdateState({ status: "installing" });
+    const helperName = process.platform === "darwin" ? "update-mac.sh" : "update-windows.ps1";
+    const helper = path.join(updates, helperName);
+    fs.copyFileSync(path.join(__dirname, helperName), helper);
+    fs.chmodSync(helper, 0o700);
+    const appPath = process.platform === "darwin"
+      ? path.resolve(app.getAppPath(), "../../..")
+      : path.resolve(app.getAppPath(), "../..");
+    await launchInstaller({ appPath, archive, helper, version: release.version });
+    setImmediate(() => app.quit());
+    return true;
+  } catch (error) {
+    setUpdateState({ status: updateState.release ? "available" : "idle", error: error.message });
+    throw error;
+  } finally {
+    installingUpdate = false;
+  }
 });
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -180,6 +273,7 @@ if (!app.requestSingleInstanceLock()) {
     } catch {
       setupWindow();
     }
+    setInterval(() => void runUpdateCheck(), 6 * 60 * 60 * 1000).unref();
   });
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();

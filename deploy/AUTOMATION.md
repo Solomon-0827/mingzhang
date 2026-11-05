@@ -14,6 +14,7 @@ workflow 的触发条件、部署条件与最新提交检查。
 - `DEPLOY_USER`：部署用户。需要写入自己 home 下 releases/ 和执行升级脚本的 sudo 权限。
 - `DEPLOY_SSH_KEY`：专门用于这个私有仓库的部署私钥。
 - `DEPLOY_KNOWN_HOSTS`：已通过控制台核验的 SSH known_hosts 完整记录。
+- `DESKTOP_RELEASE_SIGNING_KEY`：Ed25519 PKCS#8 私钥 PEM 的 Base64，仅用于签署客户端更新清单。
 
 部署身份可以更新运行程序，因此等同于信任该仓库的合并权限。不要复用其他项目私钥。
 这些值只放 GitHub Secrets；不得提交私钥、config.env、真实账本、备份或登录密码。
@@ -42,4 +43,10 @@ sudo bash deploy/upgrade.sh <40位Git提交SHA>
 
 网页和使用云端地址的 Mac 客户端都加载同一份服务端前端，通常刷新即可更新。
 Electron 主程序、图标及原生菜单改动仍需另行打包客户端。
+
+每次进入部署分支时，Actions 会分别在 macOS 和 Windows runner 上生成安装包，避免连续部署
+漏发客户端版本。部署端按源码摘要跳过相同版本，只保留一套最新安装包；网页 release 通过
+共享链接访问，不复制安装包。更新清单使用独立 Ed25519 密钥签名，客户端内置公钥验签。
+安装包只作为本次部署的临时 artifact，部署成功后立即删除；部署失败时保留以便重跑，GitHub
+会在 1 天后兜底删除。客户端通过固定 HTTPS 更新源检查，发现更高版本后在左下角显示更新按钮。
 ICP备案和 HTTPS 云端入口完成前，服务器更新成功不等于公网可访问。
