@@ -26,7 +26,9 @@ jobs:
       - run: uv run pytest -q
       - run: npm --prefix web ci
       - run: npm --prefix web run build
-      - run: node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/setup.js && node --check desktop/publish.mjs
+      - run: npm --prefix desktop ci --ignore-scripts
+      - run: npm --prefix desktop test
+      - run: node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/setup.js && node --check desktop/updater.cjs && node --check desktop/publish.mjs
       - run: bash -n deploy/upgrade.sh
       - run: docker run --rm -v "$PWD:/source:ro" python:3.12-slim bash /source/tests/deploy-smoke.sh
       - name: Package application only
@@ -38,11 +40,75 @@ jobs:
           name: mingzhang-${{ github.sha }}
           path: mingzhang.tar.gz
           retention-days: 1
-  # Desktop packaging is paused. Existing server downloads are preserved on upgrade.
-  deploy:
+  desktop-changes:
     needs: [verify]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release'
     runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+      version: ${{ steps.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: detect
+        env:
+          BEFORE: ${{ github.event.before }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          version=$(node -p "require('./desktop/package.json').version")
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          changed=false
+          if [[ $EVENT == workflow_dispatch || ! $BEFORE =~ ^[0-9a-f]{40}$ || $BEFORE == 0000000000000000000000000000000000000000 ]]; then
+            changed=true
+          elif ! git diff --quiet "$BEFORE" "${{ github.sha }}" -- desktop/ deploy/publish-desktop.py .github/workflows/deploy.yml; then
+            changed=true
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+  package-mac:
+    needs: [verify, desktop-changes]
+    if: needs.desktop-changes.outputs.changed == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm --prefix desktop ci
+      - run: npm --prefix desktop run package -- darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mingzhang-mac-${{ github.sha }}
+          path: desktop/out/downloads/mingzhang-mac-arm64.zip*
+          retention-days: 1
+  package-windows:
+    needs: [verify, desktop-changes]
+    if: needs.desktop-changes.outputs.changed == 'true'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm --prefix desktop ci
+      - run: npm --prefix desktop run package -- win32
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mingzhang-windows-${{ github.sha }}
+          path: desktop/out/downloads/mingzhang-windows11-x64.zip*
+          retention-days: 1
+  deploy:
+    needs: [verify, desktop-changes, package-mac, package-windows]
+    if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release' && needs.verify.result == 'success' && (needs.desktop-changes.outputs.changed != 'true' || (needs.package-mac.result == 'success' && needs.package-windows.result == 'success'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: write
     environment: production
     concurrency:
       group: mingzhang-production
@@ -51,6 +117,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: mingzhang-${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        if: needs.desktop-changes.outputs.changed == 'true'
+        with:
+          pattern: mingzhang-*-${{ github.sha }}
+          path: desktop-artifacts
+          merge-multiple: true
       - name: Reject stale deployment
         env:
           GH_TOKEN: ${{ github.token }}
@@ -79,6 +151,37 @@ jobs:
           target="$DEPLOY_USER@$DEPLOY_HOST"
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes mingzhang.tar.gz "$target:mingzhang-$REVISION.tar.gz"
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "set -eu; mkdir -p releases/$REVISION; tar -xzf mingzhang-$REVISION.tar.gz -C releases/$REVISION; cd releases/$REVISION; sudo -n bash deploy/upgrade.sh $REVISION; cd; rm -f -- mingzhang-$REVISION.tar.gz; rm -rf -- releases/$REVISION"
+      - name: Publish desktop clients
+        if: needs.desktop-changes.outputs.changed == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          REVISION: ${{ github.sha }}
+          DESKTOP_VERSION: ${{ needs.desktop-changes.outputs.version }}
+        run: |
+          set -euo pipefail
+          [[ $DESKTOP_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          stage="desktop-$REVISION"
+          cleanup() { ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "rm -rf -- '$stage'" || true; }
+          trap cleanup EXIT
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "mkdir -p '$stage'"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes desktop-artifacts/* "$target:$stage/"
+          for name in mingzhang-mac-arm64.zip mingzhang-windows11-x64.zip; do
+            digest=$(awk -v file="$name" '$2 == file {print $1}' "desktop-artifacts/$name.sha256")
+            [[ $digest =~ ^[0-9a-f]{64}$ ]]
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "sudo -n python3 /opt/mingzhang/app/deploy/publish-desktop.py '$stage/$name' '$name' '$digest' '$DESKTOP_VERSION'"
+          done
       - name: Remove runner credentials
         if: always()
         run: rm -f ~/.ssh/id_ed25519
+      - name: Remove temporary workflow artifacts
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          gh api --paginate "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[].id' |
+            while read -r id; do gh api --method DELETE "repos/$REPOSITORY/actions/artifacts/$id"; done

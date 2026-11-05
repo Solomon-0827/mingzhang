@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const dir = path.dirname(fileURLToPath(import.meta.url));
+const metadata = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'));
 const platform = process.argv[2] || process.platform;
 const names = { darwin: 'mingzhang-mac-arm64.zip', win32: 'mingzhang-windows11-x64.zip' };
 const name = names[platform];
@@ -24,7 +25,7 @@ if (!/^\/tmp\/mingzhang-desktop-[A-Za-z0-9]+$/.test(remote)) throw new Error('Un
 try {
   execFileSync('scp', [...options, file, `${target}:${remote}/installer.zip`], { stdio: 'inherit' });
   execFileSync('scp', [...options, path.join(dir, '../deploy/publish-desktop.py'), `${target}:${remote}/publish.py`], { stdio: 'inherit' });
-  execFileSync('ssh', [...options, target, `sudo -n python3 ${remote}/publish.py ${remote}/installer.zip ${name} ${digest}`], { stdio: 'inherit' });
+  execFileSync('ssh', [...options, target, `sudo -n python3 ${remote}/publish.py ${remote}/installer.zip ${name} ${digest} ${metadata.version}`], { stdio: 'inherit' });
   console.log(`Published /downloads/${name}`);
 } finally {
   execFileSync('ssh', [...options, target, `rm -rf -- ${remote}`], { stdio: 'inherit' });

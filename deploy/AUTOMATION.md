@@ -42,4 +42,9 @@ sudo bash deploy/upgrade.sh <40位Git提交SHA>
 
 网页和使用云端地址的 Mac 客户端都加载同一份服务端前端，通常刷新即可更新。
 Electron 主程序、图标及原生菜单改动仍需另行打包客户端。
+
+客户端代码或打包流程发生变化时，Actions 会分别在 macOS 和 Windows runner 上生成安装包，
+部署完成后发布到固定的 `/downloads/` 地址并写入 `latest.json`。普通网页或后端修改不会重复
+打包客户端。安装包只作为本次部署的临时 artifact，部署结束立即删除；若清理步骤未执行，
+GitHub 也会在 1 天后删除。客户端通过 HTTPS 读取清单，发现更高版本后在左下角显示更新按钮。
 ICP备案和 HTTPS 云端入口完成前，服务器更新成功不等于公网可访问。

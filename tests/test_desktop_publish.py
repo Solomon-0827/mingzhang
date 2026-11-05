@@ -21,16 +21,22 @@ def test_publish_validates_before_replacing_and_preserves_other_platform(tmp_pat
         archive.writestr("明账.app/Contents/Info.plist", "fixture")
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     with pytest.raises(ValueError, match="checksum"):
-        publish(source, MAC, "0" * 64, root)
+        publish(source, MAC, "0" * 64, "0.2.0", root)
     assert (downloads / MAC).read_bytes() == b"previous"
-    publish(source, MAC, digest, root)
+    publish(source, MAC, digest, "0.2.0", root)
     assert (downloads / MAC).read_bytes() == source.read_bytes()
     assert (downloads / (MAC + ".sha256")).read_text() == f"{digest}  {MAC}\n"
     assert (downloads / WIN).read_bytes() == b"windows"
+    manifest = __import__("json").loads((downloads / "latest.json").read_text())
+    assert manifest["platforms"]["darwin-arm64"] == {
+        "version": "0.2.0", "url": f"/downloads/{MAC}", "sha256": digest
+    }
     assert not list(downloads.glob(".publish-*"))
     source.write_bytes(b"not a zip")
     with pytest.raises(zipfile.BadZipFile):
-        publish(source, MAC, hashlib.sha256(source.read_bytes()).hexdigest(), root)
+        publish(source, MAC, hashlib.sha256(source.read_bytes()).hexdigest(), "0.2.0", root)
     assert hashlib.sha256((downloads / MAC).read_bytes()).hexdigest() == digest
     with pytest.raises(ValueError, match="Unsupported"):
-        publish(source, "../../ledger.sqlite3", digest, root)
+        publish(source, "../../ledger.sqlite3", digest, "0.2.0", root)
+    with pytest.raises(ValueError, match="version"):
+        publish(source, MAC, digest, "latest", root)

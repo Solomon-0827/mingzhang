@@ -15,7 +15,7 @@ if (!['darwin', 'win32'].includes(platform) || platform !== process.platform) {
 const metadata = JSON.parse(await readFile(path.join(dir, 'package.json'), 'utf8'));
 // Package only application sources: never a developer profile, connection, or ledger.
 const stage = await mkdtemp(path.join(tmpdir(), 'mingzhang-package-'));
-for (const name of ['main.cjs', 'preload.cjs', 'setup.js', 'setup.html']) {
+for (const name of ['main.cjs', 'preload.cjs', 'setup.js', 'setup.html', 'updater.cjs', 'update-mac.sh', 'update-windows.ps1']) {
   await copyFile(path.join(dir, name), path.join(stage, name));
 }
 await copyFile(path.join(dir, '..', 'web', 'public', 'icon.png'), path.join(stage, 'dock-icon.png'));
@@ -29,7 +29,7 @@ const [built] = await packager({
   dir: stage, out: path.join(dir, 'out'), name: '明账', executableName: '明账',
   platform, arch, overwrite: true, asar: true,
   appBundleId: 'local.mingzhang.ledger', appCategoryType: 'public.app-category.finance',
-  icon: path.join(dir, platform === 'darwin' ? 'icon.icns' : 'icon.ico'),
+  icon: path.join(dir, 'icon'),
   appVersion: metadata.version,
   win32metadata: { CompanyName: 'Solomon', FileDescription: '明账个人账本' },
 });
