@@ -129,6 +129,8 @@ function App() {
     [accountEditor, setAccountEditor] = useState<Account | null>(null);
   const [lastSync, setLastSync] = useState(""),
     [online, setOnline] = useState(navigator.onLine);
+  const mutationEpoch = useRef(0);
+  const backgroundRefresh = useRef<number | null>(null);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState | null>(null);
   const range = useMemo(() => {
     const [y, m] = anchor.split("-").map(Number);
@@ -148,7 +150,11 @@ function App() {
         ];
   }, [anchor, period, customStart, customEnd]);
   const refresh = useCallback(async () => {
+    const requestedAt = mutationEpoch.current;
     const value = await api<State>("/state");
+    // A slower full refresh must never overwrite a newer entry that was saved
+    // while the request was in flight.
+    if (requestedAt !== mutationEpoch.current) return;
     setState(value);
     clearConnectionError();
     setLogged(true);
@@ -159,6 +165,18 @@ function App() {
       }),
     );
   }, [clearConnectionError]);
+  const scheduleRefresh = useCallback(() => {
+    if (backgroundRefresh.current !== null)
+      window.clearTimeout(backgroundRefresh.current);
+    backgroundRefresh.current = window.setTimeout(() => {
+      backgroundRefresh.current = null;
+      refresh().catch((e) => setError(e.message));
+    }, 2000);
+  }, [refresh, setError]);
+  useEffect(() => () => {
+    if (backgroundRefresh.current !== null)
+      window.clearTimeout(backgroundRefresh.current);
+  }, []);
   useEffect(() => {
     refresh()
       .catch((e) => {
@@ -199,7 +217,7 @@ function App() {
   }, []);
   useEffect(() => {
     let current = true;
-    if (logged)
+    if (logged && ["overview", "reports"].includes(page))
       api<Report>(`/report?start=${range[0]}&end=${range[1]}`)
         .then((value) => {
           if (current) setReport(value);
@@ -210,7 +228,7 @@ function App() {
     return () => {
       current = false;
     };
-  }, [logged, range, state]);
+  }, [logged, range, state, page, setError]);
   const openNew = useCallback(() => {
     if (!state?.accounts.length) {
       setPage("accounts");
@@ -242,6 +260,64 @@ function App() {
       await action();
       await refresh();
       setNotice(message);
+    } catch (e) {
+      setError((e as Error).message);
+      throw e;
+    } finally {
+      setBusy(false);
+    }
+  }
+  const applySavedEntry = useCallback((saved: Entry) => {
+    mutationEpoch.current += 1;
+    setState(current => {
+      if (!current) return current;
+      const previous = current.entries.find(entry => entry.id === saved.id);
+      const normalized = {
+        ...saved,
+        remaining_cents: previous?.remaining_cents ?? saved.amount_cents,
+      };
+      const balanceChanges = new Map<string, number>();
+      const addImpact = (entry: Entry, direction: number) => {
+        if (entry.deleted) return;
+        const sign = ["income", "refund", "borrow", "collect", "balance_in"].includes(entry.kind) ? 1 : -1;
+        balanceChanges.set(entry.account_id, (balanceChanges.get(entry.account_id) || 0) + direction * sign * entry.amount_cents);
+        if (entry.to_account_id && ["transfer", "repay", "collect"].includes(entry.kind)) {
+          const targetSign = entry.kind === "collect" ? -1 : 1;
+          balanceChanges.set(entry.to_account_id, (balanceChanges.get(entry.to_account_id) || 0) + direction * targetSign * entry.amount_cents);
+        }
+      };
+      if (previous) addImpact(previous, -1);
+      addImpact(normalized, 1);
+      let entries = previous
+        ? current.entries.map(entry => entry.id === normalized.id ? normalized : entry)
+        : [normalized, ...current.entries];
+      if (normalized.reference_id) {
+        const difference = normalized.amount_cents - (previous?.amount_cents || 0);
+        entries = entries.map(entry => entry.id === normalized.reference_id
+          ? { ...entry, remaining_cents: Math.max(0, entry.remaining_cents - difference) }
+          : entry);
+      }
+      entries.sort((a, b) => b.date.localeCompare(a.date));
+      return {
+        ...current,
+        entries,
+        accounts: current.accounts.map(account => ({
+          ...account,
+          balance_cents: account.balance_cents + (balanceChanges.get(account.id) || 0),
+        })),
+      };
+    });
+    scheduleRefresh();
+  }, [scheduleRefresh]);
+  async function saveEntry(value: Entry, editing = false) {
+    setBusy(true);
+    setError("");
+    // Invalidate an already running full refresh before the write reaches the
+    // server; its response may otherwise race the mutation response.
+    mutationEpoch.current += 1;
+    try {
+      const saved = await api<Entry>(editing ? `/entries/${value.id}` : "/entries", value, editing ? "PUT" : "POST");
+      applySavedEntry(saved);
     } catch (e) {
       setError((e as Error).message);
       throw e;
@@ -492,7 +568,7 @@ function App() {
                 catalog={state.category_catalog}
                 onClose={() => {}}
                 onSave={async (value) => {
-                  await run(() => api("/entries", value, "POST"), "");
+                  await saveEntry(value);
                   setBookMonth(value.date.slice(0, 7));
                 }}
               />
@@ -838,7 +914,7 @@ function App() {
             month={bookMonth}
             onMonth={setBookMonth}
             onSave={async (entry) => {
-              await run(() => api(`/entries/${entry.id}`, entry, "PUT"));
+              await saveEntry(entry, true);
             }}
             onEdit={(entry) => {
               setEditor({ ...entry });
@@ -1153,13 +1229,7 @@ function App() {
                 catalog={state.category_catalog}
           onClose={() => setEditor(null)}
           onSave={async (value) => {
-            await run(() =>
-              api(
-                "/entries" + (editing ? "/" + value.id : ""),
-                value,
-                editing ? "PUT" : "POST",
-              ),
-            );
+            await saveEntry(value, editing);
             setEditor(null);
           }}
         />
