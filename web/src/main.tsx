@@ -267,26 +267,27 @@ function App() {
       setBusy(false);
     }
   }
-  const applySavedEntry = useCallback((saved: Entry, previous?: Entry) => {
-    const normalized = {
-      ...saved,
-      remaining_cents: previous?.remaining_cents ?? saved.amount_cents,
-    };
-    const balanceChanges = new Map<string, number>();
-    const addImpact = (entry: Entry, direction: number) => {
-      if (entry.deleted) return;
-      const sign = ["income", "refund", "borrow", "collect", "balance_in"].includes(entry.kind) ? 1 : -1;
-      balanceChanges.set(entry.account_id, (balanceChanges.get(entry.account_id) || 0) + direction * sign * entry.amount_cents);
-      if (entry.to_account_id && ["transfer", "repay", "collect"].includes(entry.kind)) {
-        const targetSign = entry.kind === "collect" ? -1 : 1;
-        balanceChanges.set(entry.to_account_id, (balanceChanges.get(entry.to_account_id) || 0) + direction * targetSign * entry.amount_cents);
-      }
-    };
-    if (previous) addImpact(previous, -1);
-    addImpact(normalized, 1);
+  const applySavedEntry = useCallback((saved: Entry) => {
     mutationEpoch.current += 1;
     setState(current => {
       if (!current) return current;
+      const previous = current.entries.find(entry => entry.id === saved.id);
+      const normalized = {
+        ...saved,
+        remaining_cents: previous?.remaining_cents ?? saved.amount_cents,
+      };
+      const balanceChanges = new Map<string, number>();
+      const addImpact = (entry: Entry, direction: number) => {
+        if (entry.deleted) return;
+        const sign = ["income", "refund", "borrow", "collect", "balance_in"].includes(entry.kind) ? 1 : -1;
+        balanceChanges.set(entry.account_id, (balanceChanges.get(entry.account_id) || 0) + direction * sign * entry.amount_cents);
+        if (entry.to_account_id && ["transfer", "repay", "collect"].includes(entry.kind)) {
+          const targetSign = entry.kind === "collect" ? -1 : 1;
+          balanceChanges.set(entry.to_account_id, (balanceChanges.get(entry.to_account_id) || 0) + direction * targetSign * entry.amount_cents);
+        }
+      };
+      if (previous) addImpact(previous, -1);
+      addImpact(normalized, 1);
       let entries = previous
         ? current.entries.map(entry => entry.id === normalized.id ? normalized : entry)
         : [normalized, ...current.entries];
@@ -311,10 +312,12 @@ function App() {
   async function saveEntry(value: Entry, editing = false) {
     setBusy(true);
     setError("");
+    // Invalidate an already running full refresh before the write reaches the
+    // server; its response may otherwise race the mutation response.
+    mutationEpoch.current += 1;
     try {
-      const previous = editing ? state?.entries.find(entry => entry.id === value.id) : undefined;
       const saved = await api<Entry>(editing ? `/entries/${value.id}` : "/entries", value, editing ? "PUT" : "POST");
-      applySavedEntry(saved, previous);
+      applySavedEntry(saved);
     } catch (e) {
       setError((e as Error).message);
       throw e;
@@ -1226,13 +1229,7 @@ function App() {
                 catalog={state.category_catalog}
           onClose={() => setEditor(null)}
           onSave={async (value) => {
-            await run(() =>
-              api(
-                "/entries" + (editing ? "/" + value.id : ""),
-                value,
-                editing ? "PUT" : "POST",
-              ),
-            );
+            await saveEntry(value, editing);
             setEditor(null);
           }}
         />
