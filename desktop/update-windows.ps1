@@ -1,19 +1,22 @@
 param([int]$ProcessId, [string]$Archive, [string]$Target, [string]$Version)
 $ErrorActionPreference = "Stop"
 $work = Join-Path $env:TEMP ("mingzhang-update-" + [guid]::NewGuid())
-$backup = "$Target.previous"
+$backup = "$Target.previous-$([guid]::NewGuid())"
 try {
   Wait-Process -Id $ProcessId -ErrorAction SilentlyContinue
   Expand-Archive -LiteralPath $Archive -DestinationPath $work -Force
   $candidate = Get-ChildItem -LiteralPath $work -Directory | Select-Object -First 1
   if (-not $candidate) { throw "更新包中没有应用程序" }
-  if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
+  if (-not (Test-Path -LiteralPath (Join-Path $Target ".mingzhang-managed"))) { throw "Current application directory is unmanaged" }
+  if (-not (Test-Path -LiteralPath (Join-Path $candidate.FullName ".mingzhang-managed"))) { throw "Update package is unmanaged" }
   Move-Item -LiteralPath $Target -Destination $backup
   try {
     Move-Item -LiteralPath $candidate.FullName -Destination $Target
+    $executable = Get-ChildItem -LiteralPath $Target -Filter "*.exe" | Where-Object { $_.Name -notmatch "Helper" } | Select-Object -First 1
+    if (-not $executable) { throw "Application executable is missing" }
+    Start-Process -FilePath $executable.FullName
     Remove-Item -LiteralPath $backup -Recurse -Force
     Remove-Item -LiteralPath $Archive -Force
-    Start-Process -FilePath (Join-Path $Target "明账.exe")
   } catch {
     if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Recurse -Force }
     Move-Item -LiteralPath $backup -Destination $Target

@@ -5,8 +5,8 @@ const { pathToFileURL } = require("node:url");
 const { checkForUpdate, downloadUpdate, launchInstaller } = require("./updater.cjs");
 let main, setup;
 let updateState = { status: "idle", currentVersion: app.getVersion() };
-let updateOrigin = "";
 let checkingUpdate = null;
+let ledgerOrigin = "";
 const configFile = () => path.join(app.getPath("userData"), "connection.json");
 function readURL() {
   try {
@@ -94,7 +94,7 @@ function openLedger(url) {
     },
   );
   main.loadURL(url);
-  updateOrigin = url;
+  ledgerOrigin = url;
   main.webContents.once("did-finish-load", () => {
     main.webContents.send("update:state", updateState);
     void runUpdateCheck();
@@ -109,10 +109,10 @@ function setUpdateState(next) {
   return updateState;
 }
 async function runUpdateCheck() {
-  if (!app.isPackaged || !updateOrigin || checkingUpdate) return checkingUpdate || updateState;
+  if (!app.isPackaged || ["downloading", "installing"].includes(updateState.status) || checkingUpdate) return checkingUpdate || updateState;
   checkingUpdate = (async () => {
     try {
-      const release = await checkForUpdate({ origin: updateOrigin, currentVersion: app.getVersion() });
+      const release = await checkForUpdate({ currentVersion: app.getVersion() });
       return setUpdateState(release ? { status: "available", release, error: undefined } : { status: "idle", release: undefined, error: undefined });
     } catch (error) {
       return setUpdateState({ status: "idle", error: error.message });
@@ -148,13 +148,16 @@ ipcMain.handle("update:check", (event) => {
   return runUpdateCheck();
 });
 ipcMain.handle("update:install", async (event) => {
-  if (!app.isPackaged || event.sender !== main?.webContents || updateState.status !== "available" || !updateState.release) throw Error("当前没有可安装的更新");
+  let senderOrigin = "";
+  try { senderOrigin = new URL(event.senderFrame.url).origin; } catch {}
+  if (!app.isPackaged || senderOrigin !== ledgerOrigin || event.sender !== main?.webContents || event.senderFrame !== main?.webContents.mainFrame || updateState.status !== "available" || !updateState.release) throw Error("当前没有可安装的更新");
   try {
+    const release = updateState.release;
     setUpdateState({ status: "downloading", error: undefined });
     const updates = path.join(app.getPath("userData"), "updates");
     fs.mkdirSync(updates, { recursive: true, mode: 0o700 });
-    const archive = path.join(updates, `mingzhang-${updateState.release.version}.zip`);
-    await downloadUpdate(updateState.release, archive);
+    const archive = path.join(updates, `mingzhang-${release.version}.zip`);
+    await downloadUpdate(release, archive);
     setUpdateState({ status: "installing" });
     const helperName = process.platform === "darwin" ? "update-mac.sh" : "update-windows.ps1";
     const helper = path.join(updates, helperName);
@@ -163,7 +166,7 @@ ipcMain.handle("update:install", async (event) => {
     const appPath = process.platform === "darwin"
       ? path.resolve(app.getAppPath(), "../../..")
       : path.resolve(app.getAppPath(), "../..");
-    launchInstaller({ appPath, archive, helper, version: updateState.release.version });
+    launchInstaller({ appPath, archive, helper, version: release.version });
     setImmediate(() => app.quit());
     return true;
   } catch (error) {

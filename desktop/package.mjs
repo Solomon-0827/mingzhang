@@ -33,6 +33,7 @@ const [built] = await packager({
   appVersion: metadata.version,
   win32metadata: { CompanyName: 'Solomon', FileDescription: '明账个人账本' },
 });
+if (platform === 'win32') await writeFile(path.join(built, '.mingzhang-managed'), 'local.mingzhang.ledger\n');
 const downloads = path.join(dir, 'out', 'downloads');
 await mkdir(downloads, { recursive: true });
 const filename = platform === 'darwin' ? 'mingzhang-mac-arm64.zip' : 'mingzhang-windows11-x64.zip';

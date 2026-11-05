@@ -8,9 +8,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test updater.test.cjs",
-    "package": "node package.mjs",
-    "publish": "node publish.mjs",
-    "release": "node package.mjs && node publish.mjs"
+    "package": "node package.mjs"
   },
   "devDependencies": {
     "electron": "^42.0.0",

@@ -32,13 +32,15 @@ first_app=$(readlink -f /opt/mingzhang/app)
 first_venv=$(readlink -f /opt/mingzhang/venv)
 test -f "$first_app/REVISION"
 test "$(cat "$first_app/web/dist/downloads/mingzhang-mac-arm64.zip")" = 'existing installer'
-# Explicit future installer releases must replace, rather than inherit, downloads.
+# Web releases never replace or duplicate the shared desktop download directory.
 mkdir -p web/dist/downloads
 printf 'replacement installer\n' > web/dist/downloads/mingzhang-mac-arm64.zip
 bash deploy/upgrade.sh cccccccccccccccccccccccccccccccccccccccc
 first_app=$(readlink -f /opt/mingzhang/app)
 first_venv=$(readlink -f /opt/mingzhang/venv)
-test "$(cat "$first_app/web/dist/downloads/mingzhang-mac-arm64.zip")" = 'replacement installer'
+test -L "$first_app/web/dist/downloads"
+test "$(cat "$first_app/web/dist/downloads/mingzhang-mac-arm64.zip")" = 'existing installer'
+test "$(find /opt/mingzhang/desktop-releases -type f -name 'mingzhang-*.zip' | wc -l)" -eq 1
 runuser -u mingzhang -- "$first_venv/bin/python" -c "from pathlib import Path; assert Path('/opt/mingzhang/app/REVISION').read_text().strip() == 'c' * 40"
 # Force health-check failure: both application and Python environment must roll back.
 if FAIL_HEALTH=1 bash deploy/upgrade.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; then

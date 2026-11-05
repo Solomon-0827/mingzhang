@@ -13,10 +13,23 @@ install -d -m 750 -o root -g mingzhang "$root/releases"
 release="$root/releases/$revision-$(date -u +%Y%m%dT%H%M%S)"
 mkdir -p "$release/app"
 cp -R backend scripts web deploy "$release/app/"
-# Web-only releases keep the last published installers without rebuilding/uploading them.
-if [[ ! -d "$release/app/web/dist/downloads" && -d "$root/app/web/dist/downloads" ]]; then
-  cp -R "$root/app/web/dist/downloads" "$release/app/web/dist/downloads"
+# Desktop installers live outside web releases so rollbacks and release retention
+# cannot duplicate or rewind them.
+install -d -m 755 "$root/desktop-releases"
+if [[ ! -e "$root/downloads" && ! -L "$root/downloads" ]]; then
+  legacy="$root/desktop-releases/legacy-$(date -u +%Y%m%dT%H%M%S)"
+  install -d -m 755 "$legacy"
+  if [[ -d "$root/app/web/dist/downloads" ]]; then
+    cp -R "$root/app/web/dist/downloads/." "$legacy/"
+  fi
+  ln -s "$legacy" "$root/downloads"
+elif [[ -d "$root/downloads" && ! -L "$root/downloads" ]]; then
+  legacy="$root/desktop-releases/legacy-$(date -u +%Y%m%dT%H%M%S)"
+  mv "$root/downloads" "$legacy"
+  ln -s "$legacy" "$root/downloads"
 fi
+rm -rf "$release/app/web/dist/downloads"
+ln -s "$root/downloads" "$release/app/web/dist/downloads"
 # Install in a new environment; a dependency failure cannot damage the running version.
 python3 -m venv "$release/venv"
 "$release/venv/bin/pip" install --disable-pip-version-check -r "$release/app/deploy/requirements.txt"

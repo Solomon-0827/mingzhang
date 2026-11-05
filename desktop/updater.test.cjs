@@ -1,10 +1,20 @@
 const assert = require("node:assert/strict");
-const { createHash } = require("node:crypto");
+const { createHash, generateKeyPairSync, sign } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { checkForUpdate, downloadUpdate, isNewerVersion, platformKey } = require("./updater.cjs");
+
+const signing = generateKeyPairSync("ed25519");
+function signedManifest(manifest) {
+  const payload = Buffer.from(JSON.stringify(manifest));
+  return JSON.stringify({
+    schema: 1,
+    payload: payload.toString("base64"),
+    signature: sign(null, payload, signing.privateKey).toString("base64"),
+  });
+}
 
 test("compares semantic versions", () => {
   assert.equal(isNewerVersion("0.2.0", "0.1.9"), true);
@@ -20,33 +30,41 @@ test("accepts only supported desktop targets", () => {
   assert.throws(() => platformKey("linux", "x64"), /暂不支持/);
 });
 
-test("validates the update manifest and keeps downloads on the ledger origin", async () => {
+test("validates the signed update manifest and keeps downloads on the official origin", async () => {
   const release = await checkForUpdate({
-    origin: "https://ledger.example",
     currentVersion: "0.1.0",
     platform: "darwin",
     arch: "arm64",
+    publicKey: signing.publicKey,
     fetchImpl: async () => ({
       ok: true,
-      json: async () => ({ schema: 1, platforms: { "darwin-arm64": {
+      text: async () => signedManifest({ schema: 1, platforms: { "darwin-arm64": {
         version: "0.2.0",
         url: "/downloads/mingzhang-mac-arm64.zip",
         sha256: "a".repeat(64),
       } } }),
     }),
   });
-  assert.equal(release.url, "https://ledger.example/downloads/mingzhang-mac-arm64.zip");
+  assert.equal(release.url, "https://solomon-ledger.top/downloads/mingzhang-mac-arm64.zip");
   assert.equal(release.version, "0.2.0");
 
   await assert.rejects(() => checkForUpdate({
-    origin: "https://ledger.example",
     currentVersion: "0.1.0",
     platform: "darwin",
     arch: "arm64",
-    fetchImpl: async () => ({ ok: true, json: async () => ({ schema: 1, platforms: { "darwin-arm64": {
+    publicKey: signing.publicKey,
+    fetchImpl: async () => ({ ok: true, text: async () => signedManifest({ schema: 1, platforms: { "darwin-arm64": {
       version: "0.2.0", url: "https://evil.example/mingzhang-mac-arm64.zip", sha256: "a".repeat(64),
     } } }) }),
   }), /地址无效/);
+
+  await assert.rejects(() => checkForUpdate({
+    currentVersion: "0.1.0",
+    platform: "darwin",
+    arch: "arm64",
+    publicKey: signing.publicKey,
+    fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ schema: 1, payload: "e30=", signature: "aW52YWxpZA==" }) }),
+  }), /签名无效/);
 });
 
 test("downloads only an installer matching the published checksum", async () => {
@@ -66,6 +84,23 @@ test("downloads only an installer matching the published checksum", async () => 
     );
     assert.deepEqual(fs.readFileSync(destination), body);
     assert.equal(fs.existsSync(`${destination}.part`), false);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("reports file stream failures without leaving a partial download", async () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "mingzhang-updater-error-"));
+  const destination = path.join(folder, "update.zip");
+  const partial = `${destination}.part`;
+  fs.mkdirSync(partial);
+  const body = Buffer.from("fixture");
+  try {
+    await assert.rejects(() => downloadUpdate({
+      url: "https://solomon-ledger.top/downloads/mingzhang-mac-arm64.zip",
+      sha256: createHash("sha256").update(body).digest("hex"),
+    }, destination, async () => new Response(body)));
+    assert.equal(fs.existsSync(partial), false);
   } finally {
     fs.rmSync(folder, { recursive: true, force: true });
   }
