@@ -6,6 +6,7 @@ const { checkForUpdate, downloadUpdate, launchInstaller } = require("./updater.c
 let main, setup;
 let updateState = { status: "idle", currentVersion: app.getVersion() };
 let checkingUpdate = null;
+let installingUpdate = false;
 let updateEpoch = 0;
 let ledgerOrigin = "";
 const configFile = () => path.join(app.getPath("userData"), "connection.json");
@@ -110,7 +111,7 @@ function setUpdateState(next) {
   return updateState;
 }
 async function runUpdateCheck() {
-  if (!app.isPackaged || ["downloading", "installing"].includes(updateState.status) || checkingUpdate) return checkingUpdate || updateState;
+  if (!app.isPackaged || installingUpdate || ["downloading", "installing"].includes(updateState.status) || checkingUpdate) return checkingUpdate || updateState;
   const epoch = updateEpoch;
   checkingUpdate = (async () => {
     try {
@@ -119,7 +120,7 @@ async function runUpdateCheck() {
       return setUpdateState(release ? { status: "available", release, error: undefined } : { status: "idle", release: undefined, error: undefined });
     } catch (error) {
       if (epoch !== updateEpoch || ["downloading", "installing"].includes(updateState.status)) return updateState;
-      return setUpdateState({ status: "idle", error: error.message });
+      return setUpdateState({ status: "idle", release: undefined, error: error.message });
     } finally {
       checkingUpdate = null;
     }
@@ -154,15 +155,36 @@ ipcMain.handle("update:check", (event) => {
 ipcMain.handle("update:install", async (event) => {
   let senderOrigin = "";
   try { senderOrigin = new URL(event.senderFrame.url).origin; } catch {}
-  if (!app.isPackaged || senderOrigin !== ledgerOrigin || event.sender !== main?.webContents || event.senderFrame !== main?.webContents.mainFrame || updateState.status !== "available" || !updateState.release) throw Error("当前没有可安装的更新");
+  if (!app.isPackaged || installingUpdate || senderOrigin !== ledgerOrigin || event.sender !== main?.webContents || event.senderFrame !== main?.webContents.mainFrame || updateState.status !== "available" || !updateState.release) throw Error("当前没有可安装的更新");
+  installingUpdate = true;
   try {
-    const release = updateState.release;
+    let release = updateState.release;
     updateEpoch += 1;
-    setUpdateState({ status: "downloading", error: undefined });
+    setUpdateState({ status: "downloading", release, error: undefined });
+    const latest = await checkForUpdate({ currentVersion: app.getVersion() });
+    if (!latest) {
+      setUpdateState({ status: "idle", release: undefined, error: undefined });
+      throw Error("当前已经是最新版本");
+    }
+    release = latest;
+    setUpdateState({ status: "downloading", release, error: undefined });
     const updates = path.join(app.getPath("userData"), "updates");
     fs.mkdirSync(updates, { recursive: true, mode: 0o700 });
-    const archive = path.join(updates, `mingzhang-${release.version}.zip`);
-    await downloadUpdate(release, archive);
+    let archive = "";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      setUpdateState({ status: "downloading", release, error: undefined });
+      archive = path.join(updates, `mingzhang-${release.version}.zip`);
+      try {
+        await downloadUpdate(release, archive);
+        break;
+      } catch (error) {
+        if (attempt || !error.message.includes("校验失败")) throw error;
+        const previousHash = release.sha256;
+        const refreshed = await checkForUpdate({ currentVersion: app.getVersion() });
+        if (!refreshed || refreshed.sha256 === previousHash) throw error;
+        release = refreshed;
+      }
+    }
     setUpdateState({ status: "installing" });
     const helperName = process.platform === "darwin" ? "update-mac.sh" : "update-windows.ps1";
     const helper = path.join(updates, helperName);
@@ -171,12 +193,14 @@ ipcMain.handle("update:install", async (event) => {
     const appPath = process.platform === "darwin"
       ? path.resolve(app.getAppPath(), "../../..")
       : path.resolve(app.getAppPath(), "../..");
-    launchInstaller({ appPath, archive, helper, version: release.version });
+    await launchInstaller({ appPath, archive, helper, version: release.version });
     setImmediate(() => app.quit());
     return true;
   } catch (error) {
-    setUpdateState({ status: "available", error: error.message });
+    setUpdateState({ status: updateState.release ? "available" : "idle", error: error.message });
     throw error;
+  } finally {
+    installingUpdate = false;
   }
 });
 if (!app.requestSingleInstanceLock()) {

@@ -46,6 +46,12 @@ def _current_payload(downloads: Path) -> dict | None:
         return None
 
 
+def _cleanup_releases(releases: Path, keep: Path | None):
+    for candidate in releases.iterdir():
+        if candidate != keep:
+            shutil.rmtree(candidate)
+
+
 def publish_release(mac: Path, windows: Path, manifest: Path, root: Path = Path("/opt/mingzhang")):
     sources = {"darwin-arm64": mac, "win32-x64": windows}
     envelope, payload = _read_envelope(manifest)
@@ -54,16 +60,19 @@ def publish_release(mac: Path, windows: Path, manifest: Path, root: Path = Path(
     with (root / "deploy.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         downloads = root / "downloads"
+        active = downloads.resolve() if downloads.is_symlink() else None
         current = _current_payload(downloads) if downloads.exists() else None
         if current:
             current_version = next(iter(current["platforms"].values()))["version"]
             if current.get("source_hash") == payload["source_hash"]:
+                _cleanup_releases(root / "desktop-releases", active)
                 print(f"Desktop release already current: {current_version}")
                 return False
             if _version(version) <= _version(current_version):
                 raise ValueError("Desktop version must increase when sources change")
         releases = root / "desktop-releases"
         releases.mkdir(parents=True, exist_ok=True)
+        _cleanup_releases(releases, active)
         with tempfile.TemporaryDirectory(prefix=".publish-", dir=releases) as temporary:
             stage = Path(temporary)
             for key, name in PLATFORMS.items():
@@ -99,9 +108,7 @@ def publish_release(mac: Path, windows: Path, manifest: Path, root: Path = Path(
             next_link.unlink(missing_ok=True)
             shutil.rmtree(final)
             raise
-        for candidate in releases.iterdir():
-            if candidate != final:
-                shutil.rmtree(candidate)
+        _cleanup_releases(releases, final)
         print(f"Published desktop release {release_id}")
         return True
 

@@ -51,11 +51,15 @@ def test_publish_switches_both_platforms_atomically_and_keeps_one_release(tmp_pa
     assert (root / "downloads" / MAC).read_bytes() == mac.read_bytes()
     assert (root / "downloads" / WIN).read_bytes() == windows.read_bytes()
     assert len(list((root / "desktop-releases").iterdir())) == 1
+    stale = root / "desktop-releases" / "interrupted"
+    stale.mkdir()
     assert publish_release(mac, windows, manifest, root) is False
+    assert not stale.exists()
 
     installer(mac, "mac-v2")
     installer(windows, "win-v2")
     write_manifest(manifest, envelope(mac, windows, "0.3.0", "b" * 64))
+    (root / "desktop-releases" / "0.3.0-bbbbbbbbbbbb").mkdir()
     assert publish_release(mac, windows, manifest, root) is True
     assert len(list((root / "desktop-releases").iterdir())) == 1
     assert "0.3.0" in os.readlink(root / "downloads")

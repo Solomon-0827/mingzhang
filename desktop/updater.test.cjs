@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { checkForUpdate, downloadUpdate, isNewerVersion, platformKey } = require("./updater.cjs");
+const { checkForUpdate, downloadUpdate, isNewerVersion, launchInstaller, platformKey } = require("./updater.cjs");
 
 const signing = generateKeyPairSync("ed25519");
 function signedManifest(manifest) {
@@ -101,6 +101,22 @@ test("reports file stream failures without leaving a partial download", async ()
       sha256: createHash("sha256").update(body).digest("hex"),
     }, destination, async () => new Response(body)));
     assert.equal(fs.existsSync(partial), false);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("reports a helper launch failure before the application quits", async () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "mingzhang-launch-error-"));
+  const appPath = path.join(folder, "app");
+  const archive = path.join(folder, "update.zip");
+  const helper = path.join(folder, "helper.ps1");
+  fs.mkdirSync(appPath);
+  fs.writeFileSync(path.join(appPath, ".mingzhang-managed"), "managed");
+  fs.writeFileSync(archive, "archive");
+  fs.writeFileSync(helper, "helper");
+  try {
+    await assert.rejects(() => launchInstaller({ appPath, archive, helper, version: "0.2.0", platform: "win32" }), /ENOENT/);
   } finally {
     fs.rmSync(folder, { recursive: true, force: true });
   }

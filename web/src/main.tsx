@@ -415,6 +415,7 @@ function App() {
           {desktopUpdate && desktopUpdate.status !== "idle" && (
             <button
               className="desktop-update"
+              data-mingzhang-update-action="install"
               aria-label={desktopUpdate.status === "available" ? `更新到明账 ${desktopUpdate.release?.version}` : "正在更新明账"}
               title={desktopUpdate.status === "available" ? `有新版本 ${desktopUpdate.release?.version}，点击自动更新` : "正在下载并安装更新"}
               disabled={desktopUpdate.status !== "available"}

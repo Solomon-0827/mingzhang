@@ -102,6 +102,28 @@ done
 [[ $healthy == true ]]
 systemctl is-active --quiet mingzhang
 trap - ERR
+# Older rollback releases embedded their own installers. Only after the new app
+# is healthy, point them at the shared directory and enable symlink serving.
+if ! ROOT="$root" python3 - <<'PY'
+import os, shutil
+from pathlib import Path
+root = Path(os.environ["ROOT"])
+for downloads in root.joinpath("releases").glob("**/web/dist/downloads"):
+    if downloads.is_symlink() or not downloads.is_dir():
+        continue
+    main = downloads.parents[2] / "backend/main.py"
+    if main.is_file():
+        source = main.read_text().replace(
+            "StaticFiles(directory=DIST, html=True)",
+            "StaticFiles(directory=DIST, html=True, follow_symlink=True)",
+        )
+        main.write_text(source)
+    shutil.rmtree(downloads)
+    downloads.symlink_to(root / "downloads")
+PY
+then
+  echo 'Warning: old embedded desktop installers could not be cleaned.' >&2
+fi
 # Cleanup never runs after failed health checks. A cleanup error does not undo a healthy release.
 if ! python3 "$release/app/deploy/prune-releases.py" "$root" "$previous_app" "$previous_venv"; then
   echo 'Warning: release cleanup failed; application remains healthy.' >&2

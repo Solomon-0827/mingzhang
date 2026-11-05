@@ -37,7 +37,7 @@ function platformKey(platform = process.platform, arch = process.arch) {
 async function checkForUpdate({ currentVersion, fetchImpl = fetch, platform, arch, publicKey = RELEASE_PUBLIC_KEY }) {
   const key = platformKey(platform, arch);
   const endpoint = new URL("/downloads/latest.json", UPDATE_ORIGIN);
-  const response = await fetchImpl(endpoint, { cache: "no-store" });
+  const response = await fetchImpl(endpoint, { cache: "no-store", redirect: "error" });
   if (!response.ok) throw new Error(`检查更新失败（${response.status}）`);
   const envelope = JSON.parse(await response.text());
   if (envelope?.schema !== 1 || typeof envelope.payload !== "string" || typeof envelope.signature !== "string") throw new Error("更新清单格式无效");
@@ -57,7 +57,7 @@ async function checkForUpdate({ currentVersion, fetchImpl = fetch, platform, arc
 }
 
 async function downloadUpdate(release, destination, fetchImpl = fetch) {
-  const response = await fetchImpl(release.url, { cache: "no-store" });
+  const response = await fetchImpl(release.url, { cache: "no-store", redirect: "error" });
   if (!response.ok || !response.body) throw new Error(`下载更新失败（${response.status}）`);
   const temporary = `${destination}.part`;
   const hash = createHash("sha256");
@@ -74,7 +74,7 @@ async function downloadUpdate(release, destination, fetchImpl = fetch) {
   }
 }
 
-function launchInstaller({ appPath, archive, helper, version, pid = process.pid, platform = process.platform }) {
+async function launchInstaller({ appPath, archive, helper, version, pid = process.pid, platform = process.platform }) {
   if (!fs.existsSync(appPath) || !fs.existsSync(archive) || !fs.existsSync(helper)) throw new Error("更新安装文件不完整");
   if (platform === "win32" && !fs.existsSync(path.join(appPath, ".mingzhang-managed"))) throw new Error("当前应用目录不支持自动更新，请安装正式客户端");
   if (platform === "darwin" && path.extname(appPath) !== ".app") throw new Error("当前应用目录不支持自动更新");
@@ -84,8 +84,14 @@ function launchInstaller({ appPath, archive, helper, version, pid = process.pid,
   const args = platform === "darwin"
     ? [helper, String(pid), archive, appPath, version]
     : ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", helper, String(pid), archive, appPath, version];
-  const child = spawn(command, args, { cwd: path.dirname(helper), detached: true, stdio: "ignore" });
-  child.unref();
+  await new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd: path.dirname(helper), detached: true, stdio: "ignore" });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
 }
 
 module.exports = { PLATFORM_FILES, RELEASE_PUBLIC_KEY, UPDATE_ORIGIN, checkForUpdate, downloadUpdate, isNewerVersion, launchInstaller, platformKey };
