@@ -85,22 +85,40 @@ const emptyReport: Report = {
 };
 const pendingEntryPrefix = "mingzhang.pending-entry.v1.";
 function pendingEntries(): Entry[] {
-  const entries: Entry[] = [];
+  const items: { entry: Entry; queued_at: number }[] = [];
   for (let index = 0; index < localStorage.length; index += 1) {
     const key = localStorage.key(index);
     if (!key?.startsWith(pendingEntryPrefix)) continue;
     try {
-      const entry = JSON.parse(localStorage.getItem(key) || "null");
+      const value = JSON.parse(localStorage.getItem(key) || "null");
+      const entry = value?.entry ?? value;
       if (entry && typeof entry.id === "string" && Number.isSafeInteger(entry.amount_cents))
-        entries.push(entry);
+        items.push({ entry, queued_at: Number.isFinite(value?.queued_at) ? value.queued_at : 0 });
     } catch {
       // A malformed entry stays isolated and cannot hide the rest of the queue.
     }
   }
+  items.sort((a, b) => a.queued_at - b.queued_at || a.entry.id.localeCompare(b.entry.id));
+  const pendingIds = new Set(items.map(item => item.entry.id));
+  const emitted = new Set<string>();
+  const visiting = new Set<string>();
+  const entries: Entry[] = [];
+  const emit = (entry: Entry) => {
+    if (emitted.has(entry.id) || visiting.has(entry.id)) return;
+    visiting.add(entry.id);
+    if (entry.reference_id && pendingIds.has(entry.reference_id)) {
+      const parent = items.find(item => item.entry.id === entry.reference_id)?.entry;
+      if (parent && parent.id !== entry.id) emit(parent);
+    }
+    visiting.delete(entry.id);
+    emitted.add(entry.id);
+    entries.push(entry);
+  };
+  for (const item of items) emit(item.entry);
   return entries;
 }
 function storePendingEntry(entry: Entry) {
-  localStorage.setItem(pendingEntryPrefix + entry.id, JSON.stringify(entry));
+  localStorage.setItem(pendingEntryPrefix + entry.id, JSON.stringify({ entry, queued_at: Date.now() }));
 }
 function removePendingEntry(id: string) {
   localStorage.removeItem(pendingEntryPrefix + id);
