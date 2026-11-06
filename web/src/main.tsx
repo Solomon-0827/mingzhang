@@ -83,6 +83,100 @@ const emptyReport: Report = {
   months: [],
   categories: [],
 };
+const pendingEntryPrefix = "mingzhang.pending-entry.v1.";
+function pendingEntries(): Entry[] {
+  const items: { entry: Entry; queued_at: number }[] = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (!key?.startsWith(pendingEntryPrefix)) continue;
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || "null");
+      const entry = value?.entry ?? value;
+      if (entry && typeof entry.id === "string" && Number.isSafeInteger(entry.amount_cents))
+        items.push({ entry, queued_at: Number.isFinite(value?.queued_at) ? value.queued_at : 0 });
+    } catch {
+      // A malformed entry stays isolated and cannot hide the rest of the queue.
+    }
+  }
+  items.sort((a, b) => a.queued_at - b.queued_at || a.entry.id.localeCompare(b.entry.id));
+  const pendingIds = new Set(items.map(item => item.entry.id));
+  const emitted = new Set<string>();
+  const visiting = new Set<string>();
+  const entries: Entry[] = [];
+  const emit = (entry: Entry) => {
+    if (emitted.has(entry.id) || visiting.has(entry.id)) return;
+    visiting.add(entry.id);
+    if (entry.reference_id && pendingIds.has(entry.reference_id)) {
+      const parent = items.find(item => item.entry.id === entry.reference_id)?.entry;
+      if (parent && parent.id !== entry.id) emit(parent);
+    }
+    visiting.delete(entry.id);
+    emitted.add(entry.id);
+    entries.push(entry);
+  };
+  for (const item of items) emit(item.entry);
+  return entries;
+}
+function storePendingEntry(entry: Entry) {
+  localStorage.setItem(pendingEntryPrefix + entry.id, JSON.stringify({ entry, queued_at: Date.now() }));
+}
+function removePendingEntry(id: string) {
+  localStorage.removeItem(pendingEntryPrefix + id);
+}
+function entryBalanceChanges(entry: Entry, direction: number) {
+  const changes = new Map<string, number>();
+  if (entry.deleted) return changes;
+  const sign = ["income", "refund", "borrow", "collect", "balance_in"].includes(entry.kind) ? 1 : -1;
+  changes.set(entry.account_id, direction * sign * entry.amount_cents);
+  if (entry.to_account_id && ["transfer", "repay", "collect"].includes(entry.kind)) {
+    const targetSign = entry.kind === "collect" ? -1 : 1;
+    changes.set(entry.to_account_id, direction * targetSign * entry.amount_cents);
+  }
+  return changes;
+}
+function mergeEntry(current: State, saved: Entry): State {
+  const previous = current.entries.find(entry => entry.id === saved.id);
+  const normalized = { ...saved, remaining_cents: previous?.remaining_cents ?? saved.amount_cents };
+  const changes = new Map<string, number>();
+  for (const [id, amount] of previous ? entryBalanceChanges(previous, -1) : []) changes.set(id, amount);
+  for (const [id, amount] of entryBalanceChanges(normalized, 1)) changes.set(id, (changes.get(id) || 0) + amount);
+  let entries = previous
+    ? current.entries.map(entry => entry.id === normalized.id ? normalized : entry)
+    : [normalized, ...current.entries];
+  if (normalized.reference_id) {
+    const difference = normalized.amount_cents - (previous?.amount_cents || 0);
+    entries = entries.map(entry => entry.id === normalized.reference_id
+      ? { ...entry, remaining_cents: Math.max(0, entry.remaining_cents - difference) }
+      : entry);
+  }
+  entries.sort((a, b) => b.date.localeCompare(a.date));
+  return {
+    ...current,
+    entries,
+    accounts: current.accounts.map(account => ({
+      ...account,
+      balance_cents: account.balance_cents + (changes.get(account.id) || 0),
+    })),
+  };
+}
+function removeEntry(current: State, id: string): State {
+  const previous = current.entries.find(entry => entry.id === id);
+  if (!previous) return current;
+  const changes = entryBalanceChanges(previous, -1);
+  const entries = current.entries
+    .filter(entry => entry.id !== id)
+    .map(entry => entry.id === previous.reference_id
+      ? { ...entry, remaining_cents: entry.remaining_cents + previous.amount_cents }
+      : entry);
+  return {
+    ...current,
+    entries,
+    accounts: current.accounts.map(account => ({
+      ...account,
+      balance_cents: account.balance_cents + (changes.get(account.id) || 0),
+    })),
+  };
+}
 const newEntry = (account = ""): Entry => ({
   id: crypto.randomUUID(),
   date: today(),
@@ -131,6 +225,8 @@ function App() {
     [online, setOnline] = useState(navigator.onLine);
   const mutationEpoch = useRef(0);
   const backgroundRefresh = useRef<number | null>(null);
+  const pendingFlush = useRef(false);
+  const pendingRetry = useRef<number | null>(null);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState | null>(null);
   const range = useMemo(() => {
     const [y, m] = anchor.split("-").map(Number);
@@ -151,10 +247,11 @@ function App() {
   }, [anchor, period, customStart, customEnd]);
   const refresh = useCallback(async () => {
     const requestedAt = mutationEpoch.current;
-    const value = await api<State>("/state");
+    let value = await api<State>("/state");
     // A slower full refresh must never overwrite a newer entry that was saved
     // while the request was in flight.
     if (requestedAt !== mutationEpoch.current) return;
+    for (const entry of pendingEntries()) value = mergeEntry(value, entry);
     setState(value);
     clearConnectionError();
     setLogged(true);
@@ -267,49 +364,62 @@ function App() {
       setBusy(false);
     }
   }
-  const applySavedEntry = useCallback((saved: Entry) => {
+  const applySavedEntry = useCallback((saved: Entry, reconcile = true) => {
     mutationEpoch.current += 1;
-    setState(current => {
-      if (!current) return current;
-      const previous = current.entries.find(entry => entry.id === saved.id);
-      const normalized = {
-        ...saved,
-        remaining_cents: previous?.remaining_cents ?? saved.amount_cents,
-      };
-      const balanceChanges = new Map<string, number>();
-      const addImpact = (entry: Entry, direction: number) => {
-        if (entry.deleted) return;
-        const sign = ["income", "refund", "borrow", "collect", "balance_in"].includes(entry.kind) ? 1 : -1;
-        balanceChanges.set(entry.account_id, (balanceChanges.get(entry.account_id) || 0) + direction * sign * entry.amount_cents);
-        if (entry.to_account_id && ["transfer", "repay", "collect"].includes(entry.kind)) {
-          const targetSign = entry.kind === "collect" ? -1 : 1;
-          balanceChanges.set(entry.to_account_id, (balanceChanges.get(entry.to_account_id) || 0) + direction * targetSign * entry.amount_cents);
-        }
-      };
-      if (previous) addImpact(previous, -1);
-      addImpact(normalized, 1);
-      let entries = previous
-        ? current.entries.map(entry => entry.id === normalized.id ? normalized : entry)
-        : [normalized, ...current.entries];
-      if (normalized.reference_id) {
-        const difference = normalized.amount_cents - (previous?.amount_cents || 0);
-        entries = entries.map(entry => entry.id === normalized.reference_id
-          ? { ...entry, remaining_cents: Math.max(0, entry.remaining_cents - difference) }
-          : entry);
-      }
-      entries.sort((a, b) => b.date.localeCompare(a.date));
-      return {
-        ...current,
-        entries,
-        accounts: current.accounts.map(account => ({
-          ...account,
-          balance_cents: account.balance_cents + (balanceChanges.get(account.id) || 0),
-        })),
-      };
-    });
-    scheduleRefresh();
+    setState(current => current ? mergeEntry(current, saved) : current);
+    if (reconcile) scheduleRefresh();
   }, [scheduleRefresh]);
+  const flushPendingEntries = useCallback(async () => {
+    if (pendingFlush.current) return;
+    pendingFlush.current = true;
+    try {
+      while (pendingEntries().length) {
+        const entry = pendingEntries()[0];
+        try {
+          const saved = await api<Entry>("/entries", entry, "POST");
+          removePendingEntry(entry.id);
+          applySavedEntry(saved);
+        } catch (error) {
+          const message = (error as Error).message;
+          const retryable = message.includes("无法连接") || message.includes("请求超时") || message.includes("服务暂时不可用");
+          if (!retryable) {
+            removePendingEntry(entry.id);
+            mutationEpoch.current += 1;
+            setState(current => current ? removeEntry(current, entry.id) : current);
+            setEditor(entry);
+            setEditing(false);
+            setError(message);
+          } else {
+            setError("这笔账已暂存在本机，联网后会自动保存。");
+          }
+          if (pendingRetry.current !== null) window.clearTimeout(pendingRetry.current);
+          pendingRetry.current = window.setTimeout(() => {
+            pendingRetry.current = null;
+            flushPendingEntries();
+          }, 5000);
+          break;
+        }
+      }
+    } finally {
+      pendingFlush.current = false;
+    }
+  }, [applySavedEntry, setError]);
+  useEffect(() => {
+    if (logged && online) flushPendingEntries();
+  }, [logged, online, flushPendingEntries]);
+  useEffect(() => () => {
+    if (pendingRetry.current !== null) window.clearTimeout(pendingRetry.current);
+  }, []);
+  function queueEntry(value: Entry) {
+    storePendingEntry(value);
+    applySavedEntry(value, false);
+    void flushPendingEntries();
+  }
   async function saveEntry(value: Entry, editing = false) {
+    if (!editing) {
+      queueEntry(value);
+      return;
+    }
     setBusy(true);
     setError("");
     // Invalidate an already running full refresh before the write reaches the
