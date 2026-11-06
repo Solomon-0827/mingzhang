@@ -83,20 +83,27 @@ const emptyReport: Report = {
   months: [],
   categories: [],
 };
-const pendingEntryKey = "mingzhang.pending-entries.v1";
+const pendingEntryPrefix = "mingzhang.pending-entry.v1.";
 function pendingEntries(): Entry[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(pendingEntryKey) || "[]");
-    return Array.isArray(value)
-      ? value.filter(entry => entry && typeof entry.id === "string" && Number.isSafeInteger(entry.amount_cents))
-      : [];
-  } catch {
-    return [];
+  const entries: Entry[] = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (!key?.startsWith(pendingEntryPrefix)) continue;
+    try {
+      const entry = JSON.parse(localStorage.getItem(key) || "null");
+      if (entry && typeof entry.id === "string" && Number.isSafeInteger(entry.amount_cents))
+        entries.push(entry);
+    } catch {
+      // A malformed entry stays isolated and cannot hide the rest of the queue.
+    }
   }
+  return entries;
 }
-function storePendingEntries(entries: Entry[]) {
-  if (entries.length) localStorage.setItem(pendingEntryKey, JSON.stringify(entries));
-  else localStorage.removeItem(pendingEntryKey);
+function storePendingEntry(entry: Entry) {
+  localStorage.setItem(pendingEntryPrefix + entry.id, JSON.stringify(entry));
+}
+function removePendingEntry(id: string) {
+  localStorage.removeItem(pendingEntryPrefix + id);
 }
 function entryBalanceChanges(entry: Entry, direction: number) {
   const changes = new Map<string, number>();
@@ -352,13 +359,13 @@ function App() {
         const entry = pendingEntries()[0];
         try {
           const saved = await api<Entry>("/entries", entry, "POST");
-          storePendingEntries(pendingEntries().filter(item => item.id !== entry.id));
+          removePendingEntry(entry.id);
           applySavedEntry(saved);
         } catch (error) {
           const message = (error as Error).message;
           const retryable = message.includes("无法连接") || message.includes("请求超时") || message.includes("服务暂时不可用");
           if (!retryable) {
-            storePendingEntries(pendingEntries().filter(item => item.id !== entry.id));
+            removePendingEntry(entry.id);
             mutationEpoch.current += 1;
             setState(current => current ? removeEntry(current, entry.id) : current);
             setEditor(entry);
@@ -386,8 +393,7 @@ function App() {
     if (pendingRetry.current !== null) window.clearTimeout(pendingRetry.current);
   }, []);
   function queueEntry(value: Entry) {
-    const queue = pendingEntries().filter(entry => entry.id !== value.id);
-    storePendingEntries([...queue, value]);
+    storePendingEntry(value);
     applySavedEntry(value, false);
     void flushPendingEntries();
   }
