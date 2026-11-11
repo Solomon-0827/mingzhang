@@ -1479,6 +1479,38 @@ footer {
 .ant-picker-dropdown {
   text-align: left;
 }
+.category-cascader-popup .ant-cascader-menus {
+  display: flex;
+  min-height: 248px;
+  overflow: hidden;
+}
+.category-cascader-popup .ant-cascader-menu {
+  width: 164px;
+  height: auto;
+  max-height: 360px;
+  padding: 6px;
+  border-right-color: #ebe4d6;
+}
+.category-cascader-popup .ant-cascader-menu + .ant-cascader-menu {
+  width: 190px;
+  animation: category-panel-enter .2s cubic-bezier(.22, 1, .36, 1);
+}
+.category-cascader-popup .ant-cascader-menu-item {
+  min-height: 38px;
+  margin: 2px 0;
+  border-radius: 8px;
+}
+.category-cascader-popup .ant-cascader-menu-item-active,
+.category-cascader-popup .ant-cascader-menu-item:hover {
+  background: #f3ecdd;
+}
+@keyframes category-panel-enter {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .category-cascader-popup .ant-cascader-menu + .ant-cascader-menu { animation: none; }
+}
 .period-picker .ledger-date {
   width: 180px;
 }
