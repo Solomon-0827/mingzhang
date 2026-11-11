@@ -1,5 +1,5 @@
 import React from "react";
-import { ConfigProvider, DatePicker, Select } from "antd";
+import { Cascader, ConfigProvider, DatePicker, Select } from "antd";
 import { categoryGroups, categoryLeaf } from "./category-groups";
 import zhCN from "antd/locale/zh_CN";
 import dayjs from "dayjs";
@@ -125,11 +125,37 @@ export function StyledDate({
 export function CategorySelect({ options, value, onChange, disabled, "aria-label": label = "分类" }: {
   options: string[]; value: string; onChange: Change; disabled?: boolean; "aria-label"?: string;
 }) {
-  return <Select className="ledger-select category-select" aria-label={label} value={value} disabled={disabled}
-    virtual={false} listHeight={420} showSearch optionFilterProp="searchText" popupMatchSelectWidth={280}
-    options={categorySelectOptions(options)}
-    onChange={next => onChange({target:{value:next}})}
-    getPopupContainer={trigger => trigger.parentElement!} />;
+  const groups = categoryGroups(options);
+  const selected = groups.flatMap(group => group.items.map(item => ({
+    group: group.name,
+    item,
+    standalone: group.items.length === 1 && !item.includes("/"),
+  })))
+    .find(item => item.item === value);
+  return <Cascader
+    className="ledger-select category-select category-cascader"
+    popupClassName="category-cascader-popup"
+    aria-label={label}
+    value={selected ? selected.standalone ? [selected.item] : [selected.group, selected.item] : undefined}
+    disabled={disabled}
+    allowClear={false}
+    expandTrigger="click"
+    placement="bottomLeft"
+    options={groups.map(group => group.items.length === 1 && !group.items[0].includes("/")
+      ? { value: group.items[0], label: group.items[0] }
+      : {
+          value: group.name,
+          label: group.name,
+          children: group.items.map(item => ({ value: item, label: categoryLeaf(item) })),
+        })}
+    displayRender={labels => labels.join(" / ")}
+    onChange={next => {
+      const item = next.at(-1);
+      if (typeof item === "string") onChange({ target: { value: item } });
+    }}
+    getPopupContainer={() => document.body}
+    styles={{ popup: { root: { zIndex: 1400 } } }}
+  />;
 }
 
 function categorySelectOptions(options: string[]) {
