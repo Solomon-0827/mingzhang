@@ -139,7 +139,7 @@ export function CategorySelect({ options, value, onChange, disabled, "aria-label
     value={selected ? selected.standalone ? [selected.item] : [selected.group, selected.item] : undefined}
     disabled={disabled}
     allowClear={false}
-    expandTrigger="click"
+    expandTrigger="hover"
     placement="bottomLeft"
     options={groups.map(group => group.items.length === 1 && !group.items[0].includes("/")
       ? { value: group.items[0], label: group.items[0] }
