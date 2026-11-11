@@ -126,22 +126,28 @@ export function CategorySelect({ options, value, onChange, disabled, "aria-label
   options: string[]; value: string; onChange: Change; disabled?: boolean; "aria-label"?: string;
 }) {
   const groups = categoryGroups(options);
-  const selected = groups.flatMap(group => group.items.map(item => ({ group: group.name, item })))
+  const selected = groups.flatMap(group => group.items.map(item => ({
+    group: group.name,
+    item,
+    standalone: group.items.length === 1 && !item.includes("/"),
+  })))
     .find(item => item.item === value);
   return <Cascader
     className="ledger-select category-select category-cascader"
     popupClassName="category-cascader-popup"
     aria-label={label}
-    value={selected ? [selected.group, selected.item] : undefined}
+    value={selected ? selected.standalone ? [selected.item] : [selected.group, selected.item] : undefined}
     disabled={disabled}
     allowClear={false}
     expandTrigger="click"
     placement="bottomLeft"
-    options={groups.map(group => ({
-      value: group.name,
-      label: group.name,
-      children: group.items.map(item => ({ value: item, label: categoryLeaf(item) })),
-    }))}
+    options={groups.map(group => group.items.length === 1 && !group.items[0].includes("/")
+      ? { value: group.items[0], label: group.items[0] }
+      : {
+          value: group.name,
+          label: group.name,
+          children: group.items.map(item => ({ value: item, label: categoryLeaf(item) })),
+        })}
     displayRender={labels => labels.join(" / ")}
     onChange={next => {
       const item = next.at(-1);
