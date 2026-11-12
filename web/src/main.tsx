@@ -437,7 +437,7 @@ function App() {
     }
   }
   const entries =
-    page === "entry"
+    page === "entry" || page === "overview"
       ? (state?.entries || []).filter((x) => !x.deleted)
       : (state?.entries || []).filter(
           (x) =>
@@ -480,6 +480,25 @@ function App() {
         : period === "custom"
           ? "自定义时间"
           : `${anchor.slice(0, 4)} 年 ${Number(anchor.slice(5))} 月`;
+  const overviewMonth = today().slice(0, 7);
+  const overviewFlow = useMemo(() => {
+    let income = 0;
+    let expense = 0;
+    for (const entry of state?.entries || []) {
+      if (entry.deleted || !entry.date.startsWith(overviewMonth)) continue;
+      if (entry.kind === "income") income += entry.amount_cents;
+      if (entry.kind === "expense") expense += entry.amount_cents;
+      if (entry.kind === "refund") expense -= entry.amount_cents;
+    }
+    return { income, expense, net: income - expense };
+  }, [state?.entries, overviewMonth]);
+  const overviewAccounts = useMemo(() => (state?.account_groups || []).map(group => ({
+    id: group.id,
+    name: group.name,
+    balance: (state?.accounts || [])
+      .filter(account => (account.group_id || account.kind) === group.id)
+      .reduce((sum, account) => sum + account.balance_cents, 0),
+  })).filter(group => (state?.accounts || []).some(account => (account.group_id || account.kind) === group.id)), [state?.account_groups, state?.accounts]);
   if (!checked)
     return (
       <div className="loading">
@@ -652,7 +671,7 @@ function App() {
               {
                 {
                   entry: "记下当下这一笔，让生活的收支清清楚楚。",
-                  overview: "看清钱的去向，也看见生活的节奏。",
+                  overview: "先看资产与本月状态，再决定下一步关注什么。",
                   transactions: "每一笔收支，都有清楚的来龙去脉。",
                   reports: "从每一天，到每一年。",
                   accounts: "账户余额与借贷往来，一起看清。",
@@ -693,7 +712,7 @@ function App() {
             )}
           </section>
         )}
-        {["overview", "transactions", "reports"].includes(page) && (
+        {["transactions", "reports"].includes(page) && (
           <div className="period-bar">
             <div className="segments">
               {[
@@ -756,7 +775,55 @@ function App() {
             </div>
           </div>
         )}
-        {["overview", "reports"].includes(page) && (
+        {page === "overview" && state && (
+          <>
+            <section className="overview-balance">
+              <div className="overview-net">
+                <span>当前净资产</span>
+                <strong><small>¥</small>{money(state.net_assets)}</strong>
+                <p>总资产减去总负债，包含债权与待还款项。</p>
+              </div>
+              <div className="overview-balance-grid">
+                <div><span>总资产</span><b className="income-text">¥ {money(state.assets)}</b></div>
+                <div><span>总负债</span><b className="expense-text">¥ {money(state.liabilities)}</b></div>
+                <div><span>待收</span><b>¥ {money(state.receivable)}</b></div>
+                <div><span>待还</span><b>¥ {money(state.payable)}</b></div>
+              </div>
+            </section>
+            <div className="overview-columns">
+              <section className="panel overview-cashflow">
+                <div className="panel-head">
+                  <div><h2>本月现金流</h2><p>{Number(overviewMonth.slice(5))} 月截至今天</p></div>
+                  <button className="text-button" aria-label="查看收支报表" title="查看收支报表" onClick={() => setPage("reports")}><ArrowUpRight size={18} /></button>
+                </div>
+                <div className="overview-flow-values">
+                  <div><span>收入</span><b className="income-text">+{money(overviewFlow.income)}</b></div>
+                  <div><span>支出</span><b className="expense-text">−{money(overviewFlow.expense)}</b></div>
+                  <div><span>结余</span><b>{overviewFlow.net >= 0 ? "+" : "−"}{money(Math.abs(overviewFlow.net))}</b></div>
+                </div>
+                <div className="overview-flow-bar" aria-label="本月收入与支出比例">
+                  <i style={{width: `${overviewFlow.income + overviewFlow.expense > 0 ? overviewFlow.income / (overviewFlow.income + overviewFlow.expense) * 100 : 50}%`}} />
+                </div>
+                <small>收入与支出对比 · 转账及借还款本金不计入收支</small>
+              </section>
+              <section className="panel overview-account-groups">
+                <div className="panel-head">
+                  <div><h2>账户分布</h2><p>{state.accounts.length} 个账户</p></div>
+                  <button className="text-button" aria-label="查看资金账户" title="查看资金账户" onClick={() => setPage("accounts")}><ArrowUpRight size={18} /></button>
+                </div>
+                <div className="overview-account-list">
+                  {overviewAccounts.map(group => (
+                    <div key={group.id}>
+                      <span><Wallet size={15} />{group.name}</span>
+                      <b className={group.balance < 0 ? "expense-text" : undefined}>¥ {money(group.balance)}</b>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          </>
+        )}
+        {page === "reports" && (
           <>
             <div className="stats">
               <Metric
