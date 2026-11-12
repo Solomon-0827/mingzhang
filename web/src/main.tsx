@@ -1556,6 +1556,18 @@ function EntryDialog({
       onSubmit={async (e) => {
         e.preventDefault();
         setError("");
+        if (!value.account_id) {
+          setError("请选择账户");
+          return;
+        }
+        if ((value.kind === "transfer" || (["repay", "collect"].includes(value.kind) && !legacySettlement)) && !value.to_account_id) {
+          setError(value.kind === "transfer" ? "请选择转入账户" : `请选择${value.kind === "repay" ? "负债" : "债权"}账户`);
+          return;
+        }
+        if (value.kind === "transfer" && value.to_account_id === value.account_id) {
+          setError("转入账户不能与转出账户相同");
+          return;
+        }
         setBusy(true);
         try {
           await onSave({ ...value, amount_cents: cents(amount) });
