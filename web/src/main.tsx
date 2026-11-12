@@ -24,6 +24,7 @@ import {
 } from "recharts";
 import {
   Account,
+  AccountGroup,
   CategoryCatalog,
   ordered,
   Entry,
@@ -37,7 +38,7 @@ import {
   money,
   today,
 } from "./types";
-import { ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
+import { AccountSelect, ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
 import { categoryLeaf } from "./category-groups";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
@@ -672,6 +673,7 @@ function App() {
                 initial={newEntry(state.accounts[0].id)}
                 editing={false}
                 accounts={state.accounts}
+                accountGroups={state.account_groups}
                 entries={state.entries}
                 categoryOrder={state.ordering?.categories}
                 favorites={state.ordering?.favorites}
@@ -1333,6 +1335,7 @@ function App() {
           initial={editor}
           editing={editing}
           accounts={state.accounts}
+          accountGroups={state.account_groups}
           entries={state.entries}
                 categoryOrder={state.ordering?.categories}
                 favorites={state.ordering?.favorites}
@@ -1477,6 +1480,7 @@ function EntryDialog({
   initial,
   editing,
   accounts,
+  accountGroups,
   categoryOrder = [],
   favorites = [],
   catalog,
@@ -1489,6 +1493,7 @@ function EntryDialog({
   initial: Entry;
   editing: boolean;
   accounts: Account[];
+  accountGroups: AccountGroup[];
   categoryOrder?: string[];
   favorites?: string[];
   catalog?: CategoryCatalog;
@@ -1551,6 +1556,18 @@ function EntryDialog({
       onSubmit={async (e) => {
         e.preventDefault();
         setError("");
+        if (!value.account_id) {
+          setError("请选择账户");
+          return;
+        }
+        if ((value.kind === "transfer" || (["repay", "collect"].includes(value.kind) && !legacySettlement)) && !value.to_account_id) {
+          setError(value.kind === "transfer" ? "请选择转入账户" : `请选择${value.kind === "repay" ? "负债" : "债权"}账户`);
+          return;
+        }
+        if (value.kind === "transfer" && value.to_account_id === value.account_id) {
+          setError("转入账户不能与转出账户相同");
+          return;
+        }
         setBusy(true);
         try {
           await onSave({ ...value, amount_cents: cents(amount) });
@@ -1629,46 +1646,35 @@ function EntryDialog({
               </motion.strong>
             </span>}
           </span>
-          <StyledSelect
+          <AccountSelect
+            accounts={accounts.filter(a => !["repay", "collect"].includes(value.kind) || !["receivable", "liability"].includes(a.kind))}
+            groups={accountGroups}
             value={value.account_id}
             onChange={(e) => set("account_id", e.target.value)}
-          >
-            {accounts.filter(a => !["repay", "collect"].includes(value.kind) || !["receivable", "liability"].includes(a.kind)).map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </StyledSelect>
+          />
         </label>
         {value.kind === "transfer" && (
           <label className="full">
             转入账户
-            <StyledSelect
+            <AccountSelect
+              accounts={accounts.filter((a) => a.id !== value.account_id)}
+              groups={accountGroups}
               required
               value={value.to_account_id || ""}
               onChange={(e) => set("to_account_id", e.target.value)}
-            >
-              <option value="">请选择转入账户</option>
-              {accounts
-                .filter((a) => a.id !== value.account_id)
-                .map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-            </StyledSelect>
+              placeholder="请选择转入账户"
+            />
             <small>信用卡还本金也使用账户间转账。</small>
           </label>
         )}
         {["repay", "collect"].includes(value.kind) && !legacySettlement && (
           <label className="full">
             {value.kind === "repay" ? "负债账户" : "债权账户"}
-            <StyledSelect required aria-label={value.kind === "repay" ? "负债账户" : "债权账户"}
-              value={value.to_account_id || ""} onChange={e => set("to_account_id", e.target.value)}>
-              <option value="">请选择{value.kind === "repay" ? "负债" : "债权"}账户</option>
-              {accounts.filter(a => a.kind === (value.kind === "repay" ? "liability" : "receivable") && a.id !== value.account_id)
-                .map(a => <option key={a.id} value={a.id}>{a.name} · ¥{money(a.balance_cents)}</option>)}
-            </StyledSelect>
+            <AccountSelect required aria-label={value.kind === "repay" ? "负债账户" : "债权账户"}
+              accounts={accounts.filter(a => a.kind === (value.kind === "repay" ? "liability" : "receivable") && a.id !== value.account_id)}
+              groups={accountGroups}
+              value={value.to_account_id || ""} onChange={e => set("to_account_id", e.target.value)}
+              placeholder={`请选择${value.kind === "repay" ? "负债" : "债权"}账户`} />
             <small>{value.kind === "repay" ? "付款账户余额减少，同时减少对应负债。" : "收款账户余额增加，同时减少对应债权。"}本金不计入收支。</small>
           </label>
         )}

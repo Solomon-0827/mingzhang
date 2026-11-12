@@ -1,6 +1,8 @@
 import React from "react";
 import { Cascader, ConfigProvider, DatePicker, Select } from "antd";
 import { categoryGroups, categoryLeaf } from "./category-groups";
+import { money } from "./types";
+import type { Account, AccountGroup } from "./types";
 import zhCN from "antd/locale/zh_CN";
 import dayjs from "dayjs";
 import "dayjs/locale/zh-cn";
@@ -173,4 +175,52 @@ export function CategoryMultiSelect({ options, value, onChange }: {
     allowClear maxTagCount="responsive" virtual={false} listHeight={420}
     showSearch optionFilterProp="searchText" popupMatchSelectWidth={300}
     getPopupContainer={trigger => trigger.parentElement!} />;
+}
+
+export function AccountSelect({ accounts, groups, value, onChange, disabled, required,
+  "aria-label": label = "账户", placeholder = "请选择账户" }: {
+  accounts: Account[];
+  groups: AccountGroup[];
+  value: string;
+  onChange: Change;
+  disabled?: boolean;
+  required?: boolean;
+  "aria-label"?: string;
+  placeholder?: string;
+}) {
+  const availableGroups = groups.map(group => ({
+    group,
+    accounts: accounts.filter(account => (account.group_id || account.kind) === group.id),
+  })).filter(group => group.accounts.length);
+  const selectedGroup = availableGroups.find(group => group.accounts.some(account => account.id === value));
+  return <Cascader
+    className="ledger-select account-cascader"
+    popupClassName="account-cascader-popup"
+    aria-label={label}
+    aria-required={required}
+    value={selectedGroup ? [`group:${selectedGroup.group.id}`, value] : undefined}
+    disabled={disabled}
+    allowClear={false}
+    expandTrigger="hover"
+    placement="bottomLeft"
+    placeholder={placeholder}
+    options={availableGroups.map(({ group, accounts: children }) => ({
+      value: `group:${group.id}`,
+      label: group.name,
+      children: children.map(account => ({
+        value: account.id,
+        label: <span className="account-cascade-option"><span>{account.name}</span><small>¥{money(account.balance_cents)}</small></span>,
+      })),
+    }))}
+    displayRender={(_, selectedOptions) => {
+      const account = accounts.find(item => item.id === selectedOptions?.at(-1)?.value);
+      return account?.name || "";
+    }}
+    onChange={next => {
+      const account = next.at(-1);
+      if (typeof account === "string") onChange({ target: { value: account } });
+    }}
+    getPopupContainer={() => document.body}
+    styles={{ popup: { root: { zIndex: 1400 } } }}
+  />;
 }
