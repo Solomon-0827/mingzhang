@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useState } from "react";
 import { Popover } from "antd";
 import { Entry, Kind, State, cents, labels, money, today, ordered } from "./types";
-import { StyledDate, StyledSelect, CategorySelect } from "./controls";
+import { AccountSelect, StyledDate, StyledSelect, CategorySelect } from "./controls";
 
 type Field =
   | "date"
@@ -103,26 +103,20 @@ export function EntryField({
       onChange={e => selectField("category", e.target.value)} />
   );
   const chooseAccount = (target: "account_id" | "to_account_id") => (
-    <StyledSelect
+    <AccountSelect
       aria-label={target === "account_id" ? "修改账户" : draft.kind === "repay" ? "修改负债账户" : draft.kind === "collect" ? "修改债权账户" : "修改转入账户"}
+      accounts={state.accounts.filter(
+        (account) =>
+          target === "account_id"
+            ? !["repay", "collect"].includes(draft.kind) || !["receivable", "liability"].includes(account.kind)
+            : account.id !== draft.account_id && (draft.kind === "repay" ? account.kind === "liability" : draft.kind === "collect" ? account.kind === "receivable" : true),
+      )}
+      groups={state.account_groups}
       value={draft[target] || ""}
       disabled={busy}
       onChange={(e) => selectField(target, e.target.value)}
-    >
-      <option value="">请选择账户</option>
-      {state.accounts
-        .filter(
-          (account) =>
-            target === "account_id"
-              ? !["repay", "collect"].includes(draft.kind) || !["receivable", "liability"].includes(account.kind)
-              : account.id !== draft.account_id && (draft.kind === "repay" ? account.kind === "liability" : draft.kind === "collect" ? account.kind === "receivable" : true),
-        )
-        .map((account) => (
-          <option key={account.id} value={account.id}>
-            {account.name}
-          </option>
-        ))}
-    </StyledSelect>
+      placeholder={target === "account_id" ? "请选择账户" : draft.kind === "repay" ? "请选择负债账户" : draft.kind === "collect" ? "请选择债权账户" : "请选择转入账户"}
+    />
   );
   return (
     <span
