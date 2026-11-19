@@ -52,6 +52,23 @@ type DesktopUpdateState = {
   release?: { version: string };
   error?: string;
 };
+type NavigationSnapshot = {
+  page: string;
+  period: string;
+  anchor: string;
+  customStart: string;
+  customEnd: string;
+  bookMonth: string;
+  curve: string;
+  visibleCurves: { income: boolean; expense: boolean; cumulative: boolean };
+  query: string;
+  type: string;
+  accountFilter: string;
+  categoryFilter: string;
+  day: string;
+  trash: boolean;
+  scrollY: number;
+};
 declare global {
   interface Window {
     mingzhangUpdate?: {
@@ -167,7 +184,76 @@ function App() {
   const backgroundRefresh = useRef<number | null>(null);
   const pendingFlush = useRef(false);
   const pendingRetry = useRef<number | null>(null);
+  const backHistory = useRef<NavigationSnapshot[]>([]);
+  const forwardHistory = useRef<NavigationSnapshot[]>([]);
+  const pendingScrollRestore = useRef<number | null>(null);
+  const [, setHistoryRevision] = useState(0);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState | null>(null);
+  const captureNavigation = useCallback((): NavigationSnapshot => ({
+    page, period, anchor, customStart, customEnd, bookMonth, curve, visibleCurves,
+    query, type, accountFilter, categoryFilter, day, trash, scrollY: window.scrollY,
+  }), [page, period, anchor, customStart, customEnd, bookMonth, curve, visibleCurves, query, type, accountFilter, categoryFilter, day, trash]);
+  const restoreNavigation = useCallback((snapshot: NavigationSnapshot) => {
+    setPage(snapshot.page); setPeriod(snapshot.period); setAnchor(snapshot.anchor);
+    setCustomStart(snapshot.customStart); setCustomEnd(snapshot.customEnd); setBookMonth(snapshot.bookMonth);
+    setCurve(snapshot.curve); setVisibleCurves(snapshot.visibleCurves); setQuery(snapshot.query);
+    setType(snapshot.type); setAccountFilter(snapshot.accountFilter); setCategoryFilter(snapshot.categoryFilter);
+    setDay(snapshot.day); setTrash(snapshot.trash);
+    pendingScrollRestore.current = snapshot.scrollY;
+    const restore = () => window.scrollTo({top:snapshot.scrollY,behavior:"auto"});
+    window.requestAnimationFrame(() => { restore(); window.setTimeout(restore, 80); window.setTimeout(restore, 280); });
+    window.setTimeout(() => { if (pendingScrollRestore.current === snapshot.scrollY) pendingScrollRestore.current = null; }, 5000);
+  }, []);
+  const navigate = useCallback((nextPage: string, changes: Partial<NavigationSnapshot> = {}) => {
+    const current = captureNavigation();
+    const unchanged = Object.entries(changes).every(([key, value]) =>
+      JSON.stringify(current[key as keyof NavigationSnapshot]) === JSON.stringify(value));
+    if (nextPage === current.page && unchanged) return;
+    backHistory.current = [...backHistory.current.slice(-19), current];
+    forwardHistory.current = [];
+    restoreNavigation({...current, ...changes, page:nextPage, scrollY:changes.scrollY ?? 0});
+    setHistoryRevision(value => value + 1);
+  }, [captureNavigation, restoreNavigation]);
+  const travelHistory = useCallback((direction: "back" | "forward") => {
+    const source = direction === "back" ? backHistory : forwardHistory;
+    const destination = direction === "back" ? forwardHistory : backHistory;
+    const target = source.current.at(-1);
+    if (!target) return;
+    source.current = source.current.slice(0, -1);
+    destination.current = [...destination.current.slice(-19), captureNavigation()];
+    restoreNavigation(target);
+    setHistoryRevision(value => value + 1);
+  }, [captureNavigation, restoreNavigation]);
+  const resetHistory = useCallback(() => {
+    backHistory.current = [];
+    forwardHistory.current = [];
+    setHistoryRevision(value => value + 1);
+  }, []);
+  useEffect(() => {
+    const historyKey = (event: KeyboardEvent) => {
+      const back = event.altKey && event.key === "ArrowLeft" || event.metaKey && event.key === "[";
+      const forward = event.altKey && event.key === "ArrowRight" || event.metaKey && event.key === "]";
+      if (!back && !forward) return;
+      event.preventDefault();
+      travelHistory(back ? "back" : "forward");
+    };
+    window.addEventListener("keydown", historyKey);
+    return () => window.removeEventListener("keydown", historyKey);
+  }, [travelHistory]);
+  useEffect(() => {
+    if (pendingScrollRestore.current === null) return;
+    const top = pendingScrollRestore.current;
+    window.requestAnimationFrame(() => window.scrollTo({top,behavior:"auto"}));
+  }, [page, report]);
+  useEffect(() => {
+    const cancelRestore = () => { pendingScrollRestore.current = null; };
+    window.addEventListener("wheel", cancelRestore, {passive:true});
+    window.addEventListener("touchmove", cancelRestore, {passive:true});
+    return () => {
+      window.removeEventListener("wheel", cancelRestore);
+      window.removeEventListener("touchmove", cancelRestore);
+    };
+  }, []);
   const range = useMemo(() => {
     const [y, m] = anchor.split("-").map(Number);
     const startMonth =
@@ -280,7 +366,7 @@ function App() {
   }, [logged, range, state, page, pendingCount, online, setError]);
   const openNew = useCallback(() => {
     if (!state?.accounts.length) {
-      setPage("accounts");
+      navigate("accounts");
       setNotice("先添加一个资金账户，再开始记账。");
       return;
     }
@@ -290,7 +376,7 @@ function App() {
     }
     setEditor(newEntry(state.accounts[0].id));
     setEditing(false);
-  }, [state, page]);
+  }, [state, page, navigate, setNotice]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
@@ -501,6 +587,17 @@ function App() {
           <img src="/icon.png?v=paper-large" alt="" width={40} height={40} />
           <b className="brand-name">明账</b><span>个人账本</span>
         </div>
+        <div className="sidebar-history" aria-label="页面历史">
+          <button type="button" aria-label="返回上一个页面" title="返回上一个页面"
+            disabled={!backHistory.current.length} onClick={() => travelHistory("back")}>
+            <ChevronLeft size={18} aria-hidden="true" />
+          </button>
+          <button type="button" aria-label="前进到下一个页面" title="前进到下一个页面"
+            disabled={!forwardHistory.current.length} onClick={() => travelHistory("forward")}>
+            <ChevronRight size={18} aria-hidden="true" />
+          </button>
+          <span className="nav-text">页面历史</span>
+        </div>
         <div className="workspace">
           <div className="avatar">S</div>
           <div>
@@ -526,9 +623,7 @@ function App() {
               aria-current={page === id ? "page" : undefined}
               className={page === id ? "active" : ""}
               onClick={() => {
-                setPage(String(id));
-                setDay("");
-                setCategoryFilter("");
+                navigate(String(id), {day:"",categoryFilter:""});
               }}
             >
               {page === id && <motion.span className="nav-selection" layoutId="main-navigation-active" transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }} />}
@@ -558,6 +653,7 @@ function App() {
           <button aria-label="退出账本" title="退出账本"
             onClick={() => {
               api("/logout", {}).then(() => {
+                resetHistory();
                 setLogged(false);
                 setState(null);
               });
@@ -627,7 +723,7 @@ function App() {
               <div className="entry-empty">
                 <h2>从第一个账户开始</h2>
                 <p>添加现金、银行卡或支付宝等账户，就可以记下第一笔收支。</p>
-                <button aria-label="添加资金账户" title="添加资金账户" className="primary" onClick={() => setPage("accounts")}><Plus size={18} aria-hidden="true" /></button>
+                <button aria-label="添加资金账户" title="添加资金账户" className="primary" onClick={() => navigate("accounts")}><Plus size={18} aria-hidden="true" /></button>
               </div>
             )}
           </section>
@@ -714,7 +810,7 @@ function App() {
               <section className="panel overview-cashflow">
                 <div className="panel-head">
                   <div><h2>本月现金流</h2><p>{Number(overviewMonth.slice(5))} 月截至今天</p></div>
-                  <button className="text-button" aria-label="查看收支报表" title="查看收支报表" onClick={() => setPage("reports")}><ArrowUpRight size={18} /></button>
+                  <button className="text-button" aria-label="查看收支报表" title="查看收支报表" onClick={() => navigate("reports")}><ArrowUpRight size={18} /></button>
                 </div>
                 <div className="overview-flow-values">
                   <div><span>收入</span><b className="income-text">+{money(overviewFlow.income)}</b></div>
@@ -729,7 +825,7 @@ function App() {
               <section className="panel overview-account-groups">
                 <div className="panel-head">
                   <div><h2>账户分布</h2><p>{state.accounts.length} 个账户</p></div>
-                  <button className="text-button" aria-label="查看资金账户" title="查看资金账户" onClick={() => setPage("accounts")}><ArrowUpRight size={18} /></button>
+                  <button className="text-button" aria-label="查看资金账户" title="查看资金账户" onClick={() => navigate("accounts")}><ArrowUpRight size={18} /></button>
                 </div>
                 <div className="overview-account-list">
                   {overviewAccounts.map(group => (
@@ -796,8 +892,7 @@ function App() {
                       onClick={(s) => {
                         const label = s?.activeLabel;
                         if (label) {
-                          setDay(String(label));
-                          setPage("transactions");
+                          navigate("transactions", {day:String(label),categoryFilter:""});
                         }
                       }}
                     >
@@ -847,8 +942,7 @@ function App() {
                       data={report.daily}
                       onClick={(s) => {
                         if (s?.activeLabel) {
-                          setDay(String(s.activeLabel));
-                          setPage("transactions");
+                          navigate("transactions", {day:String(s.activeLabel),categoryFilter:""});
                         }
                       }}
                     >
@@ -934,8 +1028,7 @@ function App() {
                       className="category-row"
                       key={name}
                       onClick={() => {
-                        setCategoryFilter(name);
-                        setPage("transactions");
+                        navigate("transactions", {categoryFilter:name,day:""});
                       }}
                     >
                       <span className="category-rank">
@@ -983,10 +1076,7 @@ function App() {
                         <tr
                           key={m.month}
                           onClick={() => {
-                            setPeriod("month");
-                            setAnchor(m.month);
-                            setDay("");
-                            setPage("transactions");
+                            navigate("transactions", {period:"month",anchor:m.month,day:"",categoryFilter:""});
                           }}
                           className="clickable"
                         >
@@ -1037,7 +1127,7 @@ function App() {
               {page !== "transactions" ? (
                 <button aria-label="查看全部" title="查看全部"
                   className="text-button"
-                  onClick={() => setPage("transactions")}
+                  onClick={() => navigate("transactions", {day:"",categoryFilter:""})}
                 ><ArrowUpRight size={18} aria-hidden="true" /></button>
               ) : (
                 <button aria-label={trash ? "返回正常流水" : "回收站"} title={trash ? "返回正常流水" : "回收站"}
@@ -1282,7 +1372,7 @@ function App() {
         )}
         {page === "settings" && state && <OrderSettings state={state} defaults={categories}
           onCategoryChange={async value => { queueMutation({type:"category.change",path:"/categories",method:"POST",body:value as unknown as Record<string,unknown>}); }}
-          onPasswordChanged={() => { setLogged(false); setState(null); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
+          onPasswordChanged={() => { resetHistory(); setLogged(false); setState(null); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
           onEditAccount={setAccountEditor}
           onRenameAccountGroup={async (id,name,expected_name) => {queueMutation({type:"account-group.rename",path:`/account-groups/${id}`,method:"PUT",body:{name,expected_name}});}}
           onAccountGroupChange={async (id, value) => {
