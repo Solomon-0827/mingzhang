@@ -1015,6 +1015,9 @@ function App() {
             onSave={async (entry) => {
               await saveEntry(entry, true);
             }}
+            onBulkSave={async entries => {
+              for (const entry of entries) await saveEntry(entry, true);
+            }}
             onEdit={(entry) => {
               setEditor({ ...entry });
               setEditing(true);

@@ -1928,9 +1928,39 @@ footer {
   font-size: 12px;
 }
 .book-search-toggle:hover,
-.book-search-toggle[aria-expanded="true"] {
+.book-search-toggle[aria-expanded="true"],
+.book-search-toggle[aria-pressed="true"] {
   background: #f4efe4;
 }
+.book-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 6px 14px;
+  border-top: 1px solid #ebe6da;
+  border-bottom: 1px solid #ebe6da;
+  background: #fcfaf4;
+  color: #71695c;
+  font-size: 12px;
+}
+.book-bulk-bar .text-button { display: inline-flex; align-items: center; gap: 6px; }
+.book-bulk-bar .primary { margin-left: auto; padding: 7px 12px; }
+.book-select-column { width: 42px; text-align: center; }
+.book-select-column input { width: 16px; height: 16px; accent-color: #4d7668; cursor: pointer; }
+.book-entries tr.selected > td { background: #f2f7f2; }
+.book-entries .bulk-mode .entry-field { pointer-events: none; }
+.bulk-entry-dialog { width: 560px; }
+.bulk-entry-dialog .modal-head small { display: block; margin-top: 4px; color: #918e82; }
+.bulk-field {
+  display: grid;
+  grid-template-columns: 22px 60px 1fr;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+}
+.bulk-field > input { width: 16px; height: 16px; margin: 0; accent-color: #4d7668; }
+.bulk-field .ledger-select, .bulk-field .ledger-date { width: 100%; }
 .book-search-input {
   display: flex;
   align-items: center;
