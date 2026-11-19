@@ -17,6 +17,7 @@ def today():
 
 
 class Account(BaseModel):
+    id: UUID | None = None
     name: str = Field(min_length=1, max_length=60)
     kind: Literal["bank", "wallet", "cash", "credit", "receivable", "liability"] = "bank"
     opening_cents: int = Field(default=0, ge=-(10**12), le=10**12, strict=True)
@@ -34,6 +35,7 @@ class Account(BaseModel):
 class AccountUpdate(Account):
     target_balance_cents: int | None = Field(default=None, ge=-(10**12), le=10**12, strict=True)
     expected_balance_cents: int | None = Field(default=None, strict=True)
+    adjustment_id: UUID | None = None
 
 
 class Entry(BaseModel):

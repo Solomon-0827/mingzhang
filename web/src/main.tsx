@@ -44,6 +44,7 @@ import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import "./paper-theme.css";
 import { OrderSettings } from "./order-settings";
+import { applyMutation, enqueueMutation, loadLocalState, loadMutations, replayMutations, storeLocalState, storeMutations, type OfflineMutation } from "./offline-mutations";
 
 type DesktopUpdateState = {
   status: "idle" | "available" | "downloading" | "installing";
@@ -84,99 +85,36 @@ const emptyReport: Report = {
   months: [],
   categories: [],
 };
-const pendingEntryPrefix = "mingzhang.pending-entry.v1.";
-function pendingEntries(): Entry[] {
-  const items: { entry: Entry; queued_at: number }[] = [];
-  for (let index = 0; index < localStorage.length; index += 1) {
-    const key = localStorage.key(index);
-    if (!key?.startsWith(pendingEntryPrefix)) continue;
-    try {
-      const value = JSON.parse(localStorage.getItem(key) || "null");
-      const entry = value?.entry ?? value;
-      if (entry && typeof entry.id === "string" && Number.isSafeInteger(entry.amount_cents))
-        items.push({ entry, queued_at: Number.isFinite(value?.queued_at) ? value.queued_at : 0 });
-    } catch {
-      // A malformed entry stays isolated and cannot hide the rest of the queue.
+function localReport(entries: Entry[], start: string, end: string): Report {
+  const daily: Report["daily"] = [];
+  const byDate = new Map<string, Report["daily"][number]>();
+  for (let time = Date.parse(start + "T00:00:00Z"); time <= Date.parse(end + "T00:00:00Z"); time += 86400000) {
+    const date = new Date(time).toISOString().slice(0, 10);
+    const item = {date, income: 0, expense: 0, cumulative: 0};
+    daily.push(item); byDate.set(date, item);
+  }
+  const categories = new Map<string, number>();
+  for (const entry of entries) {
+    const item = !entry.deleted ? byDate.get(entry.date) : undefined;
+    if (!item) continue;
+    if (entry.kind === "income") item.income += entry.amount_cents;
+    if (["expense", "refund"].includes(entry.kind)) {
+      const amount = entry.amount_cents * (entry.kind === "refund" ? -1 : 1);
+      item.expense += amount;
+      categories.set(entry.category, (categories.get(entry.category) || 0) + amount);
     }
   }
-  items.sort((a, b) => a.queued_at - b.queued_at || a.entry.id.localeCompare(b.entry.id));
-  const pendingIds = new Set(items.map(item => item.entry.id));
-  const emitted = new Set<string>();
-  const visiting = new Set<string>();
-  const entries: Entry[] = [];
-  const emit = (entry: Entry) => {
-    if (emitted.has(entry.id) || visiting.has(entry.id)) return;
-    visiting.add(entry.id);
-    if (entry.reference_id && pendingIds.has(entry.reference_id)) {
-      const parent = items.find(item => item.entry.id === entry.reference_id)?.entry;
-      if (parent && parent.id !== entry.id) emit(parent);
-    }
-    visiting.delete(entry.id);
-    emitted.add(entry.id);
-    entries.push(entry);
-  };
-  for (const item of items) emit(item.entry);
-  return entries;
-}
-function storePendingEntry(entry: Entry) {
-  localStorage.setItem(pendingEntryPrefix + entry.id, JSON.stringify({ entry, queued_at: Date.now() }));
-}
-function removePendingEntry(id: string) {
-  localStorage.removeItem(pendingEntryPrefix + id);
-}
-function entryBalanceChanges(entry: Entry, direction: number) {
-  const changes = new Map<string, number>();
-  if (entry.deleted) return changes;
-  const sign = ["income", "refund", "borrow", "collect", "balance_in"].includes(entry.kind) ? 1 : -1;
-  changes.set(entry.account_id, direction * sign * entry.amount_cents);
-  if (entry.to_account_id && ["transfer", "repay", "collect"].includes(entry.kind)) {
-    const targetSign = entry.kind === "collect" ? -1 : 1;
-    changes.set(entry.to_account_id, direction * targetSign * entry.amount_cents);
+  let cumulative = 0;
+  const months = new Map<string, Report["months"][number]>();
+  for (const item of daily) {
+    cumulative += item.income - item.expense; item.cumulative = cumulative;
+    const month = item.date.slice(0, 7), value = months.get(month) || {month, income: 0, expense: 0};
+    value.income += item.income; value.expense += item.expense; months.set(month, value);
   }
-  return changes;
-}
-function mergeEntry(current: State, saved: Entry): State {
-  const previous = current.entries.find(entry => entry.id === saved.id);
-  const normalized = { ...saved, remaining_cents: previous?.remaining_cents ?? saved.amount_cents };
-  const changes = new Map<string, number>();
-  for (const [id, amount] of previous ? entryBalanceChanges(previous, -1) : []) changes.set(id, amount);
-  for (const [id, amount] of entryBalanceChanges(normalized, 1)) changes.set(id, (changes.get(id) || 0) + amount);
-  let entries = previous
-    ? current.entries.map(entry => entry.id === normalized.id ? normalized : entry)
-    : [normalized, ...current.entries];
-  if (normalized.reference_id) {
-    const difference = normalized.amount_cents - (previous?.amount_cents || 0);
-    entries = entries.map(entry => entry.id === normalized.reference_id
-      ? { ...entry, remaining_cents: Math.max(0, entry.remaining_cents - difference) }
-      : entry);
-  }
-  entries.sort((a, b) => b.date.localeCompare(a.date));
-  return {
-    ...current,
-    entries,
-    accounts: current.accounts.map(account => ({
-      ...account,
-      balance_cents: account.balance_cents + (changes.get(account.id) || 0),
-    })),
-  };
-}
-function removeEntry(current: State, id: string): State {
-  const previous = current.entries.find(entry => entry.id === id);
-  if (!previous) return current;
-  const changes = entryBalanceChanges(previous, -1);
-  const entries = current.entries
-    .filter(entry => entry.id !== id)
-    .map(entry => entry.id === previous.reference_id
-      ? { ...entry, remaining_cents: entry.remaining_cents + previous.amount_cents }
-      : entry);
-  return {
-    ...current,
-    entries,
-    accounts: current.accounts.map(account => ({
-      ...account,
-      balance_cents: account.balance_cents + (changes.get(account.id) || 0),
-    })),
-  };
+  const income = daily.reduce((sum, item) => sum + item.income, 0);
+  const expense = daily.reduce((sum, item) => sum + item.expense, 0);
+  return {income, expense, net: income - expense, daily, months: [...months.values()],
+    categories: [...categories.entries()].sort((a, b) => b[1] - a[1])};
 }
 const newEntry = (account = ""): Entry => ({
   id: crypto.randomUUID(),
@@ -224,6 +162,7 @@ function App() {
     [accountEditor, setAccountEditor] = useState<Account | null>(null);
   const [lastSync, setLastSync] = useState(""),
     [online, setOnline] = useState(navigator.onLine);
+  const [pendingCount, setPendingCount] = useState(() => loadMutations().length);
   const mutationEpoch = useRef(0);
   const backgroundRefresh = useRef<number | null>(null);
   const pendingFlush = useRef(false);
@@ -252,8 +191,9 @@ function App() {
     // A slower full refresh must never overwrite a newer entry that was saved
     // while the request was in flight.
     if (requestedAt !== mutationEpoch.current) return;
-    for (const entry of pendingEntries()) value = mergeEntry(value, entry);
-    setState(value);
+    const local = replayMutations(value);
+    storeLocalState(local);
+    setState(local);
     clearConnectionError();
     setLogged(true);
     setLastSync(
@@ -278,8 +218,15 @@ function App() {
   useEffect(() => {
     refresh()
       .catch((e) => {
-        setLogged(false);
-        if (e.message !== "请重新登录") setError(e.message);
+        const cached = loadLocalState();
+        if (cached && e.message !== "请重新登录") {
+          setState(cached);
+          setLogged(true);
+          setError("当前使用本机账本，恢复联网后会自动同步。");
+        } else {
+          setLogged(false);
+          if (e.message !== "请重新登录") setError(e.message);
+        }
       })
       .finally(() => setChecked(true));
   }, [refresh]);
@@ -315,6 +262,10 @@ function App() {
   }, []);
   useEffect(() => {
     let current = true;
+    if (logged && state && ["overview", "reports"].includes(page) && (pendingCount || !online)) {
+      setReport(localReport(state.entries, range[0], range[1]));
+      return () => { current = false; };
+    }
     if (logged && ["overview", "reports"].includes(page))
       api<Report>(`/report?start=${range[0]}&end=${range[1]}`)
         .then((value) => {
@@ -326,7 +277,7 @@ function App() {
     return () => {
       current = false;
     };
-  }, [logged, range, state, page, setError]);
+  }, [logged, range, state, page, pendingCount, online, setError]);
   const openNew = useCallback(() => {
     if (!state?.accounts.length) {
       setPage("accounts");
@@ -350,91 +301,60 @@ function App() {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [logged, openNew]);
-  async function run(action: () => Promise<unknown>, message = "") {
-    setBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      await action();
-      await refresh();
-      setNotice(message);
-    } catch (e) {
-      setError((e as Error).message);
-      throw e;
-    } finally {
-      setBusy(false);
-    }
-  }
-  const applySavedEntry = useCallback((saved: Entry, reconcile = true) => {
-    mutationEpoch.current += 1;
-    setState(current => current ? mergeEntry(current, saved) : current);
-    if (reconcile) scheduleRefresh();
-  }, [scheduleRefresh]);
-  const flushPendingEntries = useCallback(async () => {
+  const flushPendingMutations = useCallback(async () => {
     if (pendingFlush.current) return;
     pendingFlush.current = true;
+    let blocked = false;
     try {
-      while (pendingEntries().length) {
-        const entry = pendingEntries()[0];
+      while (loadMutations().length) {
+        const mutation = loadMutations()[0];
         try {
-          const saved = await api<Entry>("/entries", entry, "POST");
-          removePendingEntry(entry.id);
-          applySavedEntry(saved);
+          await api(mutation.path, mutation.body, mutation.method, mutation.id);
+          const remaining = loadMutations().filter(item => item.id !== mutation.id);
+          storeMutations(remaining);
+          setPendingCount(remaining.length);
+          clearConnectionError();
         } catch (error) {
           const message = (error as Error).message;
           const retryable = message.includes("无法连接") || message.includes("请求超时") || message.includes("服务暂时不可用");
-          if (!retryable) {
-            removePendingEntry(entry.id);
-            mutationEpoch.current += 1;
-            setState(current => current ? removeEntry(current, entry.id) : current);
-            setEditor(entry);
-            setEditing(false);
-            setError(message);
-          } else {
-            setError("这笔账已暂存在本机，联网后会自动保存。");
-          }
+          blocked = !retryable;
+          setError(retryable ? "修改已保存在本机，联网后会自动同步。" : `有一项本地修改等待处理：${message}`);
           if (pendingRetry.current !== null) window.clearTimeout(pendingRetry.current);
-          pendingRetry.current = window.setTimeout(() => {
-            pendingRetry.current = null;
-            flushPendingEntries();
+          if (retryable) pendingRetry.current = window.setTimeout(() => {
+            pendingRetry.current = null; flushPendingMutations();
           }, 5000);
           break;
         }
       }
+      if (!loadMutations().length) scheduleRefresh();
     } finally {
       pendingFlush.current = false;
+      if (!blocked && loadMutations().length && navigator.onLine && pendingRetry.current === null)
+        window.setTimeout(() => flushPendingMutations(), 0);
     }
-  }, [applySavedEntry, setError]);
+  }, [clearConnectionError, scheduleRefresh, setError]);
   useEffect(() => {
-    if (logged && online) flushPendingEntries();
-  }, [logged, online, flushPendingEntries]);
+    if (logged && online) flushPendingMutations();
+  }, [logged, online, flushPendingMutations]);
   useEffect(() => () => {
     if (pendingRetry.current !== null) window.clearTimeout(pendingRetry.current);
   }, []);
-  function queueEntry(value: Entry) {
-    storePendingEntry(value);
-    applySavedEntry(value, false);
-    void flushPendingEntries();
+  function queueMutation(value: Omit<OfflineMutation, "id" | "createdAt">) {
+    const mutation = enqueueMutation(value);
+    mutationEpoch.current += 1;
+    setState(current => {
+      if (!current) return current;
+      const next = applyMutation(current, mutation);
+      storeLocalState(next);
+      return next;
+    });
+    setPendingCount(loadMutations().length);
+    setError("");
+    void flushPendingMutations();
   }
   async function saveEntry(value: Entry, editing = false) {
-    if (!editing) {
-      queueEntry(value);
-      return;
-    }
-    setBusy(true);
-    setError("");
-    // Invalidate an already running full refresh before the write reaches the
-    // server; its response may otherwise race the mutation response.
-    mutationEpoch.current += 1;
-    try {
-      const saved = await api<Entry>(editing ? `/entries/${value.id}` : "/entries", value, editing ? "PUT" : "POST");
-      applySavedEntry(saved);
-    } catch (e) {
-      setError((e as Error).message);
-      throw e;
-    } finally {
-      setBusy(false);
-    }
+    queueMutation({ type: editing ? "entry.update" : "entry.create", path: editing ? `/entries/${value.id}` : "/entries",
+      method: editing ? "PUT" : "POST", body: value as unknown as Record<string, unknown> });
   }
   const entries =
     page === "entry" || page === "overview"
@@ -633,7 +553,7 @@ function App() {
           )}
           <div className={"sync " + (!online ? "offline" : "")} title={online ? `最近同步 ${lastSync}` : "当前离线"}>
             <i />
-            <span className="nav-text">{online ? `最近同步 ${lastSync}` : "当前离线，恢复联网后再保存"}</span>
+            <span className="nav-text">{online ? (pendingCount ? `${pendingCount} 项等待同步` : `最近同步 ${lastSync}`) : "当前离线，修改会先保存到本机"}</span>
           </div>
           <button aria-label="退出账本" title="退出账本"
             onClick={() => {
@@ -1100,13 +1020,7 @@ function App() {
               setEditing(true);
             }}
             onDelete={(entry) => {
-              run(
-                () =>
-                  api(`/entries/${entry.id}/delete`, {
-                    version: entry.version,
-                  }),
-                "已移入回收站，可随时恢复",
-              ).catch(() => {});
+              queueMutation({type:"entry.delete",path:`/entries/${entry.id}/delete`,method:"POST",body:{version:entry.version}});
             }}
           />
         )}
@@ -1253,13 +1167,7 @@ function App() {
                               {page === "transactions" && trash ? (
                                 <button aria-label="恢复交易" title="恢复交易"
                                   onClick={() =>
-                                    run(
-                                      () =>
-                                        api(`/entries/${x.id}/restore`, {
-                                          version: x.version,
-                                        }),
-                                      "已恢复",
-                                    ).catch(() => {})
+                                    queueMutation({type:"entry.restore",path:`/entries/${x.id}/restore`,method:"POST",body:{version:x.version}})
                                   }
                                 ><RotateCcw size={18} aria-hidden="true" /></button>
                               ) : (
@@ -1287,13 +1195,7 @@ function App() {
                                   <button
                                     aria-label="删除交易" title="删除交易"
                                     onClick={() =>
-                                      run(
-                                        () =>
-                                          api(`/entries/${x.id}/delete`, {
-                                            version: x.version,
-                                          }),
-                                        "已移入回收站，可随时恢复",
-                                      ).catch(() => {})
+                                      queueMutation({type:"entry.delete",path:`/entries/${x.id}/delete`,method:"POST",body:{version:x.version}})
                                     }
                                   >
                                     <Trash2 size={14} />
@@ -1376,13 +1278,16 @@ function App() {
           </>
         )}
         {page === "settings" && state && <OrderSettings state={state} defaults={categories}
-          onCategoryChange={async value => { await run(() => api("/categories", value)); }}
+          onCategoryChange={async value => { queueMutation({type:"category.change",path:"/categories",method:"POST",body:value as unknown as Record<string,unknown>}); }}
           onPasswordChanged={() => { setLogged(false); setState(null); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
           onEditAccount={setAccountEditor}
-          onRenameAccountGroup={async (id,name,expected_name) => {await run(() => api(`/account-groups/${id}`, {name,expected_name}, "PUT"));}}
-          onAccountGroupChange={async (id, value) => { await run(() => api(id ? `/account-groups/${id}/delete` : "/account-groups", value ?? {})); }}
-          onDeleteAccount={async account => { await run(() => api(`/accounts/${account.id}/delete`, {version:account.version})); }}
-          onSave={async value => { await run(() => api("/display-order", value, "PUT")); }} />}
+          onRenameAccountGroup={async (id,name,expected_name) => {queueMutation({type:"account-group.rename",path:`/account-groups/${id}`,method:"PUT",body:{name,expected_name}});}}
+          onAccountGroupChange={async (id, value) => {
+            if (id) queueMutation({type:"account-group.delete",path:`/account-groups/${id}/delete`,method:"POST",body:{}});
+            else { const group={...value!,id:crypto.randomUUID()}; queueMutation({type:"account-group.create",path:"/account-groups",method:"POST",body:group}); }
+          }}
+          onDeleteAccount={async account => { queueMutation({type:"account.delete",path:`/accounts/${account.id}/delete`,method:"POST",body:{version:account.version}}); }}
+          onSave={async value => { queueMutation({type:"order.update",path:"/display-order",method:"PUT",body:value as unknown as Record<string,unknown>}); }} />}
         {page === "data" && state && (
           <DataPage
             state={state}
@@ -1392,7 +1297,7 @@ function App() {
           />
         )}
         <footer>
-          个人账本 · Asia/Shanghai <span>数据以服务端保存结果为准</span>
+          个人账本 · Asia/Shanghai <span>{pendingCount ? `${pendingCount} 项已存本机，等待同步` : "本机与云端已同步"}</span>
           <DesktopDownloads />
         </footer>
       </motion.main>
@@ -1420,13 +1325,14 @@ function App() {
           groups={state?.account_groups ?? []}
           onClose={() => setAccountEditor(null)}
           onSave={async (value) => {
-            await run(() =>
-              api(
-                "/accounts" + (value.id ? "/" + value.id : ""),
-                value,
-                value.id ? "PUT" : "POST",
-              ),
-            );
+            const creating = !value.id;
+            const account = creating ? {...value,id:crypto.randomUUID(),balance_cents:value.opening_cents} : {
+              ...value,
+              ...(value.target_balance_cents !== undefined && value.target_balance_cents !== value.expected_balance_cents
+                ? {adjustment_id: crypto.randomUUID()} : {}),
+            };
+            queueMutation({type:creating?"account.create":"account.update",path:creating?"/accounts":`/accounts/${account.id}`,
+              method:creating?"POST":"PUT",body:account as unknown as Record<string,unknown>});
             setAccountEditor(null);
           }}
         />
