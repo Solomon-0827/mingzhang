@@ -199,6 +199,27 @@ aside {
   display: block;
   font-size: 10px;
 }
+.sidebar-history {
+  display: grid;
+  grid-template-columns: 34px 34px 1fr;
+  align-items: center;
+  gap: 6px;
+  margin: -15px 8px 20px;
+  color: #918e82;
+  font-size: 10px;
+}
+.sidebar-history button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 30px;
+  border-radius: 7px;
+  color: #5c5c51;
+  background: #fffdf7a8;
+  transition: background .15s, transform .15s, opacity .15s;
+}
+.sidebar-history button:hover:not(:disabled) { background:#d9d2c3; transform:translateY(-1px); }
+.sidebar-history button:disabled { opacity:.28; cursor:default; }
 .avatar {
   width: 32px;
   height: 32px;
@@ -2318,6 +2339,8 @@ footer {
   .sidebar-collapsed > main { margin-left: 76px; width: calc(100% - 76px); }
   .sidebar-collapsed .sidebar-toggle { align-self: center; }
   .sidebar-collapsed > aside .brand { margin-bottom: 30px; }
+  .sidebar-collapsed > aside .sidebar-history { grid-template-columns: 24px 24px; gap:2px; margin:-18px 0 17px; }
+  .sidebar-collapsed > aside .sidebar-history button { width:24px; height:28px; }
   .sidebar-collapsed > aside nav { width: 100%; }
   .sidebar-collapsed > aside nav button { justify-content: center; padding: 14px 0; }
   .sidebar-collapsed > aside .sidebar-bottom { align-items: center; padding: 15px 0 0; }
