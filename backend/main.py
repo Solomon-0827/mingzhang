@@ -11,9 +11,9 @@ import time
 from contextlib import asynccontextmanager, closing
 from datetime import date, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, File, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -73,7 +73,23 @@ async def protect(request, call_next):
         return JSONResponse({"detail": "请求来源不匹配"}, status_code=403)
     if request.method not in ["GET", "HEAD", "OPTIONS"] and request.headers.get("sec-fetch-site") == "cross-site":
         return JSONResponse({"detail": "拒绝跨站请求"}, status_code=403)
+    mutation_id = request.headers.get("x-mingzhang-mutation", "")
+    is_mutation = request.url.path.startswith("/api/") and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+    if mutation_id and is_mutation:
+        if len(mutation_id) > 100 or not mutation_id.replace("-", "").isalnum():
+            return JSONResponse({"detail": "同步任务编号无效"}, status_code=400)
+        try:
+            authenticated(request)
+        except HTTPException as error:
+            return JSONResponse({"detail": error.detail}, status_code=error.status_code)
+        with connect() as db:
+            if db.execute("SELECT 1 FROM mutation_receipts WHERE id=?", (mutation_id,)).fetchone():
+                return JSONResponse({"ok": True, "duplicate": True})
     response = await call_next(request)
+    if mutation_id and is_mutation and response.status_code < 400:
+        with connect() as db:
+            db.execute("INSERT OR IGNORE INTO mutation_receipts(id) VALUES (?)", (mutation_id,))
+            db.execute("DELETE FROM mutation_receipts WHERE created_at < datetime('now','-90 days')")
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -219,6 +235,7 @@ def save_display_order(body: DisplayOrder):
 
 
 class AccountGroup(BaseModel):
+    id: UUID | None = None
     name: str = Field(min_length=1, max_length=60)
     kind: str
 
@@ -234,12 +251,16 @@ def create_account_group(body: AccountGroup):
         if existing:
             if not existing["deleted"] or existing["kind"] != body.kind:
                 fail("账户类型名称已存在")
-            gid = existing["id"]
-            db.execute("UPDATE account_groups SET deleted=0 WHERE id=?", (gid,))
+            gid = str(body.id) if body.id else existing["id"]
+            if gid == existing["id"]:
+                db.execute("UPDATE account_groups SET deleted=0 WHERE id=?", (gid,))
+            else:
+                db.execute("DELETE FROM account_groups WHERE id=?", (existing["id"],))
+                db.execute("INSERT INTO account_groups(id,name,kind) VALUES (?,?,?)", (gid, name, body.kind))
         else:
-            gid = str(uuid4())
+            gid = str(body.id or uuid4())
             db.execute("INSERT INTO account_groups(id,name,kind) VALUES (?,?,?)", (gid, name, body.kind))
-        audit(db, "account_group.create", body.model_dump())
+        audit(db, "account_group.create", body.model_dump(mode="json"))
     return {"id": gid}
 
 
@@ -297,7 +318,7 @@ def resolve_account_group(db, body):
 
 @app.post("/api/accounts", dependencies=[Depends(authenticated)])
 def create_account(body: Account):
-    aid = str(uuid4())
+    aid = str(body.id or uuid4())
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         gid = resolve_account_group(db, body)
@@ -308,7 +329,7 @@ def create_account(body: Account):
             )
         except sqlite3.IntegrityError:
             fail("账户名称已存在")
-        audit(db, "account.create", body.model_dump())
+        audit(db, "account.create", body.model_dump(mode="json"))
     return {"id": aid}
 
 
@@ -333,6 +354,7 @@ def update_account(aid: str, body: AccountUpdate):
                 fail("单次余额调整差额过大")
             if difference:
                 save_entry(db, Entry(
+                    id=body.adjustment_id or uuid4(),
                     date=today(), kind="balance_in" if difference > 0 else "balance_out",
                     amount_cents=abs(difference), account_id=aid, memo="账户余额调整",
                 ))
@@ -343,7 +365,7 @@ def update_account(aid: str, body: AccountUpdate):
             )
         except sqlite3.IntegrityError:
             fail("账户名称已存在")
-        audit(db, "account.update", body.model_dump())
+        audit(db, "account.update", body.model_dump(mode="json"))
     return {"ok": True}
 
 

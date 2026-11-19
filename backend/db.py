@@ -48,6 +48,8 @@ def initialize():
           status TEXT NOT NULL DEFAULT 'preview', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, action TEXT NOT NULL, payload TEXT NOT NULL,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS mutation_receipts(
+          id TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
         """)
 
         columns = {r[1] for r in db.execute("PRAGMA table_info(accounts)")}

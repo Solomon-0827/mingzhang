@@ -17,6 +17,7 @@ export type Account = {
   opening_cents: number;
   target_balance_cents?: number;
   expected_balance_cents?: number;
+  adjustment_id?: string;
   balance_cents: number;
   version: number;
 };
@@ -41,7 +42,7 @@ export function ordered(values: string[], order: string[] = []) {
   const ranks = new Map(order.map((v, i) => [v, i]));
   return [...values].sort((a, b) => (ranks.get(a) ?? order.length) - (ranks.get(b) ?? order.length));
 }
-export type CategoryCatalog = { items: Record<string, string[]>; hidden: string[]; version: number };
+export type CategoryCatalog = { items: Record<string, string[]>; hidden: string[]; retired?: string[]; removed_kinds?: Record<string, string[]>; version: number };
 export type CategoryChange = { action: "add" | "rename" | "delete" | "restore"; level: "parent" | "child"; path: string; name?: string; kind?: string; version: number };
 export type AccountGroup = { id: string; name: string; kind: string; deleted?: number };
 export type State = {
@@ -117,13 +118,16 @@ export async function api<T>(
   path: string,
   body?: unknown,
   method?: string,
+  mutationId?: string,
 ): Promise<T> {
   const response = await fetch("/api" + path, {
     method: method || (body === undefined ? "GET" : "POST"),
     credentials: "same-origin",
     signal: AbortSignal.timeout(45000),
-    headers:
-      body instanceof FormData ? {} : { "Content-Type": "application/json" },
+    headers: {
+      ...(body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      ...(mutationId ? { "X-Mingzhang-Mutation": mutationId } : {}),
+    },
     body:
       body === undefined
         ? undefined
