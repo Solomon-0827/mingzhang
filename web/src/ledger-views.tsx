@@ -1,5 +1,5 @@
-import { ChevronLeft, ChevronRight, ListFilter, PencilLine, Plus, Search, Trash2, Wallet, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { CheckSquare, ChevronLeft, ChevronRight, ListChecks, ListFilter, PencilLine, Plus, Search, Trash2, Wallet, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import {
   Account,
   Entry,
@@ -8,6 +8,7 @@ import {
   labels,
   money,
   today,
+  cents,
 } from "./types";
 import { EntryField } from "./entry-field";
 import { StyledSelect, StyledDate, CategoryMultiSelect } from "./controls";
@@ -46,6 +47,7 @@ export function BookList({
   onEdit,
   onDelete,
   onSave,
+  onBulkSave,
 }: {
   state: State;
   month: string;
@@ -53,11 +55,15 @@ export function BookList({
   onEdit: (entry: Entry) => void;
   onDelete: (entry: Entry) => void;
   onSave: (entry: Entry) => Promise<void>;
+  onBulkSave: (entries: Entry[]) => Promise<void>;
 }) {
   const [categories, setCategories] = useState<string[]>([]),
     [account, setAccount] = useState(""),
     [query, setQuery] = useState(""),
     [searchOpen, setSearchOpen] = useState(false),
+    [bulkMode, setBulkMode] = useState(false),
+    [selected, setSelected] = useState<string[]>([]),
+    [bulkOpen, setBulkOpen] = useState(false),
     [page, setPage] = useState(0);
   const searchButton = useRef<HTMLButtonElement>(null);
   const closeSearch = () => {
@@ -84,6 +90,9 @@ export function BookList({
   const currentPage = Math.min(page, pages - 1);
   const shown = filtered.slice(currentPage * 50, (currentPage + 1) * 50);
   const groups = Array.from(new Set(shown.map((entry) => entry.date)));
+  useEffect(() => {
+    setSelected(current => current.filter(id => filtered.some(entry => entry.id === id)));
+  }, [month, categories, account, query, state.entries]);
   const chooseMonth = (next: string) => {
     onMonth(next);
     setPage(0);
@@ -166,8 +175,30 @@ export function BookList({
               </button>
             </div>
           )}
+          <button
+            title={bulkMode ? "退出批量修改" : "批量修改"}
+            className="book-search-toggle"
+            aria-label={bulkMode ? "退出批量修改" : "批量修改账目"}
+            aria-pressed={bulkMode}
+            onClick={() => {
+              setBulkMode(value => !value);
+              setSelected([]);
+              setBulkOpen(false);
+            }}
+          ><ListChecks size={18} aria-hidden="true" /></button>
         </div>
       </div>
+      {bulkMode && (
+        <div className="book-bulk-bar">
+          <button className="text-button" onClick={() => setSelected(selected.length === filtered.length ? [] : filtered.map(entry => entry.id))}>
+            <CheckSquare size={17} aria-hidden="true" />{selected.length === filtered.length && filtered.length ? "取消全选" : "全选当前筛选"}
+          </button>
+          <span>已选 {selected.length} 笔</span>
+          <button className="primary" disabled={!selected.length} onClick={() => setBulkOpen(true)}>
+            <PencilLine size={16} aria-hidden="true" />修改所选
+          </button>
+        </div>
+      )}
       <div className="book-body">
         <div className="month-rail" aria-label="月份导航">
           <div className="year-switch">
@@ -211,9 +242,10 @@ export function BookList({
           })}
         </div>
         <div className="book-entries table-wrap">
-          <table>
+          <table className={bulkMode ? "bulk-mode" : ""}>
             <thead>
               <tr>
+                {bulkMode && <th className="book-select-column"><span className="sr-only">选择</span></th>}
                 <th>分类</th>
                 <th>类型</th>
                 <th className="numeric">金额</th>
@@ -225,7 +257,7 @@ export function BookList({
             {groups.map((date) => (
               <tbody key={date}>
                 <tr className="book-day">
-                  <td colSpan={6}>
+                  <td colSpan={bulkMode ? 7 : 6}>
                     <div>
                       <strong>
                         {date.slice(8)}{" "}
@@ -246,18 +278,27 @@ export function BookList({
                   .map((entry) => (
                     <tr
                       key={entry.id}
-                      className="editable-entry-row"
+                      className={`editable-entry-row ${selected.includes(entry.id) ? "selected" : ""}`}
                       tabIndex={0}
                       aria-label={`编辑 ${entry.date} ${entry.category || labels[entry.kind]} ${money(entry.amount_cents)}`}
-                      onClick={() => onEdit(entry)}
+                      onClick={() => bulkMode
+                        ? setSelected(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])
+                        : onEdit(entry)}
                       onKeyDown={(event) => {
                         if (
                           event.target === event.currentTarget &&
                           event.key === "Enter"
                         )
-                          onEdit(entry);
+                          bulkMode
+                            ? setSelected(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])
+                            : onEdit(entry);
                       }}
                     >
+                      {bulkMode && <td className="book-select-column" onClick={event => event.stopPropagation()}>
+                        <input type="checkbox" aria-label={`选择 ${entry.date} ${entry.category || labels[entry.kind]}`}
+                          checked={selected.includes(entry.id)}
+                          onChange={() => setSelected(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])} />
+                      </td>}
                       <td>
                         <EntryField
                           entry={entry}
@@ -347,14 +388,15 @@ export function BookList({
                           {entry.date}
                         </EntryField>
                       </td>
-                      <td>
+                      {!bulkMode && <td>
                         <div
                           className="row-actions"
                           onClick={(event) => event.stopPropagation()}
                         >
                           <button aria-label="删除账目" title="删除账目" onClick={() => onDelete(entry)}><Trash2 size={18} aria-hidden="true" /></button>
                         </div>
-                      </td>
+                      </td>}
+                      {bulkMode && <td />}
                     </tr>
                   ))}
               </tbody>
@@ -379,8 +421,74 @@ export function BookList({
 
         </div>
       </div>
+      {bulkOpen && (
+        <BulkEntryDialog
+          entries={state.entries.filter(entry => selected.includes(entry.id))}
+          state={state}
+          onClose={() => setBulkOpen(false)}
+          onSave={async entries => {
+            await onBulkSave(entries);
+            setBulkOpen(false);
+            setBulkMode(false);
+            setSelected([]);
+          }}
+        />
+      )}
     </section>
   );
+}
+
+function BulkEntryDialog({entries,state,onClose,onSave}:{entries:Entry[];state:State;onClose:()=>void;onSave:(entries:Entry[])=>Promise<void>}) {
+  const [fields,setFields]=useState({category:false,amount:false,account:false,date:false});
+  const [category,setCategory]=useState("");
+  const [amount,setAmount]=useState("");
+  const [account,setAccount]=useState("");
+  const [date,setDate]=useState(today());
+  const [busy,setBusy]=useState(false), [error,setError]=useState("");
+  const categoryOptions=Array.from(new Set([
+    ...Object.keys(state.category_catalog?.items || {}),
+    ...state.entries.map(entry=>entry.category),
+  ])).filter(Boolean);
+  const enabled=fields.category || fields.amount || fields.account || fields.date;
+  const submit=async()=>{
+    if(!enabled)return;
+    if(fields.category && !category){setError("请选择分类");return;}
+    if(fields.account && !account){setError("请选择账户");return;}
+    const invalid=fields.account && entries.some(entry=>entry.to_account_id===account && ["transfer","repay","collect"].includes(entry.kind));
+    if(invalid){setError("所选账户与部分账目的对方账户相同，请换一个账户");return;}
+    let amountCents:number|undefined;
+    try { if(fields.amount) amountCents=cents(amount); } catch(reason){setError((reason as Error).message);return;}
+    if(fields.amount && (!amountCents || amountCents <= 0)){setError("金额必须大于 0");return;}
+    setBusy(true);setError("");
+    try { await onSave(entries.map(entry=>({...entry,
+      ...(fields.category?{category}:{}),
+      ...(fields.amount?{amount_cents:amountCents}:{}),
+      ...(fields.account?{account_id:account}:{}),
+      ...(fields.date?{date}:{}),
+    }))); } catch(reason){setError((reason as Error).message);} finally{setBusy(false);}
+  };
+  return <div className="modal-backdrop" onClick={event=>{if(event.target===event.currentTarget&&!busy)onClose();}}>
+    <section className="modal bulk-entry-dialog" role="dialog" aria-modal="true" aria-label="批量修改账目" onKeyDown={event=>{if(event.key==="Escape"&&!busy)onClose();}}>
+      <div className="modal-head"><div><h2>批量修改账目</h2><small>已选择 {entries.length} 笔，只修改勾选的字段</small></div>
+        <button className="icon-button" aria-label="关闭批量修改" onClick={onClose} disabled={busy}><X size={20}/></button></div>
+      <form onSubmit={event=>{event.preventDefault();void submit();}}>
+        <label className="bulk-field"><input type="checkbox" checked={fields.category} onChange={event=>setFields({...fields,category:event.target.checked})}/><span>分类</span>
+          <StyledSelect aria-label="批量修改分类" value={category} disabled={!fields.category||busy} onChange={event=>setCategory(event.target.value)}>
+            <option value="">请选择分类</option>{categoryOptions.map(value=><option key={value} value={value}>{value}</option>)}
+          </StyledSelect></label>
+        <label className="bulk-field"><input type="checkbox" checked={fields.amount} onChange={event=>setFields({...fields,amount:event.target.checked})}/><span>金额</span>
+          <input aria-label="批量修改金额" inputMode="decimal" placeholder="元" value={amount} disabled={!fields.amount||busy} onChange={event=>setAmount(event.target.value)}/></label>
+        <label className="bulk-field"><input type="checkbox" checked={fields.account} onChange={event=>setFields({...fields,account:event.target.checked})}/><span>账户</span>
+          <StyledSelect aria-label="批量修改账户" value={account} disabled={!fields.account||busy} onChange={event=>setAccount(event.target.value)}>
+            <option value="">请选择账户</option>{state.accounts.map(value=><option key={value.id} value={value.id}>{value.name}</option>)}
+          </StyledSelect></label>
+        <label className="bulk-field"><input type="checkbox" checked={fields.date} onChange={event=>setFields({...fields,date:event.target.checked})}/><span>日期</span>
+          <StyledDate aria-label="批量修改日期" type="date" value={date} max={today()} disabled={!fields.date||busy} onChange={event=>setDate(event.target.value)}/></label>
+        {error&&<p className="error" role="alert">{error}</p>}
+        <div className="modal-footer"><small>保存后会先写入本机，再在后台同步</small><button className="primary" disabled={!enabled||busy}>{busy?"正在保存…":"应用修改"}</button></div>
+      </form>
+    </section>
+  </div>;
 }
 
 export function AccountWorkspace({
