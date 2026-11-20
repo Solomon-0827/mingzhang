@@ -23,7 +23,7 @@ export function loadLocalState(): State | null {
     const state = value?.state ?? value;
     if (!state?.accounts || !state?.entries || !state?.account_groups) return null;
     const applied = new Set<string>(Array.isArray(value?.applied) ? value.applied : []);
-    return loadMutations().filter(item => !applied.has(item.id)).reduce(applyMutation, state as State);
+    return applyMutations(state as State, loadMutations().filter(item => !applied.has(item.id)));
   } catch {
     return null;
   }
@@ -70,6 +70,17 @@ export function enqueueMutation(item: Omit<OfflineMutation, "id" | "createdAt">)
   const mutation = { ...item, id: crypto.randomUUID(), createdAt: Date.now() };
   storeMutations([...loadMutations(), mutation]);
   return mutation;
+}
+
+export function enqueueMutations(items: Omit<OfflineMutation, "id" | "createdAt">[]): OfflineMutation[] {
+  const createdAt = Date.now();
+  const mutations = items.map((item, index) => ({
+    ...item,
+    id: crypto.randomUUID(),
+    createdAt: createdAt + index,
+  }));
+  if (mutations.length) storeMutations([...loadMutations(), ...mutations]);
+  return mutations;
 }
 
 function entryDelta(entry: Entry, direction: number, changes: Map<string, number>) {
@@ -208,6 +219,23 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
   return state;
 }
 
-export function replayMutations(state: State, mutations = loadMutations()) {
+export function applyMutations(state: State, mutations: OfflineMutation[]): State {
+  if (!mutations.length) return state;
+  if (mutations.every(mutation => mutation.type === "entry.update")) {
+    const updates = new Map(mutations.map(mutation => {
+      const entry = mutation.body as unknown as Entry;
+      return [entry.id, entry] as const;
+    }));
+    const entries = state.entries.map(item => {
+      const entry = updates.get(item.id);
+      return entry ? { ...entry, version: entry.version + 1 } : item;
+    });
+    entries.sort((a, b) => b.date.localeCompare(a.date));
+    return rebuild({ ...state, entries });
+  }
   return mutations.reduce(applyMutation, state);
+}
+
+export function replayMutations(state: State, mutations = loadMutations()) {
+  return applyMutations(state, mutations);
 }

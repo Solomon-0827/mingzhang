@@ -44,7 +44,7 @@ import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import "./paper-theme.css";
 import { OrderSettings } from "./order-settings";
-import { applyMutation, enqueueMutation, loadLocalState, loadMutations, replayMutations, storeLocalState, storeMutations, type OfflineMutation } from "./offline-mutations";
+import { applyMutation, applyMutations, enqueueMutation, enqueueMutations, loadLocalState, loadMutations, replayMutations, storeLocalState, storeMutations, type OfflineMutation } from "./offline-mutations";
 
 type DesktopUpdateState = {
   status: "idle" | "available" | "downloading" | "installing";
@@ -431,6 +431,20 @@ function App() {
     setState(current => {
       if (!current) return current;
       const next = applyMutation(current, mutation);
+      storeLocalState(next);
+      return next;
+    });
+    setPendingCount(loadMutations().length);
+    setError("");
+    void flushPendingMutations();
+  }
+  function queueMutations(values: Omit<OfflineMutation, "id" | "createdAt">[]) {
+    const mutations = enqueueMutations(values);
+    if (!mutations.length) return;
+    mutationEpoch.current += mutations.length;
+    setState(current => {
+      if (!current) return current;
+      const next = applyMutations(current, mutations);
       storeLocalState(next);
       return next;
     });
@@ -1106,7 +1120,12 @@ function App() {
               await saveEntry(entry, true);
             }}
             onBulkSave={async entries => {
-              for (const entry of entries) await saveEntry(entry, true);
+              queueMutations(entries.map(entry => ({
+                type: "entry.update" as const,
+                path: `/entries/${entry.id}`,
+                method: "PUT" as const,
+                body: entry as unknown as Record<string, unknown>,
+              })));
             }}
             onEdit={(entry) => {
               setEditor({ ...entry });
