@@ -3,6 +3,8 @@ from uuid import uuid4
 
 import pytest
 
+from backend import main
+from backend.categories import CategoryChange, change_category
 from backend.db import connect
 
 
@@ -102,6 +104,39 @@ def test_mutation_receipt_requires_login(client):
         headers={"X-Mingzhang-Mutation": str(uuid4())},
     )
     assert response.status_code == 401
+
+
+def test_sync_snapshot_reads_only_receipts_already_reflected_in_its_ledger(client, monkeypatch):
+    version = client.get("/api/state").json()["category_catalog"]["version"]
+    committed, concurrent, missing = [str(uuid4()) for _ in range(3)]
+    body = {"action": "add", "path": "已提交分类", "level": "parent", "kind": "expense", "version": version}
+    assert client.post("/api/categories", json=body, headers={"X-Mingzhang-Mutation": committed}).status_code == 200
+
+    original_snapshot = main.snapshot
+
+    def interleave(db):
+        ledger = original_snapshot(db)
+        with connect() as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            change_category(writer, CategoryChange(**{**body, "path": "稍后提交分类", "version": version + 1}))
+            writer.execute("INSERT INTO mutation_receipts(id) VALUES (?)", (concurrent,))
+        return ledger
+
+    request = {"mutation_ids": [committed, concurrent, missing]}
+    with monkeypatch.context() as patch:
+        patch.setattr(main, "snapshot", interleave)
+        response = client.post("/api/sync-state", json=request)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["committed"] == [committed]
+    assert result["snapshot"]["category_catalog"]["version"] == version + 1
+    assert "稍后提交分类" not in result["snapshot"]["category_catalog"]["items"]
+
+    result = client.post("/api/sync-state", json=request).json()
+    assert set(result["committed"]) == {committed, concurrent}
+    assert result["snapshot"]["category_catalog"]["version"] == version + 2
+    client.post("/api/logout")
+    assert client.post("/api/sync-state", json=request).status_code == 401
 
 
 def test_balance_adjustment_uses_client_entry_id(client):

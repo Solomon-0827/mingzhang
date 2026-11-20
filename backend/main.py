@@ -194,11 +194,32 @@ def health():
 @app.get("/api/state", dependencies=[Depends(authenticated)])
 def state():
     with connect() as db:
-        result = snapshot(db)
-        result["demo"] = bool(db.execute("SELECT 1 FROM settings WHERE key='demo'").fetchone())
+        return ledger_state(db)
+
+
+def ledger_state(db):
+    result = snapshot(db)
+    result["demo"] = bool(db.execute("SELECT 1 FROM settings WHERE key='demo'").fetchone())
     result["server_time"] = datetime.now().isoformat()
     result["backup_date"] = max((p.name for p in BACKUP_DIR.glob("ledger-*.sqlite3")), default=None)
     return result
+
+
+class SyncStateRequest(BaseModel):
+    mutation_ids: list[str]
+
+
+@app.post("/api/sync-state", dependencies=[Depends(authenticated)])
+def sync_state(body: SyncStateRequest):
+    with connect() as db:
+        # Read the ledger and receipts from the same SQLite snapshot.
+        db.execute("BEGIN")
+        result = ledger_state(db)
+        committed = [row[0] for row in db.execute(
+            "SELECT id FROM mutation_receipts WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps(body.mutation_ids),),
+        )]
+    return {"snapshot": result, "committed": committed}
 
 
 @app.post("/api/categories", dependencies=[Depends(authenticated)])

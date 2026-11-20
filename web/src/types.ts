@@ -117,10 +117,18 @@ export function cents(value: string) {
 export type RequestFailure = "network" | "timeout" | "unavailable" | "unauthorized" | "rejected";
 
 export class RequestError extends Error {
-  constructor(readonly kind: RequestFailure, message: string, readonly status?: number) {
+  constructor(readonly kind: RequestFailure, message: string, readonly status?: number, readonly retryAfterMs?: number) {
     super(message);
     this.name = "RequestError";
   }
+}
+
+function retryAfter(header: string | null) {
+  if (!header?.trim()) return undefined;
+  const value = header.trim();
+  const delay = /^\d+$/.test(value) ? Number(value) * 1000 :
+    /[a-z]{3}/i.test(value) ? Date.parse(value) - Date.now() : NaN;
+  return Number.isFinite(delay) ? Math.max(0, delay) : undefined;
 }
 
 export function isUnauthorized(error: unknown) {
@@ -159,6 +167,9 @@ export async function api<T>(
       throw new RequestError("unauthorized", "请重新登录", response.status);
     const detail = await response.json().then(value => value?.detail).catch(() => undefined);
     const status = response.status;
+    if (status === 408 || status === 429)
+      throw new RequestError(status === 408 ? "timeout" : "unavailable",
+        typeof detail === "string" ? detail : "服务暂时不可用", status, retryAfter(response.headers.get("Retry-After")));
     if (status < 400 || status >= 500)
       throw new RequestError("unavailable", typeof detail === "string" ? detail : "服务暂时不可用", status);
     const message = typeof detail === "string" ? detail

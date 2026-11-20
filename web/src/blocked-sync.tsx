@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { applyMutation } from "./offline-mutations";
+import { applyMutation, type OfflineMutation } from "./offline-mutations";
 import type { BlockedMutation } from "./sync-queue";
 import { ordered, labels, money, type Entry, type State } from "./types";
 
@@ -41,6 +41,22 @@ export function entryRecoveryChange(initial: Entry, editing: boolean, value: Ent
   return editing
     ? { type: "entry.update", path: `/entries/${initial.id}`, method: "PUT", body } as const
     : { type: "entry.create", path: "/entries", method: "POST", body } as const;
+}
+
+export function canRebase(item: OfflineMutation) {
+  return item.type === "category.change" || item.type === "order.update" ||
+    item.type === "account.update" || item.type === "account.delete";
+}
+
+export function rebaseChange(item: OfflineMutation, snapshot: State) {
+  const { type, path, method, body } = item;
+  const account = snapshot.accounts.find(account => account.id === path.split("/")[2]);
+  const version = type === "category.change" ? snapshot.category_catalog?.version :
+    type === "order.update" ? snapshot.ordering?.version ?? 0 : account?.version;
+  if (version === undefined) throw new Error("服务器上已找不到这条修改对应的数据。");
+  const balance = type === "account.update" && body.target_balance_cents !== undefined
+    ? { expected_balance_cents: account!.balance_cents, opening_cents: account!.opening_cents } : {};
+  return { type, path, method, body: { ...body, ...balance, version } };
 }
 
 function entryFieldValue(key: EntryField, entry: Entry, accounts: State["accounts"], entries: Entry[]) {
@@ -86,7 +102,7 @@ export function EntryRecoveryComparison({ current, queued, value, accounts, entr
   );
 }
 
-function describeOrder(item: BlockedMutation, state: State | null, field: (label: string, value: string) => void) {
+function describeOrder(item: OfflineMutation, state: State | null, field: (label: string, value: string) => void) {
   const next = state ? applyMutation(state, item) : null;
   const quote = (value: string) => `「${value}」`;
   const list = (values: string[]) => values.map(quote).join("、") || "无";
@@ -118,7 +134,7 @@ function describeOrder(item: BlockedMutation, state: State | null, field: (label
   }
 }
 
-export function describeBlocked(item: BlockedMutation, state: State | null) {
+export function describeBlocked(item: OfflineMutation, state: State | null) {
   const fields: [string, string][] = [];
   const field = (label: string, value: unknown) => fields.push([label, String(value || "—")]);
   const amount = (value: unknown) => typeof value === "number" ? `¥${money(value)}` : undefined;
@@ -170,12 +186,13 @@ export function describeBlocked(item: BlockedMutation, state: State | null) {
   return { title, fields };
 }
 
-export function BlockedSyncDetails({ item, state, waiting, onRetry, onEdit, onDiscard }: {
+export function BlockedSyncDetails({ item, state, waiting, onRetry, onEdit, onRebase, onDiscard }: {
   item: BlockedMutation;
   state: State | null;
   waiting: number;
   onRetry: () => Promise<void>;
   onEdit: () => Promise<void>;
+  onRebase: () => Promise<void>;
   onDiscard: () => Promise<void>;
 }) {
   const { title, fields } = describeBlocked(item, state);
@@ -205,6 +222,10 @@ export function BlockedSyncDetails({ item, state, waiting, onRetry, onEdit, onDi
         <button type="button" className="primary" autoFocus disabled={busy} onClick={() => void run(onRetry)}>重新同步</button>
         {(item.type === "entry.create" || item.type === "entry.update") &&
           <button type="button" className="secondary" disabled={busy} onClick={() => void run(onEdit)}>修改后重新同步</button>}
+        {canRebase(item) && <button type="button" className="secondary" disabled={busy} onClick={() => {
+          if (window.confirm(`确定基于最新数据重新同步「${title}」？这会将排队的修改应用到服务器的最新数据上。`))
+            void run(onRebase);
+        }}>基于最新数据重新同步</button>}
         <button type="button" className="secondary" disabled={busy} onClick={() => void run(async () => {
           const text = [title, ...fields.map(([label, value]) => `${label}：${value}`),
             `拒绝原因：${reason}`, `拒绝时间：${rejectedAt}`, "", "原始 JSON", JSON.stringify(item, null, 2)].join("\n");

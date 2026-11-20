@@ -46,14 +46,14 @@ import "./style.css";
 import "./paper-theme.css";
 import { OrderSettings } from "./order-settings";
 import type { OfflineMutation } from "./offline-mutations";
-import { createQueueLock, createSyncQueue, isQueueStorageKey, type BlockedMutation, type QueueAction } from "./sync-queue";
-import { BlockedSyncDetails, EntryRecoveryComparison, entryRecoveryChange, prepareEntryRecovery } from "./blocked-sync";
+import { createQueueLock, createSyncQueue, isQueueStorageKey, type BlockedMutation, type QueueAction, type SyncSnapshot } from "./sync-queue";
+import { BlockedSyncDetails, EntryRecoveryComparison, describeBlocked, entryRecoveryChange, prepareEntryRecovery, rebaseChange } from "./blocked-sync";
 
 const syncQueue = createSyncQueue({
   storage: localStorage,
   lock: createQueueLock(navigator.locks),
   send: item => api(item.path, item.body, item.method, item.id),
-  fetchSnapshot: () => api<State>("/state"),
+  fetchSnapshot: mutation_ids => api<SyncSnapshot>("/sync-state", { mutation_ids }),
 });
 
 type DesktopUpdateState = {
@@ -190,12 +190,21 @@ function App() {
   const [lastSync, setLastSync] = useState(""),
     [online, setOnline] = useState(navigator.onLine);
   const [queueView, setQueueView] = useState(syncQueue.view);
-  const { count: pendingCount, blocked, beforeBlocked, storageError } = queueView;
+  const { count: pendingCount, blocked, beforeBlocked, storageError, memoryCount } = queueView;
   const [showBlocked, setShowBlocked] = useState(false);
   const [blockedEditor, setBlockedEditor] = useState<{ target: BlockedMutation } & ReturnType<typeof prepareEntryRecovery> | null>(null);
   const [startupBlocked] = useState(() => blocked);
   const startupAttempted = useRef(false);
-  useEffect(() => { if (!blocked) setShowBlocked(false); }, [blocked?.id]);
+  useEffect(() => { if (!pendingCount) setShowBlocked(false); }, [pendingCount]);
+  useEffect(() => {
+    if (!memoryCount) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = true;
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [memoryCount]);
   const backgroundRefresh = useRef<number | null>(null);
   const pendingFlush = useRef(0);
   const pendingRetry = useRef<number | null>(null);
@@ -343,26 +352,33 @@ function App() {
     if (!logged) return;
     const timer = setInterval(() => refresh().catch((e) => setError(e.message)), 30000);
     const focus = () => refresh().catch((e) => setError(e.message));
-    const storage = (event: StorageEvent) => {
-      if (event.storageArea === localStorage && isQueueStorageKey(event.key)) readQueue();
-    };
     window.addEventListener("focus", focus);
-    window.addEventListener("storage", storage);
     return () => {
       clearInterval(timer);
       window.removeEventListener("focus", focus);
-      window.removeEventListener("storage", storage);
     };
-  }, [logged, refresh, readQueue, setError]);
+  }, [logged, refresh, setError]);
   useEffect(() => {
-    const fn = () => setOnline(navigator.onLine);
-    window.addEventListener("online", fn);
-    window.addEventListener("offline", fn);
-    return () => {
-      window.removeEventListener("online", fn);
-      window.removeEventListener("offline", fn);
+    const storage = (event: StorageEvent) => {
+      if (event.storageArea === localStorage && isQueueStorageKey(event.key)) readQueue();
     };
-  }, []);
+    window.addEventListener("storage", storage);
+    return () => window.removeEventListener("storage", storage);
+  }, [readQueue]);
+  useEffect(() => {
+    const reconnect = () => {
+      readQueue();
+      setOnline(true);
+      refresh().catch(e => setError(e.message));
+    };
+    const disconnect = () => setOnline(false);
+    window.addEventListener("online", reconnect);
+    window.addEventListener("offline", disconnect);
+    return () => {
+      window.removeEventListener("online", reconnect);
+      window.removeEventListener("offline", disconnect);
+    };
+  }, [readQueue, refresh, setError]);
   useEffect(() => {
     const updater = window.mingzhangUpdate;
     if (!updater) return;
@@ -423,17 +439,21 @@ function App() {
     try {
       const result = await syncQueue.flush(action, readQueue).finally(readQueue);
       checkTail = result === "idle" || result === "synced" || result === "changed";
+      if (result === "in-flight") throw new Error("另一窗口正在同步这条修改，请等本次同步结束。");
       if (result === "changed" && action && !startup) throw new Error("这条修改已在其他窗口处理，请查看当前待处理内容。");
-      if (result === "retryable") {
+      if (result === "retryable" || typeof result === "object") {
         const needsManualRetry = Boolean(syncQueue.blocked());
-        setError(needsManualRetry ? "暂时无法同步，修改仍在本机，请稍后重试。" : "修改已保存在本机，联网后会自动同步。");
-        if (!needsManualRetry) {
+        const wait = typeof result === "object" ? result : null;
+        if (wait?.wait !== "sending")
+          setError(needsManualRetry ? "暂时无法同步，修改仍在本机，请稍后重试。" : "暂时无法同步，稍后会自动重试。");
+        if (!needsManualRetry || (wait?.wait === "retry" && action?.kind === "retry")) {
           cancelPendingRetry();
+          const delay = wait ? Math.max(0, wait.until - Date.now()) : retryDelay.current;
           pendingRetry.current = window.setTimeout(() => {
             pendingRetry.current = null;
-            void flush().catch(e => setError(e.message));
-          }, retryDelay.current);
-          retryDelay.current = Math.min(retryDelay.current * 2, 60000);
+            void flush(needsManualRetry ? action : undefined).catch(e => setError(e.message));
+          }, Math.min(delay, 2_147_483_647));
+          if (!wait) retryDelay.current = Math.min(retryDelay.current * 2, 60000);
         }
       } else {
         retryDelay.current = 5000;
@@ -443,7 +463,7 @@ function App() {
       }
     } finally {
       pendingFlush.current -= 1;
-      if (checkTail && navigator.onLine && syncQueue.hasReadyHead())
+      if (checkTail && navigator.onLine && syncQueue.hasReadyHead(false))
         void flush().catch(e => setError(e.message));
     }
   }, [readQueue, cancelPendingRetry, requireLogin, clearConnectionError, scheduleRefresh, setError]);
@@ -477,6 +497,10 @@ function App() {
   async function openBlockedEditor(target: BlockedMutation) {
     const snapshot = await refresh();
     setBlockedEditor({ target, ...prepareEntryRecovery(target, snapshot, newEntry()) });
+  }
+  async function rebaseBlocked(target: BlockedMutation) {
+    const snapshot = await refresh();
+    await flushPendingMutations({ kind: "edit", target, change: rebaseChange(target, snapshot) });
   }
   async function retryQueueStorage() {
     try {
@@ -549,7 +573,25 @@ function App() {
       .filter(account => (account.group_id || account.kind) === group.id)
       .reduce((sum, account) => sum + account.balance_cents, 0),
   })).filter(group => (state?.accounts || []).some(account => (account.group_id || account.kind) === group.id)), [state?.account_groups, state?.accounts]);
-  if (!checked)
+  const queueNotice = blocked ? "有 1 项修改未能同步，点此处理" : `${pendingCount} 项等待同步，点此查看`;
+  const storageNotice = storageError && <div className="queue-storage-notice" role="alert">
+    <span>{memoryCount ? `${memoryCount} 项修改只保留在此页面，请勿关闭或刷新。` : "未能保存同步状态，请释放本机空间。"}</span>
+    <button type="button" className="secondary" onClick={() => void retryQueueStorage()}>重试本机保存</button>
+  </div>;
+  const queuePanel = showBlocked && pendingCount > 0 && !blockedEditor && (
+    <Modal title={blocked ? "处理未同步的修改" : "等待同步的修改"} onClose={() => setShowBlocked(false)}>
+      {blocked ? <BlockedSyncDetails key={blocked.id} item={blocked} state={beforeBlocked} waiting={pendingCount - 1}
+        onRetry={() => flushPendingMutations({ kind: "retry", target: blocked })}
+        onEdit={() => openBlockedEditor(blocked)}
+        onRebase={() => rebaseBlocked(blocked)}
+        onDiscard={() => flushPendingMutations({ kind: "discard", target: blocked })} />
+        : <div className="blocked-sync-details">
+          <ol>{queueView.items.map(item => <li key={item.id}>{describeBlocked(item, null).title}</li>)}</ol>
+          <p>{logged ? "恢复联网后会按保存顺序自动同步。" : "连接账本后会按保存顺序自动同步。"}</p>
+        </div>}
+    </Modal>
+  );
+  if (!checked && !pendingCount)
     return (
       <div className="loading">
         <BookOpen size={32} />
@@ -613,8 +655,11 @@ function App() {
           {toast}
           <button aria-label={busy ? "正在登录…" : "打开我的账本"} title={busy ? "正在登录…" : "打开我的账本"} className="primary" disabled={busy}><LogIn size={18} aria-hidden="true" /></button>
           <small>网页版、Mac 与 Windows 客户端使用同一个账本密码。</small>
+          {pendingCount > 0 && <button type="button" className="secondary sync-blocked" onClick={() => setShowBlocked(true)}>{queueNotice}</button>}
           <DesktopDownloads />
         </form>
+        {storageNotice}
+        {queuePanel}
       </div>
     );
   return (
@@ -690,17 +735,17 @@ function App() {
               <span className="nav-text">{desktopUpdate.status === "available" ? `更新到 ${desktopUpdate.release?.version}` : "正在更新…"}</span>
             </button>
           )}
-          {blocked ? (
-            <button type="button" className="sync-blocked" aria-label="有 1 项修改未能同步，点此处理"
-              title="有 1 项修改未能同步，点此处理" onClick={() => setShowBlocked(true)}>
+          {pendingCount > 0 ? (
+            <button type="button" className="sync-blocked" aria-label={queueNotice}
+              title={queueNotice} onClick={() => setShowBlocked(true)}>
               <CircleAlert size={18} aria-hidden="true" />
-              <span className="nav-text">有 1 项修改未能同步，点此处理</span>
-              <span className="sync-blocked-short" aria-hidden="true">待处理</span>
+              <span className="nav-text">{queueNotice}</span>
+              <span className="sync-blocked-short" aria-hidden="true">{blocked ? "待处理" : "待同步"}</span>
             </button>
           ) : (
             <div className={"sync " + (!online ? "offline" : "")} title={online ? `最近同步 ${lastSync}` : "当前离线"}>
               <i />
-              <span className="nav-text">{online ? (pendingCount ? `${pendingCount} 项等待同步` : `最近同步 ${lastSync}`) : "当前离线，修改会先保存到本机"}</span>
+              <span className="nav-text">{online ? `最近同步 ${lastSync}` : "当前离线，修改会先保存到本机"}</span>
             </div>
           )}
           <button aria-label="退出账本" title="退出账本"
@@ -715,13 +760,10 @@ function App() {
           <small>明账 v0.1 · 让每一笔都有来处</small>
         </div>
       </aside>
-      {blocked && <button type="button" className="sync-blocked-mobile" onClick={() => setShowBlocked(true)}>
-        有 1 项修改未能同步，点此处理
+      {pendingCount > 0 && <button type="button" className="sync-blocked-mobile" onClick={() => setShowBlocked(true)}>
+        {queueNotice}
       </button>}
-      {storageError && <div className="queue-storage-notice" role="alert">
-        <span>本机存储写入失败。请保留此窗口，释放空间后重试。</span>
-        <button type="button" className="secondary" onClick={() => void retryQueueStorage()}>重试本机保存</button>
-      </div>}
+      {storageNotice}
       <motion.main key={page} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.22 }} className={page === "entry" ? "entry-workspace" : undefined}>
         {(page !== "entry" || !state?.accounts.length) && <header>
           <div>
@@ -1454,14 +1496,7 @@ function App() {
           <DesktopDownloads />
         </footer>
       </motion.main>
-      {showBlocked && blocked && !blockedEditor && (
-        <Modal title="处理未同步的修改" onClose={() => setShowBlocked(false)}>
-          <BlockedSyncDetails key={blocked.id} item={blocked} state={beforeBlocked} waiting={pendingCount - 1}
-            onRetry={() => flushPendingMutations({ kind: "retry", target: blocked })}
-            onEdit={() => openBlockedEditor(blocked)}
-            onDiscard={() => flushPendingMutations({ kind: "discard", target: blocked })} />
-        </Modal>
-      )}
+      {queuePanel}
       {blockedEditor && state && (
         <EntryDialog
           key={blockedEditor.target.id}
