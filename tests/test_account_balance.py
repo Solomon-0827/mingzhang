@@ -1,3 +1,8 @@
+import csv
+import io
+from typing import get_args
+
+from backend import ledger
 from tests.test_ledger import account, entry, report
 
 
@@ -27,6 +32,18 @@ def test_set_balance_preserves_opening_and_reports(client):
     count = len(client.get("/api/state").json()["entries"])
     assert adjust(client, state_account(client), 0).status_code == 200
     assert len(client.get("/api/state").json()["entries"]) == count
+
+
+def test_csv_export_labels_balance_adjustments(client):
+    account(client)
+    assert adjust(client, state_account(client), 150000).status_code == 200
+    assert adjust(client, state_account(client), 80000).status_code == 200
+
+    response = client.get("/api/export.csv")
+    assert response.status_code == 200
+    rows = csv.DictReader(io.StringIO(response.content.decode("utf-8-sig")))
+    assert {row["类型"]: row["金额"] for row in rows} == {"余额调增": "500.00", "余额调减": "700.00"}
+    assert set(ledger.KIND_LABELS) == set(get_args(ledger.Entry.model_fields["kind"].annotation))
 
 
 def test_stale_balance_and_duplicate_submit_rejected(client):

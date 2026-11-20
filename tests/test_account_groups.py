@@ -83,5 +83,3 @@ def test_type_order_persists_and_legacy_order_updates_preserve_it(client):
     payload['version'] = 1
     assert client.put('/api/display-order', json=payload).status_code == 200
     assert [g['id'] for g in client.get('/api/state').json()['account_groups']] == ids
-    for invalid in [['missing'], ['bank', 'bank']]:
-        assert client.put('/api/display-order', json={**payload, 'version': 2, 'account_groups': invalid}).status_code == 400

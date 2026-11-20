@@ -1,10 +1,11 @@
 import io
+import json
 import sqlite3
 from uuid import uuid4
 
 import openpyxl
 
-from backend.db import backup
+from backend.db import backup, connect
 from tests.conftest import PASSWORD
 
 
@@ -21,7 +22,7 @@ def entry(client, aid, kind="expense", amount=1000, **kw):
         kind=kind,
         amount_cents=amount,
         account_id=aid,
-        category="日常/餐饮" if kind in ["expense", "income"] else "",
+        category={"expense": "日常/餐饮", "income": "收入/工资"}.get(kind, ""),
         **kw,
     )
     r = client.post("/api/entries", json=body)
@@ -31,6 +32,85 @@ def entry(client, aid, kind="expense", amount=1000, **kw):
 
 def report(client):
     return client.get("/api/report?start=2026-01-01&end=2026-12-31").json()
+
+
+def test_entry_accepts_category_for_other_kind_when_replaying(client):
+    aid = account(client)
+    # Offline queues must replay because catalog kinds are derived from entries.
+    income = entry(client, aid, "income")
+    assert client.put(f"/api/entries/{income['id']}", json={**income, "category": "日常/购物"}).status_code == 200
+    payload = dict(date="2026-01-15", kind="income", amount_cents=1000, account_id=aid, category="日常/餐饮")
+    response = client.post("/api/entries", json=payload)
+    assert response.status_code == 200
+    assert response.json()["category"] == "日常/餐饮"
+
+
+def test_entry_replay_accepts_stale_category_kind_after_move(client):
+    content = "日期,类型,金额,账户,分类\n2026-01-15,收入,10.00,现金,日常/餐饮\n"
+    upload = client.post("/api/imports/upload", files={"file": ("old.csv", content.encode(), "text/csv")})
+    assert upload.status_code == 200
+    bid = upload.json()["id"]
+    assert client.post(f"/api/imports/{bid}/commit", json={"rows": [2]}).json() == {"count": 1}
+    stale = client.get("/api/state").json()
+    assert "income" in stale["category_catalog"]["items"]["日常/餐饮"]
+    original = stale["entries"][0]
+    assert client.put(f"/api/entries/{original['id']}", json={**original, "category": "收入/工资"}).status_code == 200
+    assert client.get("/api/state").json()["category_catalog"]["items"]["日常/餐饮"] == ["expense"]
+    response = client.post("/api/entries", json={**original, "id": str(uuid4())})
+    assert response.status_code == 200
+    assert response.json()["category"] == "日常/餐饮"
+
+
+def test_bulk_entry_replay_accepts_both_kinds_for_historical_category(client):
+    aid = account(client)
+    imported = ("日期,类型,金额,账户,转入账户,分类\n"
+                "2026-01-15,转账,10.00,现金,储蓄,历史/转账\n")
+    upload = client.post("/api/imports/upload", files={"file": ("old.csv", imported.encode(), "text/csv")})
+    assert upload.status_code == 200
+    bid = upload.json()["id"]
+    assert client.post(f"/api/imports/{bid}/commit", json={"rows": [2]}).json() == {"count": 1}
+    selected = [entry(client, aid, "income"), entry(client, aid, "expense")]
+    path = "历史/转账"
+    assert path not in client.get("/api/state").json()["category_catalog"]["items"]
+    for original in selected:
+        response = client.put(f"/api/entries/{original['id']}", json={**original, "category": path})
+        assert response.status_code == 200
+        assert response.json()["category"] == path
+
+
+def test_entry_accepts_new_category_matching_kind_and_refund(client):
+    aid = account(client)
+    payload = dict(date="2026-01-15", kind="income", amount_cents=1000, account_id=aid, category="奖金/季度")
+    assert client.post("/api/entries", json=payload).status_code == 200
+    purchase = entry(client, aid)
+    refund = entry(client, aid, "refund", 400, reference_id=purchase["id"])
+    assert refund["category"] == purchase["category"] == "日常/餐饮"
+
+
+def test_legacy_mismatched_category_can_be_edited_and_restored(client):
+    original = entry(client, account(client))
+    eid = original["id"]
+    with connect() as db:
+        db.execute("UPDATE entries SET kind='income' WHERE id=?", (eid,))
+        db.execute("INSERT INTO settings VALUES ('category_catalog',?)", (json.dumps({
+            "authoritative": True, "items": {"日常/餐饮": ["expense"]}, "hidden": [], "version": 1,
+        }),))
+
+    response = client.put(f"/api/entries/{eid}", json={**original, "kind": "income", "memo": "历史记录"})
+    assert response.status_code == 200
+    assert response.json()["category"] == original["category"]
+    assert client.post(f"/api/entries/{eid}/delete", json={"version": 2}).status_code == 200
+    assert client.post(f"/api/entries/{eid}/restore", json={"version": 3}).status_code == 200
+
+
+def test_import_keeps_historical_category_kind(client):
+    content = "日期,类型,金额,账户,分类\n2026-01-15,收入,10.00,现金,日常/餐饮\n"
+    upload = client.post("/api/imports/upload", files={"file": ("old.csv", content.encode(), "text/csv")})
+    assert upload.status_code == 200
+    bid = upload.json()["id"]
+    assert client.post(f"/api/imports/{bid}/commit", json={"rows": [2]}).json() == {"count": 1}
+    imported = client.get("/api/state").json()["entries"][0]
+    assert (imported["kind"], imported["category"]) == ("income", "日常/餐饮")
 
 
 def test_transfer_and_credit_payment_are_not_expenses(client):

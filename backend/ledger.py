@@ -9,7 +9,18 @@ from pydantic import BaseModel, Field, field_validator
 
 from backend.categories import catalog
 
-KINDS = ["income", "expense", "transfer", "refund", "lend", "borrow", "repay", "collect", "balance_in", "balance_out"]
+KIND_LABELS = {
+    "income": "收入",
+    "expense": "支出",
+    "transfer": "转账",
+    "refund": "退款",
+    "lend": "借出",
+    "borrow": "借入",
+    "repay": "还款",
+    "collect": "回款",
+    "balance_in": "余额调增",
+    "balance_out": "余额调减",
+}
 
 
 def today():
@@ -176,10 +187,17 @@ def set_deleted(db, eid, version, deleted):
     audit(db, "entry.delete" if deleted else "entry.restore", dict(row))
 
 
+def display_order(db):
+    setting = db.execute("SELECT value FROM settings WHERE key='display_order'").fetchone()
+    return json.loads(setting[0]) if setting else dict(accounts=[], categories=[], version=0)
+
+
 def snapshot(db):
     accounts = [dict(x) for x in db.execute("SELECT * FROM accounts ORDER BY rowid")]
-    setting = db.execute("SELECT value FROM settings WHERE key='display_order'").fetchone()
-    ordering = json.loads(setting[0]) if setting else dict(accounts=[], categories=[], version=0)
+    ordering = display_order(db)
+    category_state = catalog(db)
+    if "favorites" in ordering:
+        ordering["favorites"] = [p for p in ordering["favorites"] if p in category_state["items"]]
     ranks = {aid: i for i, aid in enumerate(ordering["accounts"])}
     accounts.sort(key=lambda a: ranks.get(a["id"], len(ranks)))
     entries = [dict(x) for x in db.execute("SELECT * FROM entries ORDER BY date DESC,created_at DESC,rowid DESC")]
@@ -216,7 +234,7 @@ def snapshot(db):
         accounts=accounts,
         account_groups=groups,
         ordering=ordering,
-        category_catalog=catalog(db),
+        category_catalog=category_state,
         entries=entries,
         assets=assets,
         liabilities=liabilities,

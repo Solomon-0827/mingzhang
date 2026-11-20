@@ -39,7 +39,7 @@ import {
   today,
 } from "./types";
 import { AccountSelect, ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
-import { categoryLeaf } from "./category-groups";
+import { categoriesForKind, categoryLeaf, defaultCategoryForKind } from "./category-groups";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import "./paper-theme.css";
@@ -1580,7 +1580,7 @@ function EntryDialog({
     setValue((old) => ({ ...old, [key]: v }));
   const legacySettlement = Boolean(value.reference_id && ["repay", "collect"].includes(value.kind) && !value.to_account_id);
   const refKind = value.kind === "refund" ? "expense" : undefined;
-  const categoryOptions = ordered(catalog ? Object.keys(catalog.items).filter(p => catalog.items[p].includes(value.kind)) : Array.from(
+  const categoryOptions = ordered(catalog ? categoriesForKind(catalog, value.kind) : Array.from(
     new Set([
       ...categories.filter((category) =>
         value.kind === "income"
@@ -1634,6 +1634,10 @@ function EntryDialog({
           setError("转入账户不能与转出账户相同");
           return;
         }
+        if ((value.kind === "income" || value.kind === "expense") && !value.category) {
+          setError("请选择分类");
+          return;
+        }
         setBusy(true);
         try {
           await onSave({ ...value, amount_cents: cents(amount) });
@@ -1661,7 +1665,8 @@ function EntryDialog({
             type="button"
             className={value.kind === k ? "selected" : ""}
             key={k}
-            onClick={() =>
+            onClick={() => {
+              if (k === value.kind) return;
               setValue({
                 ...value,
                 kind: k as Kind,
@@ -1669,13 +1674,9 @@ function EntryDialog({
                   ? accounts.find(a => !["receivable", "liability"].includes(a.kind))?.id || "" : value.account_id,
                 to_account_id: null,
                 reference_id: null,
-                category: ["income", "expense"].includes(k)
-                  ? k === "income"
-                    ? "收入/工资"
-                    : "日常/餐饮"
-                  : "",
-              })
-            }
+                category: defaultCategoryForKind(catalog, k as Kind, categoryOrder),
+              });
+            }}
           >
             {value.kind === k && <motion.span className="kind-selection" layoutId={`entry-kind-${kindMotionId}`} transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }} />}
             <span className="kind-label">{v}</span>
