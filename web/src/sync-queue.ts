@@ -1,24 +1,35 @@
 import { replayMutations, type OfflineMutation } from "./offline-mutations";
 import { RequestError, type State } from "./types";
 
-export const queueKey = "mingzhang.offline-mutations.v2";
-const legacyQueueKey = "mingzhang.offline-mutations.v1";
+export const queueKey = "mingzhang.offline-mutations.v1";
+export const blockedKey = "mingzhang.offline-mutations.blocked.v1";
+const snapshotKey = "mingzhang.sync-snapshot.v1";
 const legacyStateKey = "mingzhang.local-state.v1";
 const legacyPrefix = "mingzhang.pending-entry.v1.";
 
-type BlockedMutation = OfflineMutation & { blocked: NonNullable<OfflineMutation["blocked"]> };
-type NewMutation = Omit<OfflineMutation, "id" | "createdAt" | "blocked">;
+type Rejection = { status: number; message: string; at: number };
+type BlockedMutation = OfflineMutation & { blocked: Rejection };
+type NewMutation = Omit<OfflineMutation, "id" | "createdAt">;
 type QueueAction =
   | { kind: "retry" | "discard"; target: BlockedMutation }
-  | { kind: "edit"; target: BlockedMutation; body: OfflineMutation["body"] };
-
-type QueueData = {
-  pending: OfflineMutation[];
-  snapshot: State | null;
-  accepted: OfflineMutation[];
-};
-type QueueView = { count: number; blocked: BlockedMutation | null; state: State | null; beforeBlocked: State | null };
+  | { kind: "edit"; target: BlockedMutation; change: Pick<OfflineMutation, "type" | "path" | "method" | "body"> };
+type SnapshotCache = { snapshot: State; accepted: OfflineMutation[] };
 type FlushResult = "idle" | "synced" | "blocked" | "retryable" | "unauthorized" | "changed";
+
+export function createQueueLock(locks?: LockManager) {
+  const local = new Map<string, Promise<unknown>>();
+  return async <T>(name: string, run: () => Promise<T> | T): Promise<T> => {
+    if (locks) return locks.request(name, () => Promise.resolve(run()));
+    // Serialize this tab; receipts deduplicate replays from other tabs.
+    const next = (local.get(name) ?? Promise.resolve()).then(run);
+    local.set(name, next.catch(() => undefined));
+    return next;
+  };
+}
+
+export function isQueueStorageKey(key: string | null) {
+  return key === null || [queueKey, blockedKey, snapshotKey, legacyStateKey].includes(key) || key.startsWith(legacyPrefix);
+}
 
 export function createSyncQueue({
   storage, lock, send, fetchSnapshot,
@@ -28,114 +39,183 @@ export function createSyncQueue({
   send: (item: OfflineMutation) => Promise<unknown>;
   fetchSnapshot: () => Promise<State>;
 }) {
-  function read(): QueueData {
-    const current = storage.getItem(queueKey);
-    if (current) return JSON.parse(current);
-    const stored = readLegacyJSON(legacyQueueKey);
-    const legacy = Array.isArray(stored) ? stored : [];
-    const pending: OfflineMutation[] = legacy.filter(item => item?.id && item?.path && item?.type);
+  let cache: SnapshotCache | null = null;
+  let cachedRaw: string | null = null;
+  let unsaved: OfflineMutation[] = [];
+  let unsavedRejection: { id: string; value: Rejection } | null = null;
+  let storageError = false;
+
+  function parse(raw: string | null) {
+    try { return JSON.parse(raw || "null"); }
+    catch { return null; }
+  }
+
+  function readQueue() {
+    const stored = parse(storage.getItem(queueKey));
+    const pending: OfflineMutation[] = Array.isArray(stored) ? stored.filter(item => item?.id && item?.path && item?.type) : [];
     const ids = new Set(pending.map(item => item.id));
+    const legacyKeys: string[] = [];
     for (let index = 0; index < storage.length; index += 1) {
       const key = storage.key(index);
       if (!key?.startsWith(legacyPrefix)) continue;
-      const value = readLegacyJSON(key);
+      const value = parse(storage.getItem(key));
       const entry = value?.entry ?? value;
-      if (!entry?.id || ids.has(entry.id)) continue;
+      if (!entry?.id) continue;
+      legacyKeys.push(key);
+      if (ids.has(entry.id)) continue;
       ids.add(entry.id);
       pending.push({ id: entry.id, type: "entry.create", path: "/entries", method: "POST", body: entry,
         createdAt: Number.isFinite(value?.queued_at) ? value.queued_at : 0 });
     }
     pending.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-    return { pending, snapshot: null, accepted: [] };
+    return { pending, legacyKeys };
   }
 
-  function readLegacyJSON(key: string) {
+  function writePriority(key: string, value: unknown) {
+    const json = JSON.stringify(value);
     try {
-      return JSON.parse(storage.getItem(key) || "null");
-    } catch {
-      return null;
+      storage.setItem(key, json);
+    } catch (error) {
+      if (!(error instanceof Error) || error.name !== "QuotaExceededError") throw error;
+      readCache();
+      storage.removeItem(snapshotKey);
+      storage.removeItem(legacyStateKey);
+      cachedRaw = null;
+      storage.setItem(key, json);
     }
   }
 
-  function write(data: QueueData) {
-    const migrating = !storage.getItem(queueKey);
-    storage.setItem(queueKey, JSON.stringify(data));
-    if (migrating) {
-      storage.removeItem(legacyQueueKey);
-      for (let index = storage.length - 1; index >= 0; index -= 1) {
-        const key = storage.key(index);
-        if (!key?.startsWith(legacyPrefix)) continue;
-        const value = readLegacyJSON(key);
-        if ((value?.entry ?? value)?.id) storage.removeItem(key);
+  function writeQueue(data: ReturnType<typeof readQueue>, pending: OfflineMutation[]) {
+    try {
+      writePriority(queueKey, pending);
+    } catch {
+      storageError = true;
+      throw new Error("本机存储写入失败，请释放空间后重试。");
+    }
+    for (const key of data.legacyKeys) storage.removeItem(key);
+  }
+
+  function readCache() {
+    const raw = storage.getItem(snapshotKey);
+    if (raw !== cachedRaw) {
+      cachedRaw = raw;
+      // A quota eviction can remove the shared cache while this tab still has a usable snapshot.
+      if (raw !== null) cache = parse(raw);
+    }
+    return cache;
+  }
+
+  function writeCache(value: SnapshotCache) {
+    cache = value;
+    try {
+      const raw = JSON.stringify(value);
+      storage.setItem(snapshotKey, raw);
+      cachedRaw = raw;
+    } catch {
+      storage.removeItem(snapshotKey);
+      cachedRaw = null;
+    }
+  }
+
+  function readBlocked(item?: OfflineMutation): BlockedMutation | null {
+    if (!item) return null;
+    const value = unsavedRejection?.id === item.id ? unsavedRejection.value :
+      parse(storage.getItem(blockedKey))?.[item.id];
+    return value && Number.isInteger(value.status) && value.status >= 400 && value.status < 500 &&
+      typeof value.message === "string" && Number.isFinite(value.at) ? { ...item, blocked: value } : null;
+  }
+
+  function persistRejection(id: string, value: Rejection) {
+    try {
+      const stored = parse(storage.getItem(blockedKey));
+      const rejections = Object.fromEntries(readQueue().pending
+        .filter(item => stored?.[item.id])
+        .map(item => [item.id, stored[item.id]]));
+      writePriority(blockedKey, { ...rejections, [id]: value });
+      unsavedRejection = null;
+    } catch {
+      storageError = true;
+      unsavedRejection = { id, value };
+    }
+  }
+
+  function clearRejection(id: string) {
+    if (unsavedRejection?.id === id) unsavedRejection = null;
+    const stored = parse(storage.getItem(blockedKey));
+    if (stored?.[id]) {
+      delete stored[id];
+      try {
+        if (Object.keys(stored).length) storage.setItem(blockedKey, JSON.stringify(stored));
+        else storage.removeItem(blockedKey);
+      } catch {
+        // A stale rejection is ignored once its mutation leaves the queue.
       }
     }
-    if (data.snapshot) storage.removeItem(legacyStateKey);
   }
 
-  function view(): QueueView {
-    const { pending, snapshot, accepted } = read();
-    const head = pending[0];
-    const blocked = head?.blocked ? head as BlockedMutation : null;
-    if (snapshot) {
-      const base = replayMutations(snapshot, accepted);
-      return { count: pending.length, blocked, state: replayMutations(base, pending), beforeBlocked: blocked ? base : null };
+  function view() {
+    const { pending } = readQueue();
+    const blocked = readBlocked(pending[0]);
+    const items = [...pending, ...unsaved];
+    const saved = readCache();
+    if (saved) {
+      const base = replayMutations(saved.snapshot, saved.accepted);
+      return { count: items.length, blocked, state: replayMutations(base, items), beforeBlocked: blocked ? base : null, storageError };
     }
-    // Older clients cached a ledger that already included some queued changes.
-    const cached = readLegacyJSON(legacyStateKey);
+    // The old snapshot can already contain queued changes. It is only a display fallback.
+    const cached = parse(storage.getItem(legacyStateKey));
     const state = cached?.state ?? cached;
-    const applied = new Set<string>(cached?.applied ?? []);
-    return { count: pending.length, blocked, state: state?.account_groups
-      ? replayMutations(state, [...accepted, ...pending].filter(item => !applied.has(item.id))) : null, beforeBlocked: null };
+    const applied = new Set<string>(Array.isArray(cached?.applied) ? cached.applied : []);
+    const base: State | null = state?.account_groups ? state : null;
+    return { count: items.length, blocked, state: base ? replayMutations(base, items.filter(item => !applied.has(item.id))) : null,
+      beforeBlocked: blocked && !applied.has(blocked.id) ? base : null, storageError };
   }
-
-  const update = <T>(edit: (data: QueueData) => T) => lock(queueKey, () => {
-    const data = read();
-    const result = edit(data);
-    write(data);
-    return result;
-  });
 
   async function refreshSnapshot() {
     const snapshot = await fetchSnapshot();
-    await update(data => {
-      data.snapshot = snapshot;
-      data.accepted = [];
-    });
+    writeCache({ snapshot, accepted: [] });
     return snapshot;
+  }
+
+  function replaceHead(expected: OfflineMutation, replacement?: OfflineMutation) {
+    const data = readQueue();
+    if (data.pending[0]?.id !== expected.id) return false;
+    const tail = data.pending.slice(1);
+    writeQueue(data, replacement ? [replacement, ...tail] : tail);
+    clearRejection(expected.id);
+    return true;
   }
 
   async function flush(action?: QueueAction, onAction = () => {}): Promise<FlushResult> {
     return lock(queueKey + ".sync", async () => {
-      const data = read();
-      let head = data.pending[0];
-      if (action && JSON.stringify(head) !== JSON.stringify(action.target)) return "changed";
-      if (head?.blocked && !action) return "idle";
+      let head = readQueue().pending[0];
+      const blocked = readBlocked(head);
+      if (action && (action.target.id !== head?.id || !blocked)) return "changed";
+      if (!action && (blocked || storageError)) return "idle";
 
-      if (head && !data.snapshot) {
+      if (head && !readCache()) {
         try {
           await refreshSnapshot();
         } catch (error) {
           if (!(error instanceof RequestError) || error.kind === "rejected") throw error;
           return error.kind === "unauthorized" ? "unauthorized" : "retryable";
         }
+        if (readQueue().pending[0]?.id !== head.id) return "changed";
       }
 
-      if (action?.kind === "edit") {
-        // An edited payload needs its own receipt in case the old request was applied.
-        const replacement = { ...action.target, id: crypto.randomUUID(), body: action.body };
-        await update(current => { current.pending[0] = replacement; });
-        head = replacement;
-        onAction();
-      } else if (action?.kind === "discard") {
-        head = await update(current => {
-          current.pending.shift();
-          return current.pending[0];
-        });
+      if (action?.kind === "edit" || action?.kind === "discard") {
+        // A replacement gets a new receipt and an empty rejection history.
+        const replacement = action.kind === "edit"
+          ? { ...action.change, id: crypto.randomUUID(), createdAt: head.createdAt }
+          : undefined;
+        if (!await lock(queueKey, () => replaceHead(head, replacement))) return "changed";
+        head = readQueue().pending[0];
+        action = undefined;
         onAction();
       }
 
       let synced = false;
-      while (head && (!head.blocked || action?.kind === "retry" || action?.kind === "edit")) {
+      while (head && (!readBlocked(head) || action?.kind === "retry")) {
         const item = head;
         try {
           await send(item);
@@ -143,17 +223,20 @@ export function createSyncQueue({
           if (!(error instanceof RequestError)) throw error;
           if (error.kind === "unauthorized") return "unauthorized";
           if (error.kind !== "rejected") return "retryable";
-          await update(current => {
-            current.pending[0] = { ...item, blocked: { status: error.status!, message: error.message, at: Date.now() } };
+          return lock(queueKey, () => {
+            if (readQueue().pending[0]?.id !== item.id) return "changed";
+            persistRejection(item.id, { status: error.status!, message: error.message, at: Date.now() });
+            return "blocked";
           });
-          return "blocked";
         }
-        head = await update(current => {
-          // Keep successful changes in the ledger until a fresh server snapshot includes them.
-          current.accepted.push(item);
-          current.pending.shift();
-          return current.pending[0];
+        const removed = await lock(queueKey, () => {
+          if (!replaceHead(item)) return false;
+          const base = readCache();
+          if (base) writeCache({ ...base, accepted: [...base.accepted, item] });
+          return true;
         });
+        if (!removed) return "changed";
+        head = readQueue().pending[0];
         synced = true;
         action = undefined;
       }
@@ -161,18 +244,36 @@ export function createSyncQueue({
     });
   }
 
+  function saveUnsaved() {
+    if (!unsaved.length) return;
+    const data = readQueue();
+    writeQueue(data, [...data.pending, ...unsaved]);
+    unsaved = [];
+    if (!unsavedRejection) storageError = false;
+  }
+
   return {
     view,
     hasReadyHead: () => {
-      const head = read().pending[0];
-      return Boolean(head && !head.blocked);
+      const head = readQueue().pending[0];
+      return Boolean(!storageError && head && !readBlocked(head));
     },
-    blocked: () => {
-      const head = read().pending[0];
-      return head?.blocked ? head as BlockedMutation : null;
-    },
-    enqueue: (item: NewMutation) => update(data => {
-      data.pending.push({ ...item, id: crypto.randomUUID(), createdAt: Date.now() });
+    blocked: () => readBlocked(readQueue().pending[0]),
+    enqueue: (item: NewMutation) => lock(queueKey, () => {
+      const previous = unsaved.at(-1) ?? readQueue().pending.at(-1);
+      const createdAt = Math.max(Date.now(), (previous?.createdAt ?? 0) + 1);
+      unsaved.push({ ...item, id: crypto.randomUUID(), createdAt });
+      try { saveUnsaved(); }
+      catch { /* Keep the change in memory and expose the write failure in the queue view. */ }
+    }),
+    retryStorage: () => lock(queueKey, () => {
+      saveUnsaved();
+      storageError = false;
+      if (unsavedRejection) {
+        const { id, value } = unsavedRejection;
+        if (readQueue().pending[0]?.id === id) persistRejection(id, value);
+        else unsavedRejection = null;
+      }
     }),
     refresh: () => lock(queueKey + ".sync", refreshSnapshot),
     flush,

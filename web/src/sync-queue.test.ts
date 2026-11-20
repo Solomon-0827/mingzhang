@@ -1,5 +1,8 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSyncQueue } from "./sync-queue";
+import { createQueueLock, createSyncQueue } from "./sync-queue";
+import { describeBlocked, EntryRecoveryComparison, entryRecoveryChange, prepareEntryRecovery } from "./blocked-sync";
 import { api, RequestError, type Entry, type State } from "./types";
 import type { OfflineMutation } from "./offline-mutations";
 
@@ -7,7 +10,15 @@ class MemoryStorage implements Storage {
   private values = new Map<string, string>();
   get length() { return this.values.size; }
   getItem(key: string) { return this.values.get(key) ?? null; }
-  setItem(key: string, value: string) { this.values.set(key, value); }
+  maxCharacters = Infinity;
+  rejectWritesTo: string[] = [];
+  setItem(key: string, value: string) {
+    const otherSize = [...this.values].reduce((sum, [name, raw]) => name === key ? sum : sum + raw.length, 0);
+    if (this.rejectWritesTo.includes(key) || otherSize + value.length > this.maxCharacters) {
+      throw new DOMException("storage is full", "QuotaExceededError");
+    }
+    this.values.set(key, value);
+  }
   removeItem(key: string) { this.values.delete(key); }
   key(index: number) { return [...this.values.keys()][index] ?? null; }
   clear() { this.values.clear(); }
@@ -31,7 +42,7 @@ function createEntry(id: string) {
   return { type: "entry.create", path: "/entries", method: "POST", body: entry(id) } as const;
 }
 
-function setup(initial = snapshot) {
+function setup(initial = snapshot, withoutWebLocks = false) {
   const storage = new MemoryStorage();
   const locks = new Map<string, Promise<unknown>>();
   const lock = <T>(name: string, run: () => Promise<T> | T) => {
@@ -41,7 +52,7 @@ function setup(initial = snapshot) {
   };
   const send = vi.fn(async (_item: OfflineMutation): Promise<unknown> => undefined);
   const fetchSnapshot = vi.fn(async () => initial);
-  const open = () => createSyncQueue({ storage, lock, send, fetchSnapshot });
+  const open = () => createSyncQueue({ storage, lock: withoutWebLocks ? createQueueLock() : lock, send, fetchSnapshot });
   return { storage, send, fetchSnapshot, open, queue: open() };
 }
 
@@ -91,7 +102,7 @@ describe("sync queue", () => {
     await queue.flush();
     const target = queue.view().blocked!;
     const body = entry(original.id, 200, original.version);
-    expect(await queue.flush({ kind: "edit", target, body })).toBe("blocked");
+    expect(await queue.flush({ kind: "edit", target, change: { type: target.type, path: target.path, method: target.method, body } })).toBe("blocked");
     const replacement = open().view().blocked!;
     expect(replacement).toMatchObject({ body, path: target.path, createdAt: target.createdAt });
     expect(replacement.id).not.toBe(target.id);
@@ -187,6 +198,151 @@ describe("sync queue", () => {
     expect(await queue.flush()).toBe("retryable");
     expect(open().view().state?.entries.map(item => item.id)).toEqual(["later", "old"]);
     expect(open().view().count).toBe(2);
+  });
+});
+
+const sharedKey = "mingzhang.offline-mutations.v1";
+const sidecarKey = "mingzhang.offline-mutations.blocked.v1";
+
+describe("review regressions", () => {
+  it("shares the original array and sees an older tab append after rejection", async () => {
+    const { storage, queue, send, open } = setup();
+    const old = { ...createEntry("old"), id: "old-client", createdAt: 1 };
+    storage.setItem(sharedKey, JSON.stringify([old]));
+    send.mockRejectedValueOnce(reject());
+    expect(await queue.flush()).toBe("blocked");
+    expect(JSON.parse(storage.getItem(sharedKey)!)).toEqual([old]);
+    expect(JSON.parse(storage.getItem(sidecarKey)!)).toEqual({ [old.id]: expect.objectContaining({ status: 400 }) });
+
+    const appended = { ...createEntry("later"), id: "old-client-later", createdAt: 2 };
+    storage.setItem(sharedKey, JSON.stringify([old, appended]));
+    const reloaded = open();
+    expect(reloaded.view().count).toBe(2);
+    expect(reloaded.blocked()?.id).toBe(old.id);
+    // An older client may remove the blocked head without knowing about its metadata.
+    storage.setItem(sharedKey, JSON.stringify([appended]));
+    expect(reloaded.blocked()).toBeNull();
+    expect(await reloaded.flush()).toBe("synced");
+    expect(send.mock.calls.map(([item]) => item.id)).toEqual([old.id, appended.id]);
+  });
+
+  it("refreshes and flushes when an old snapshot leaves no quota for a new cache", async () => {
+    const { storage, queue, send } = setup();
+    const old = { ...createEntry("old"), id: "old-client", createdAt: 1 };
+    storage.setItem(sharedKey, JSON.stringify([old]));
+    storage.setItem("mingzhang.local-state.v1", "x".repeat(3700));
+    storage.maxCharacters = 4050;
+    await expect(queue.refresh()).resolves.toEqual(snapshot);
+    expect(await queue.flush()).toBe("synced");
+    expect(send).toHaveBeenCalledExactlyOnceWith(old);
+    expect(queue.view().state?.entries.map(item => item.id)).toEqual(["old"]);
+  });
+
+  it("makes room for the queue and retains a failed queue write in memory until retry", async () => {
+    const { storage, queue, send } = setup();
+    await queue.refresh();
+    storage.setItem("mingzhang.local-state.v1", "x".repeat(3700));
+    storage.maxCharacters = 4250;
+    await queue.enqueue(createEntry("priority"));
+    expect(storage.getItem("mingzhang.local-state.v1")).toBeNull();
+    expect(queue.view()).toMatchObject({ count: 1, storageError: false });
+
+    storage.rejectWritesTo = [sharedKey];
+    await queue.enqueue(createEntry("memory"));
+    expect(queue.view()).toMatchObject({ count: 2, storageError: true });
+    expect(queue.view().state?.entries.map(value => value.id)).toContain("memory");
+    expect(await queue.flush()).toBe("idle");
+    expect(send).not.toHaveBeenCalled();
+    storage.rejectWritesTo = [];
+    await queue.retryStorage();
+    expect(queue.view().storageError).toBe(false);
+    expect(await queue.flush()).toBe("synced");
+    expect(send.mock.calls.map(([item]) => item.body.id).sort()).toEqual(["memory", "priority"]);
+  });
+
+  it("refreshes, flushes, retries and discards without Web Locks", async () => {
+    const { queue, send } = setup(snapshot, true);
+    await expect(queue.refresh()).resolves.toEqual(snapshot);
+    await queue.enqueue(createEntry("first"));
+    await queue.enqueue(createEntry("later"));
+    send.mockRejectedValueOnce(reject()).mockRejectedValueOnce(reject());
+    expect(await queue.flush()).toBe("blocked");
+    expect(await queue.flush({ kind: "retry", target: queue.blocked()! })).toBe("blocked");
+    expect(await queue.flush({ kind: "discard", target: queue.blocked()! })).toBe("synced");
+    expect(queue.view().count).toBe(0);
+  });
+
+  it("starts stale edits with every current field and saves only visible choices", () => {
+    const current = { ...entry("existing", 350, 4), merchant: "新商家", memo: "新备注", reference_id: "latest-reference" };
+    const queued = { ...entry("existing", 200, 1), merchant: "旧商家", memo: "旧备注" };
+    const target = { ...createEntry("existing"), type: "entry.update", method: "PUT", path: "/entries/existing",
+      body: queued, id: "stale", createdAt: 1, blocked: { status: 409, at: 12, message: "版本已更新" } } as const;
+    const recovery = prepareEntryRecovery(target, { ...snapshot, entries: [current] }, entry(""));
+    expect(recovery.entry).toEqual(current);
+    expect(recovery.queued).toMatchObject({ amount_cents: 200, merchant: "旧商家" });
+    const value = { ...recovery.entry, amount_cents: 200 };
+    const comparison = renderToStaticMarkup(createElement(EntryRecoveryComparison, {
+      current, queued: recovery.queued, value, accounts: snapshot.accounts, entries: [], onChoose: () => {},
+    }));
+    expect(comparison).toContain("服务器：新商家");
+    expect(comparison).toContain("排队修改：旧商家");
+    expect(comparison).toContain("将保存：新商家");
+    expect(comparison).toContain("服务器：latest-reference");
+    expect(comparison).toContain("排队修改：空");
+    expect(comparison).toContain("将保存：¥2.00");
+    const change = entryRecoveryChange(recovery.entry, true, value);
+    expect(change.body).toMatchObject({ amount_cents: 200, merchant: "新商家", memo: "新备注", reference_id: "latest-reference", version: 4 });
+    expect(change.body).not.toHaveProperty("remaining_cents");
+  });
+
+  it("turns a colliding create into a PUT using the same entry id and latest version", async () => {
+    const current = { ...entry("existing", 350, 4), merchant: "服务器商家" };
+    const server = { ...snapshot, entries: [current] };
+    const { queue, send } = setup(server);
+    await queue.enqueue(createEntry("existing"));
+    await queue.enqueue(createEntry("later"));
+    send.mockRejectedValueOnce(reject("编号已使用", 409));
+    await queue.flush();
+    const target = queue.blocked()!;
+    const recovery = prepareEntryRecovery(target, server, entry(""));
+    const change = entryRecoveryChange(recovery.entry, Boolean(recovery.current), { ...recovery.entry, amount_cents: 200 });
+    expect(await queue.flush({ kind: "edit", target, change })).toBe("synced");
+    expect(send.mock.calls[1][0]).toMatchObject({
+      type: "entry.update", method: "PUT", path: "/entries/existing",
+      body: { id: current.id, version: current.version, amount_cents: 200, merchant: current.merchant },
+    });
+    expect(send.mock.calls[2][0].body.id).toBe("later");
+  });
+
+  it.each(["network", "timeout", "unavailable"] as const)("automatically retries an edited payload after %s", async kind => {
+    const { queue, send, open } = setup();
+    const original = createEntry("original");
+    await queue.enqueue(original);
+    send.mockRejectedValueOnce(reject("版本已更新", 409));
+    await queue.flush();
+    const target = queue.blocked()!;
+    const body = { ...original.body, amount_cents: 300 };
+    send.mockRejectedValueOnce(new RequestError(kind, "temporary"));
+    const action = { kind: "edit", target, body, change: { ...original, body } } as const;
+    expect(await queue.flush(action)).toBe("retryable");
+    expect(open().view()).toMatchObject({ count: 1, blocked: null });
+    expect(queue.hasReadyHead()).toBe(true);
+    expect(await queue.flush()).toBe("synced");
+    expect(send.mock.calls[2][0].body).toEqual(body);
+  });
+
+  it("lists named before-to-after order and favorite differences for discard", () => {
+    const state = { ...snapshot, accounts: [...snapshot.accounts, { ...snapshot.accounts[0], id: "bank", name: "银行卡" }],
+      ordering: { accounts: ["cash", "bank"], categories: ["A", "B"], favorites: ["A"], version: 3 },
+      category_catalog: { items: { A: ["expense"], B: ["expense"] }, hidden: [], version: 1 } };
+    const item = { id: "order", type: "order.update", path: "/display-order", method: "PUT", createdAt: 1,
+      body: { accounts: ["bank", "cash"], categories: ["B", "A"], favorites: ["B"], version: 2 },
+      blocked: { status: 409, message: "排序已更新", at: 1 } } as const;
+    expect(describeBlocked(item, state).fields).toEqual([
+      ["账户顺序", "「现金」、「银行卡」 → 「银行卡」、「现金」"],
+      ["分类顺序", "「A」、「B」 → 「B」、「A」"],
+      ["常用分类", "移除「A」，加入「B」（「A」 → 「B」）"],
+    ]);
   });
 });
 

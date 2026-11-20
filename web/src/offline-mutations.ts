@@ -11,8 +11,6 @@ export type OfflineMutation = {
   method: "POST" | "PUT";
   body: Record<string, unknown>;
   createdAt: number;
-  entryDetails?: Entry;
-  blocked?: { status: number; message: string; at: number };
 };
 
 function entryDelta(entry: Entry, direction: number, changes: Map<string, number>) {

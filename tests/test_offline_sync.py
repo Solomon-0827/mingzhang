@@ -1,4 +1,9 @@
+from sqlite3 import IntegrityError
 from uuid import uuid4
+
+import pytest
+
+from backend.db import connect
 
 
 def test_client_ids_allow_offline_dependency_chain(client):
@@ -46,8 +51,47 @@ def test_mutation_receipt_prevents_duplicate_execution(client):
     second = client.post("/api/accounts", json=body, headers=headers)
     assert first.status_code == 200
     assert second.status_code == 200
-    assert second.json() == {"ok": True, "duplicate": True}
+    assert second.json() == first.json()
     assert [account["name"] for account in client.get("/api/state").json()["accounts"]] == ["只创建一次"]
+
+
+def test_receipt_failure_rolls_back_edit_and_replay_returns_original_result(client):
+    account_id = client.post("/api/accounts", json={
+        "name": "事务验证", "kind": "cash", "opening_cents": 0,
+    }).json()["id"]
+    original = client.post("/api/entries", json={
+        "date": "2026-01-15", "kind": "expense", "amount_cents": 25,
+        "account_id": account_id, "category": "日常/餐饮",
+    }).json()
+    path = f"/api/entries/{original['id']}"
+    headers = {"X-Mingzhang-Mutation": str(uuid4())}
+    edited = {**original, "amount_cents": 70}
+    with connect() as db:
+        db.execute("""
+            CREATE TRIGGER reject_receipt BEFORE INSERT ON mutation_receipts
+            BEGIN SELECT RAISE(ABORT, 'simulated receipt write failure'); END
+        """)
+    with pytest.raises(IntegrityError, match="simulated receipt write failure"):
+        client.put(path, json=edited, headers=headers)
+    assert client.get("/api/state").json()["entries"][0]["version"] == original["version"]
+
+    with connect() as db:
+        db.execute("DROP TRIGGER reject_receipt")
+    first = client.put(path, json=edited, headers=headers)
+    assert first.status_code == 200
+    assert first.json()["amount_cents"] == 70
+    assert first.json()["version"] == original["version"] + 1
+
+    with connect() as db:
+        db.execute("UPDATE mutation_receipts SET created_at=datetime('now','-120 days')")
+    newer = client.put(path, json={**first.json(), "amount_cents": 90}, headers={
+        "X-Mingzhang-Mutation": str(uuid4()),
+    })
+    assert newer.status_code == 200
+    replay = client.put(path, json=edited, headers=headers)
+    assert replay.status_code == 200
+    assert replay.json() == first.json()
+    assert client.get("/api/state").json()["entries"][0]["amount_cents"] == 90
 
 
 def test_mutation_receipt_requires_login(client):

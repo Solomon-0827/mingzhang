@@ -13,7 +13,7 @@ from datetime import date, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -85,23 +85,7 @@ async def protect(request, call_next):
         return JSONResponse({"detail": "请求来源不匹配"}, status_code=403)
     if request.method not in ["GET", "HEAD", "OPTIONS"] and request.headers.get("sec-fetch-site") == "cross-site":
         return JSONResponse({"detail": "拒绝跨站请求"}, status_code=403)
-    mutation_id = request.headers.get("x-mingzhang-mutation", "")
-    is_mutation = request.url.path.startswith("/api/") and request.method in {"POST", "PUT", "PATCH", "DELETE"}
-    if mutation_id and is_mutation:
-        if len(mutation_id) > 100 or not mutation_id.replace("-", "").isalnum():
-            return JSONResponse({"detail": "同步任务编号无效"}, status_code=400)
-        try:
-            authenticated(request)
-        except HTTPException as error:
-            return JSONResponse({"detail": error.detail}, status_code=error.status_code)
-        with connect() as db:
-            if db.execute("SELECT 1 FROM mutation_receipts WHERE id=?", (mutation_id,)).fetchone():
-                return JSONResponse({"ok": True, "duplicate": True})
     response = await call_next(request)
-    if mutation_id and is_mutation and response.status_code < 400:
-        with connect() as db:
-            db.execute("INSERT OR IGNORE INTO mutation_receipts(id) VALUES (?)", (mutation_id,))
-            db.execute("DELETE FROM mutation_receipts WHERE created_at < datetime('now','-90 days')")
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -110,6 +94,23 @@ async def protect(request, call_next):
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     )
     return response
+
+
+def run_mutation(request: Request, apply):
+    mutation_id = request.headers.get("x-mingzhang-mutation", "")
+    if mutation_id and (len(mutation_id) > 100 or not mutation_id.replace("-", "").isalnum()):
+        fail("同步任务编号无效")
+    with connect() as db:
+        # A concurrent replay must wait for both the change and its receipt.
+        db.execute("BEGIN IMMEDIATE")
+        if mutation_id:
+            receipt = db.execute("SELECT result FROM mutation_receipts WHERE id=?", (mutation_id,)).fetchone()
+            if receipt is not None:
+                return json.loads(receipt["result"]) if receipt["result"] is not None else {"ok": True, "duplicate": True}
+        result = apply(db)
+        if mutation_id:
+            db.execute("INSERT INTO mutation_receipts(id,result) VALUES (?,?)", (mutation_id, json.dumps(result)))
+        return result
 
 
 class Login(BaseModel):
@@ -201,9 +202,8 @@ def state():
 
 
 @app.post("/api/categories", dependencies=[Depends(authenticated)])
-def manage_categories(body: CategoryChange):
-    with connect() as db:
-        return change_category(db, body)
+def manage_categories(request: Request, body: CategoryChange):
+    return run_mutation(request, lambda db: change_category(db, body))
 
 
 class DisplayOrder(BaseModel):
@@ -215,9 +215,8 @@ class DisplayOrder(BaseModel):
 
 
 @app.put("/api/display-order", dependencies=[Depends(authenticated)])
-def save_display_order(body: DisplayOrder):
-    with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+def save_display_order(request: Request, body: DisplayOrder):
+    def apply(db):
         row = db.execute("SELECT value FROM settings WHERE key='display_order'").fetchone()
         current = json.loads(row[0]) if row else {}
         # Older clients incremented their local order version on category rename.
@@ -238,7 +237,9 @@ def save_display_order(body: DisplayOrder):
         db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('display_order',?)",
                    (json.dumps(payload, ensure_ascii=False),))
         audit(db, "display_order.update", payload)
-    return {"ok": True}
+        return {"ok": True}
+
+    return run_mutation(request, apply)
 
 
 class AccountGroup(BaseModel):
@@ -248,12 +249,11 @@ class AccountGroup(BaseModel):
 
 
 @app.post("/api/account-groups", dependencies=[Depends(authenticated)])
-def create_account_group(body: AccountGroup):
-    name = body.name.strip()
-    if not name or body.kind not in {"bank", "wallet", "cash", "credit", "receivable", "liability"}:
-        fail("请填写类型名称并选择账户性质")
-    with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+def create_account_group(request: Request, body: AccountGroup):
+    def apply(db):
+        name = body.name.strip()
+        if not name or body.kind not in {"bank", "wallet", "cash", "credit", "receivable", "liability"}:
+            fail("请填写类型名称并选择账户性质")
         existing = db.execute("SELECT * FROM account_groups WHERE name=?", (name,)).fetchone()
         if existing:
             if not existing["deleted"] or existing["kind"] != body.kind:
@@ -268,7 +268,9 @@ def create_account_group(body: AccountGroup):
             gid = str(body.id or uuid4())
             db.execute("INSERT INTO account_groups(id,name,kind) VALUES (?,?,?)", (gid, name, body.kind))
         audit(db, "account_group.create", body.model_dump(mode="json"))
-    return {"id": gid}
+        return {"id": gid}
+
+    return run_mutation(request, apply)
 
 
 class AccountGroupRename(BaseModel):
@@ -277,12 +279,11 @@ class AccountGroupRename(BaseModel):
 
 
 @app.put("/api/account-groups/{gid}", dependencies=[Depends(authenticated)])
-def rename_account_group(gid: str, body: AccountGroupRename):
-    name = body.name.strip()
-    if not name:
-        fail("账户类型名称不能为空")
-    with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+def rename_account_group(request: Request, gid: str, body: AccountGroupRename):
+    def apply(db):
+        name = body.name.strip()
+        if not name:
+            fail("账户类型名称不能为空")
         group = db.execute("SELECT * FROM account_groups WHERE id=?", (gid,)).fetchone()
         if not group:
             fail("账户类型不存在", 404)
@@ -295,20 +296,23 @@ def rename_account_group(gid: str, body: AccountGroupRename):
         except sqlite3.IntegrityError:
             fail("账户类型名称已存在")
         audit(db, "account_group.rename", {"id": gid, "name": name})
-    return {"ok": True}
+        return {"ok": True}
+
+    return run_mutation(request, apply)
 
 
 @app.post("/api/account-groups/{gid}/delete", dependencies=[Depends(authenticated)])
-def delete_account_group(gid: str):
-    with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+def delete_account_group(request: Request, gid: str):
+    def apply(db):
         if not db.execute("SELECT 1 FROM account_groups WHERE id=? AND deleted=0", (gid,)).fetchone():
             fail("账户类型不存在", 404)
         if db.execute("SELECT 1 FROM accounts WHERE COALESCE(group_id,kind)=?", (gid,)).fetchone():
             fail("请先移走或删除该类型下的账户")
         db.execute("UPDATE account_groups SET deleted=1 WHERE id=?", (gid,))
         audit(db, "account_group.delete", {"id": gid})
-    return {"ok": True}
+        return {"ok": True}
+
+    return run_mutation(request, apply)
 
 
 def resolve_account_group(db, body):
@@ -324,10 +328,9 @@ def resolve_account_group(db, body):
 
 
 @app.post("/api/accounts", dependencies=[Depends(authenticated)])
-def create_account(body: Account):
-    aid = str(body.id or uuid4())
-    with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+def create_account(request: Request, body: Account):
+    def apply(db):
+        aid = str(body.id or uuid4())
         gid = resolve_account_group(db, body)
         try:
             db.execute(
@@ -337,13 +340,14 @@ def create_account(body: Account):
         except sqlite3.IntegrityError:
             fail("账户名称已存在")
         audit(db, "account.create", body.model_dump(mode="json"))
-    return {"id": aid}
+        return {"id": aid}
+
+    return run_mutation(request, apply)
 
 
 @app.put("/api/accounts/{aid}", dependencies=[Depends(authenticated)])
-def update_account(aid: str, body: AccountUpdate):
-    with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+def update_account(request: Request, aid: str, body: AccountUpdate):
+    def apply(db):
         row = db.execute("SELECT * FROM accounts WHERE id=?", (aid,)).fetchone()
         if not row:
             fail("账户不存在", 404)
@@ -373,23 +377,27 @@ def update_account(aid: str, body: AccountUpdate):
         except sqlite3.IntegrityError:
             fail("账户名称已存在")
         audit(db, "account.update", body.model_dump(mode="json"))
-    return {"ok": True}
+        return {"ok": True}
+
+    return run_mutation(request, apply)
 
 
 @app.post("/api/entries", dependencies=[Depends(authenticated)])
-def create_entry(body: Entry):
-    with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+def create_entry(request: Request, body: Entry):
+    def apply(db):
         return save_entry(db, body)
+
+    return run_mutation(request, apply)
 
 
 @app.put("/api/entries/{eid}", dependencies=[Depends(authenticated)])
-def update_entry(eid: str, body: Entry):
-    if eid != str(body.id):
-        fail("交易编号不匹配")
-    with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+def update_entry(request: Request, eid: str, body: Entry):
+    def apply(db):
+        if eid != str(body.id):
+            fail("交易编号不匹配")
         return save_entry(db, body, editing=True)
+
+    return run_mutation(request, apply)
 
 
 class Version(BaseModel):
@@ -397,9 +405,8 @@ class Version(BaseModel):
 
 
 @app.post("/api/accounts/{aid}/delete", dependencies=[Depends(authenticated)])
-def delete_account(aid: str, body: Version):
-    with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+def delete_account(request: Request, aid: str, body: Version):
+    def apply(db):
         row = db.execute("SELECT * FROM accounts WHERE id=?", (aid,)).fetchone()
         if not row:
             fail("账户不存在", 404)
@@ -411,23 +418,27 @@ def delete_account(aid: str, body: Version):
             fail("账户余额不为零，不能删除")
         db.execute("DELETE FROM accounts WHERE id=?", (aid,))
         audit(db, "account.delete", dict(row))
-    return {"ok": True}
+        return {"ok": True}
+
+    return run_mutation(request, apply)
 
 
 @app.post("/api/entries/{eid}/delete", dependencies=[Depends(authenticated)])
-def delete_entry(eid: str, body: Version):
-    with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+def delete_entry(request: Request, eid: str, body: Version):
+    def apply(db):
         set_deleted(db, eid, body.version, True)
-    return {"ok": True}
+        return {"ok": True}
+
+    return run_mutation(request, apply)
 
 
 @app.post("/api/entries/{eid}/restore", dependencies=[Depends(authenticated)])
-def restore_entry(eid: str, body: Version):
-    with connect() as db:
-        db.execute("BEGIN IMMEDIATE")
+def restore_entry(request: Request, eid: str, body: Version):
+    def apply(db):
         set_deleted(db, eid, body.version, False)
-    return {"ok": True}
+        return {"ok": True}
+
+    return run_mutation(request, apply)
 
 
 @app.get("/api/report", dependencies=[Depends(authenticated)])
