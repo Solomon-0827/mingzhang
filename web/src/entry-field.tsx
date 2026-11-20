@@ -232,6 +232,7 @@ export function EntryField({
                   disabled={busy}
                   onChange={(e) => {
                     const kind = e.target.value as Kind;
+                    if (kind === draft.kind) return;
                     const next = {
                       ...draft,
                       kind,

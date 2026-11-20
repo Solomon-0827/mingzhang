@@ -1665,7 +1665,8 @@ function EntryDialog({
             type="button"
             className={value.kind === k ? "selected" : ""}
             key={k}
-            onClick={() =>
+            onClick={() => {
+              if (k === value.kind) return;
               setValue({
                 ...value,
                 kind: k as Kind,
@@ -1674,8 +1675,8 @@ function EntryDialog({
                 to_account_id: null,
                 reference_id: null,
                 category: defaultCategoryForKind(catalog, k as Kind, categoryOrder),
-              })
-            }
+              });
+            }}
           >
             {value.kind === k && <motion.span className="kind-selection" layoutId={`entry-kind-${kindMotionId}`} transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }} />}
             <span className="kind-label">{v}</span>
