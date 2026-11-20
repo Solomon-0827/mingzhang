@@ -31,7 +31,7 @@ def test_category_rename_then_save_display_order(client, stored):
     assert saved['categories'] == payload['categories']
 
 
-def test_display_order_persists_and_rejects_stale_or_invalid_updates(client):
+def test_display_order_persists_and_rejects_stale_or_malformed_updates(client):
     a = client.post('/api/accounts', json={'name': 'A'}).json()['id']
     b = client.post('/api/accounts', json={'name': 'B'}).json()['id']
     initial = client.get('/api/state').json()
@@ -44,23 +44,67 @@ def test_display_order_persists_and_rejects_stale_or_invalid_updates(client):
     assert state['ordering']['version'] == 1
     assert client.put('/api/display-order', json=payload).status_code == 409
     payload['version'] = 1
-    payload['accounts'] = [a, a]
-    assert client.put('/api/display-order', json=payload).status_code == 400
-    payload['accounts'] = ['missing']
-    assert client.put('/api/display-order', json=payload).status_code == 400
+    assert client.put('/api/display-order', json=payload).status_code == 200
+    assert client.get('/api/state').json()['ordering']['version'] == 2
+    assert client.put('/api/display-order', json=payload).status_code == 409
+    assert client.put('/api/display-order', json={**payload, 'version': 2, 'accounts': 'invalid'}).status_code == 422
     c = client.post('/api/accounts', json={'name': 'C'}).json()['id']
     assert [x['id'] for x in client.get('/api/state').json()['accounts']] == [b, a, c]
     client.post('/api/logout')
     assert client.put('/api/display-order', json=payload).status_code == 401
 
 
+@pytest.mark.parametrize('stored', [False, True], ids=['no-row', 'previous-client-rename'])
+def test_display_order_accepts_ahead_version(client, stored):
+    payload = {'accounts': [], 'categories': [], 'version': 0}
+    state = client.get('/api/state').json()
+    if stored:
+        assert client.put('/api/display-order', json=payload).status_code == 200
+        assert client.get('/api/state').json()['ordering']['version'] == 1
+    assert client.post('/api/categories', json={
+        'action': 'rename', 'path': '日常/餐饮', 'name': '吃饭', 'version': state['category_catalog']['version'],
+    }).status_code == 200
+    payload.update(categories=['日常/吃饭'], version=2 if stored else 1)
+    assert client.put('/api/display-order', json=payload).status_code == 200
+    saved = client.get('/api/state').json()['ordering']
+    assert saved['version'] == payload['version'] + 1
+    assert saved['categories'] == payload['categories']
+
+
+def test_display_order_normalises_ranks(client):
+    a = client.post('/api/accounts', json={'name': 'A'}).json()['id']
+    b = client.post('/api/accounts', json={'name': 'B'}).json()['id']
+    payload = {
+        'accounts': ['missing', b, a, b], 'account_groups': ['missing', 'bank', 'bank'],
+        'categories': ['其他/分类', '', '日常/餐饮', '其他/分类'], 'version': 0,
+    }
+    assert client.put('/api/display-order', json=payload).status_code == 200
+    saved = client.get('/api/state').json()['ordering']
+    assert saved['accounts'] == [b, a]
+    assert saved['account_groups'] == ['bank']
+    assert saved['categories'] == ['其他/分类', '日常/餐饮']
+
+
+def test_display_order_normalises_favorites(client):
+    state = client.get('/api/state').json()
+    choices = list(state['category_catalog']['items'])
+    assert client.post('/api/categories', json={
+        'action': 'rename', 'path': choices[0], 'name': '吃饭', 'version': 0,
+    }).status_code == 200
+    assert client.post('/api/categories', json={
+        'action': 'delete', 'path': choices[1], 'version': 1,
+    }).status_code == 200
+    favorites = ['missing', choices[2], *choices, '日常/吃饭']
+    assert client.put('/api/display-order', json={
+        'accounts': [], 'categories': [], 'favorites': favorites, 'version': 0,
+    }).status_code == 200
+    assert client.get('/api/state').json()['ordering']['favorites'] == choices[2:11]
+
+
 def test_favorites_limits_persistence_and_legacy_save(client):
     state = client.get('/api/state').json()
     choices = list(state['category_catalog']['items'])
     payload = {'accounts': [], 'categories': choices, 'favorites': choices[:9], 'version': 0}
-    assert client.put('/api/display-order', json={**payload, 'favorites': choices[:10]}).status_code == 422
-    for invalid in [[choices[0], choices[0]], ['missing']]:
-        assert client.put('/api/display-order', json={**payload, 'favorites': invalid}).status_code == 400
     assert client.put('/api/display-order', json=payload).status_code == 200
     assert client.get('/api/state').json()['ordering']['favorites'] == choices[:9]
     assert client.put('/api/display-order', json=payload).status_code == 409
@@ -114,8 +158,8 @@ def test_adding_child_hides_favorited_parent_placeholder(client):
     assert client.put('/api/display-order', json=order).status_code == 200
 
 
-@pytest.mark.parametrize("send_stale_favorite", [False, True], ids=["omit-favorites", "carry-favorites"])
-def test_order_save_after_orphaned_import_favorite_and_unrelated_rename(client, send_stale_favorite):
+@pytest.fixture
+def orphaned_import_favorite(client):
     path = '历史/午餐'
     content = f"日期,类型,金额,账户,分类\n2026-01-15,支出,10.00,现金,{path}\n"
     upload = client.post('/api/imports/upload', files={'file': ('old.csv', content.encode(), 'text/csv')})
@@ -130,6 +174,24 @@ def test_order_save_after_orphaned_import_favorite_and_unrelated_rename(client, 
     original = state['entries'][0]
     assert client.put(f"/api/entries/{original['id']}", json={**original, 'category': '日常/餐饮'}).status_code == 200
     moved = client.get('/api/state').json()['ordering']
+    assert moved['favorites'] == []
+    return path, state
+
+
+def test_consecutive_order_saves_drop_orphaned_import_favorite(client, orphaned_import_favorite):
+    path, state = orphaned_import_favorite
+    order = {'accounts': [], 'categories': ['日常/购物'], 'version': state['ordering']['version']}
+    assert client.put('/api/display-order', json=order).status_code == 200
+    order.update(version=order['version'] + 1, favorites=[path, '日常/购物'])
+    assert client.put('/api/display-order', json=order).status_code == 200
+    saved = client.get('/api/state').json()['ordering']
+    assert saved['favorites'] == ['日常/购物']
+    assert saved['version'] == order['version'] + 1
+
+
+@pytest.mark.parametrize("send_stale_favorite", [False, True], ids=["omit-favorites", "carry-favorites"])
+def test_order_save_after_orphaned_import_favorite_and_unrelated_rename(client, orphaned_import_favorite, send_stale_favorite):
+    path, state = orphaned_import_favorite
     assert client.post('/api/categories', json={
         'action': 'rename', 'path': '日常/购物', 'name': '采购', 'version': state['category_catalog']['version'],
     }).status_code == 200
@@ -137,7 +199,6 @@ def test_order_save_after_orphaned_import_favorite_and_unrelated_rename(client, 
     if send_stale_favorite:
         order['favorites'] = [path]
     assert client.put('/api/display-order', json=order).status_code == 200
-    assert moved['favorites'] == []
     saved = client.get('/api/state').json()['ordering']
     assert saved['favorites'] == []
     assert saved['version'] == order['version'] + 1

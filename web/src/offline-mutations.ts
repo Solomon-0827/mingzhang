@@ -205,9 +205,14 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
   if (mutation.type === "category.change") return changeCategory(state, body as unknown as CategoryChange);
   if (mutation.type === "order.update") {
     const order = body as unknown as DisplayOrder;
+    const catalog = state.category_catalog;
+    const favorites = order.favorites ?? state.ordering?.favorites ?? [];
+    const activeFavorites = catalog ? favorites.filter(path =>
+      Object.hasOwn(catalog.items, path) && !catalog.hidden.includes(path) && !catalog.retired?.includes(path)
+    ) : favorites;
     const ranks = new Map(order.accounts.map((id, index) => [id, index]));
     const groupRanks = new Map((order.account_groups || []).map((id, index) => [id, index]));
-    return { ...state, ordering: { ...order, favorites: order.favorites ?? state.ordering?.favorites, version: order.version + 1 },
+    return { ...state, ordering: { ...order, favorites: [...new Set(activeFavorites)].slice(0, 9), version: order.version + 1 },
       accounts: [...state.accounts].sort((a, b) => (ranks.get(a.id) ?? order.accounts.length) - (ranks.get(b.id) ?? order.accounts.length)),
       account_groups: [...state.account_groups].sort((a, b) => (groupRanks.get(a.id) ?? groupRanks.size) - (groupRanks.get(b.id) ?? groupRanks.size)) };
   }

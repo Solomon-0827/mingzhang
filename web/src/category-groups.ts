@@ -1,4 +1,4 @@
-import type { CategoryCatalog, Kind } from "./types";
+import { ordered, type CategoryCatalog, type Kind } from "./types";
 
 export function categoryAllowsKind(catalog: CategoryCatalog, path: string, kind: Kind) {
   return !Object.hasOwn(catalog.items, path) || catalog.items[path].includes(kind);
@@ -8,6 +8,11 @@ export function categoriesForKind(catalog: CategoryCatalog, kind: Kind) {
   return Object.keys(catalog.items).filter(path =>
     !catalog.hidden.includes(path) && !catalog.retired?.includes(path) && categoryAllowsKind(catalog, path, kind)
   );
+}
+
+export function defaultCategoryForKind(catalog: CategoryCatalog | undefined, kind: Kind, order?: string[]) {
+  if (!catalog || (kind !== "income" && kind !== "expense")) return "";
+  return ordered(categoriesForKind(catalog, kind), order)[0] ?? "";
 }
 
 export function categoryGroups(values: string[]) {

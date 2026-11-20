@@ -39,7 +39,7 @@ import {
   today,
 } from "./types";
 import { AccountSelect, ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
-import { categoriesForKind, categoryLeaf } from "./category-groups";
+import { categoriesForKind, categoryLeaf, defaultCategoryForKind } from "./category-groups";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import "./paper-theme.css";
@@ -1634,6 +1634,10 @@ function EntryDialog({
           setError("转入账户不能与转出账户相同");
           return;
         }
+        if ((value.kind === "income" || value.kind === "expense") && !value.category) {
+          setError("请选择分类");
+          return;
+        }
         setBusy(true);
         try {
           await onSave({ ...value, amount_cents: cents(amount) });
@@ -1669,11 +1673,7 @@ function EntryDialog({
                   ? accounts.find(a => !["receivable", "liability"].includes(a.kind))?.id || "" : value.account_id,
                 to_account_id: null,
                 reference_id: null,
-                category: ["income", "expense"].includes(k)
-                  ? k === "income"
-                    ? "收入/工资"
-                    : "日常/餐饮"
-                  : "",
+                category: defaultCategoryForKind(catalog, k as Kind, categoryOrder),
               })
             }
           >

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Popover } from "antd";
 import { Entry, Kind, State, cents, labels, money, today, ordered } from "./types";
 import { AccountSelect, StyledDate, StyledSelect, CategorySelect } from "./controls";
-import { categoriesForKind } from "./category-groups";
+import { categoriesForKind, defaultCategoryForKind } from "./category-groups";
 
 type Field =
   | "date"
@@ -232,7 +232,6 @@ export function EntryField({
                   disabled={busy}
                   onChange={(e) => {
                     const kind = e.target.value as Kind;
-                    const catalog = state.category_catalog;
                     const next = {
                       ...draft,
                       kind,
@@ -240,8 +239,7 @@ export function EntryField({
                         ? state.accounts.find(a => !["receivable", "liability"].includes(a.kind))?.id || "" : draft.account_id,
                       to_account_id: null,
                       reference_id: null,
-                      category: catalog && (kind === "income" || kind === "expense")
-                        ? ordered(categoriesForKind(catalog, kind), state.ordering?.categories)[0] ?? "" : "",
+                      category: defaultCategoryForKind(state.category_catalog, kind, state.ordering?.categories),
                     };
                     setDraft(next);
                     if (ready(next)) void save(next);

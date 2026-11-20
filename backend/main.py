@@ -210,7 +210,7 @@ class DisplayOrder(BaseModel):
     accounts: list[str] = Field(max_length=1000)
     account_groups: list[str] | None = Field(default=None, max_length=1000)
     categories: list[str] = Field(max_length=1000)
-    favorites: list[str] | None = Field(default=None, max_length=9)
+    favorites: list[str] | None = None
     version: int = Field(ge=0)
 
 
@@ -218,30 +218,23 @@ class DisplayOrder(BaseModel):
 def save_display_order(body: DisplayOrder):
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        current = db.execute("SELECT value FROM settings WHERE key='display_order'").fetchone()
-        version = json.loads(current[0])["version"] if current else 0
-        if body.version != version:
+        row = db.execute("SELECT value FROM settings WHERE key='display_order'").fetchone()
+        current = json.loads(row[0]) if row else {}
+        # Older clients incremented their local order version on category rename.
+        if body.version < current.get("version", 0):
             fail("排序已在另一端修改，请关闭设置并刷新后重试", 409)
-        for values in [body.accounts, body.categories]:
-            if len(set(values)) != len(values) or any(not v.strip() or len(v) > 120 for v in values):
-                fail("排序项目不能为空或重复")
         ids = {r[0] for r in db.execute("SELECT id FROM accounts")}
-        if not set(body.accounts) <= ids:
-            fail("排序包含不存在的账户")
-        payload = body.model_dump()
-        groups = body.account_groups if body.account_groups is not None else (json.loads(current[0]).get("account_groups", []) if current else [])
+        groups = body.account_groups if body.account_groups is not None else current.get("account_groups", [])
         known_groups = {r[0] for r in db.execute("SELECT id FROM account_groups")}
-        if len(groups) != len(set(groups)) or not set(groups) <= known_groups:
-            fail("账户类型排序包含重复或不存在的类型")
-        payload["account_groups"] = groups
-        stored_favorites = json.loads(current[0]).get("favorites", []) if current else []
-        favorites = body.favorites if body.favorites is not None else stored_favorites
+        favorites = body.favorites if body.favorites is not None else current.get("favorites", [])
         active = catalog(db)["items"]
-        # An offline order save can carry a previously saved favorite that has since become inactive.
-        if len(favorites) != len(set(favorites)) or any(p not in active and p not in stored_favorites for p in favorites):
-            fail("常用分类不能重复，且必须是未删除的分类")
-        payload["favorites"] = [p for p in favorites if p in active]
-        payload["version"] += 1
+        payload = {
+            "accounts": list(dict.fromkeys(a for a in body.accounts if a in ids)),
+            "account_groups": list(dict.fromkeys(g for g in groups if g in known_groups)),
+            "categories": list(dict.fromkeys(p for p in body.categories if p.strip() and len(p) <= 120)),
+            "favorites": list(dict.fromkeys(p for p in favorites if p in active))[:9],
+            "version": body.version + 1,
+        }
         db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('display_order',?)",
                    (json.dumps(payload, ensure_ascii=False),))
         audit(db, "display_order.update", payload)
