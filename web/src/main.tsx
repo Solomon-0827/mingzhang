@@ -46,14 +46,24 @@ import "./style.css";
 import "./paper-theme.css";
 import { OrderSettings } from "./order-settings";
 import type { OfflineMutation } from "./offline-mutations";
-import { createQueueLock, createSyncQueue, isQueueStorageKey, type BlockedMutation, type QueueAction, type SyncSnapshot } from "./sync-queue";
-import { BlockedSyncDetails, EntryRecoveryComparison, describeBlocked, entryRecoveryChange, prepareEntryRecovery, rebaseChange } from "./blocked-sync";
+import { createSyncQueue, type BlockedMutation, type QueueAction, type ReceiptStatus, type SyncSnapshot } from "./sync-queue";
+import { isQueueStorageKey, queueSignalKey } from "./mutation-store";
+import { BlockedSyncDetails, EntryRecoveryComparison, describeBlocked, entryRecoveryChange, prepareEntryRecovery, rebaseChange, recoverySettings } from "./blocked-sync";
 
+const queueChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("mingzhang.mutations") : null;
 const syncQueue = createSyncQueue({
   storage: localStorage,
-  lock: createQueueLock(navigator.locks),
+  database: window.indexedDB,
+  locks: navigator.locks,
   send: item => api(item.path, item.body, item.method, item.id),
   fetchSnapshot: mutation_ids => api<SyncSnapshot>("/sync-state", { mutation_ids }),
+  fetchReceipt: id => api<ReceiptStatus>(`/mutation-receipts/${encodeURIComponent(id)}`),
+  onStoredChange: snapshot => {
+    try {
+      if (queueChannel) queueChannel.postMessage(snapshot ?? null);
+      else localStorage.setItem(queueSignalKey, crypto.randomUUID());
+    } catch { /* Other tabs also read the queue on focus and refresh. */ }
+  },
 });
 
 type DesktopUpdateState = {
@@ -190,10 +200,12 @@ function App() {
   const [lastSync, setLastSync] = useState(""),
     [online, setOnline] = useState(navigator.onLine);
   const [queueView, setQueueView] = useState(syncQueue.view);
-  const { count: pendingCount, blocked, beforeBlocked, storageError, memoryCount } = queueView;
+  const { count: pendingCount, blocked, snapshot: serverSnapshot, storageError, memoryCount, fallback } = queueView;
   const [showBlocked, setShowBlocked] = useState(false);
   const [blockedEditor, setBlockedEditor] = useState<{ target: BlockedMutation } & ReturnType<typeof prepareEntryRecovery> | null>(null);
-  const [startupBlocked] = useState(() => blocked);
+  const loginEpoch = useRef(0);
+  const [settingsRecovery, setSettingsRecovery] = useState<{ id: string; section: "accounts" | "categories" } | null>(null);
+  const latestSettings = settingsRecovery?.id === blocked?.id ? settingsRecovery : null;
   const startupAttempted = useRef(false);
   useEffect(() => { if (!pendingCount) setShowBlocked(false); }, [pendingCount]);
   useEffect(() => {
@@ -301,24 +313,36 @@ function App() {
     setQueueView(view);
     setState(view.state);
   }, []);
-  const requireLogin = useCallback(() => {
+  useEffect(() => syncQueue.subscribe(readQueue), [readQueue]);
+  const closeSession = useCallback(() => {
+    loginEpoch.current += 1;
+    startupAttempted.current = false;
+    setBlockedEditor(null);
+    setShowBlocked(false);
+    setSettingsRecovery(null);
+    setAccountEditor(null);
     setLogged(false);
     setState(null);
+  }, []);
+  const requireLogin = useCallback(() => {
+    closeSession();
     setError("请重新登录");
-  }, [setError]);
+  }, [closeSession, setError]);
   const refresh = useCallback(async () => {
+    const epoch = loginEpoch.current;
     try {
       const snapshot = await syncQueue.refresh();
-      readQueue();
-      clearConnectionError();
-      setLogged(true);
-      setLastSync(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+      if (epoch === loginEpoch.current) {
+        clearConnectionError();
+        setLogged(true);
+        setLastSync(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+      }
       return snapshot;
     } catch (error) {
-      if (isUnauthorized(error)) requireLogin();
+      if (isUnauthorized(error) && epoch === loginEpoch.current) requireLogin();
       throw error;
     }
-  }, [readQueue, requireLogin, clearConnectionError]);
+  }, [requireLogin, clearConnectionError]);
   const scheduleRefresh = useCallback(() => {
     if (backgroundRefresh.current !== null)
       window.clearTimeout(backgroundRefresh.current);
@@ -359,12 +383,21 @@ function App() {
     };
   }, [logged, refresh, setError]);
   useEffect(() => {
+    const load = (snapshot?: SyncSnapshot) => syncQueue.load(snapshot).catch(error => setError(error.message));
     const storage = (event: StorageEvent) => {
-      if (event.storageArea === localStorage && isQueueStorageKey(event.key)) readQueue();
+      if (event.storageArea === localStorage && isQueueStorageKey(event.key)) void load();
     };
+    const receive = (event: MessageEvent<SyncSnapshot | null>) => { void load(event.data ?? undefined); };
+    const focus = () => { void load(); };
+    window.addEventListener("focus", focus);
     window.addEventListener("storage", storage);
-    return () => window.removeEventListener("storage", storage);
-  }, [readQueue]);
+    queueChannel?.addEventListener("message", receive);
+    return () => {
+      window.removeEventListener("focus", focus);
+      window.removeEventListener("storage", storage);
+      queueChannel?.removeEventListener("message", receive);
+    };
+  }, [setError]);
   useEffect(() => {
     const reconnect = () => {
       readQueue();
@@ -389,6 +422,7 @@ function App() {
   }, []);
   useEffect(() => {
     let current = true;
+    const epoch = loginEpoch.current;
     if (logged && state && ["overview", "reports"].includes(page) && (pendingCount || !online)) {
       setReport(localReport(state.entries, range[0], range[1]));
       return () => { current = false; };
@@ -399,12 +433,14 @@ function App() {
           if (current) setReport(value);
         })
         .catch((e) => {
-          if (current) setError(e.message);
+          if (!current || epoch !== loginEpoch.current) return;
+          if (isUnauthorized(e)) requireLogin();
+          else setError(e.message);
         });
     return () => {
       current = false;
     };
-  }, [logged, range, state, page, pendingCount, online, setError]);
+  }, [logged, range, state, page, pendingCount, online, setError, requireLogin]);
   const openNew = useCallback(() => {
     if (!state?.accounts.length) {
       navigate("accounts");
@@ -433,20 +469,25 @@ function App() {
     pendingRetry.current = null;
   }, []);
   const flushPendingMutations = useCallback(async function flush(action?: QueueAction, startup = false) {
-    if (!action && (pendingFlush.current || pendingRetry.current !== null || !syncQueue.hasReadyHead())) return;
+    if (!action && (pendingFlush.current || pendingRetry.current !== null)) return;
     pendingFlush.current += 1;
+    const epoch = loginEpoch.current;
     let checkTail = false;
     try {
-      const result = await syncQueue.flush(action, readQueue).finally(readQueue);
-      checkTail = result === "idle" || result === "synced" || result === "changed";
+      const result = await syncQueue.flush(action);
+      if (epoch !== loginEpoch.current) return;
+      checkTail = result === "idle" || result === "synced" || result === "changed" || result === "already-synced";
       if (result === "in-flight") throw new Error("另一窗口正在同步这条修改，请等本次同步结束。");
+      if (result === "no-snapshot" || result === "receipt-unavailable") throw new Error(
+        action?.kind === "discard" ? "联网后才能放弃这条修改" : "暂时无法核对同步状态，请联网后重试。");
+      if (result === "already-synced") setNotice("这条修改已同步到服务器。");
       if (result === "changed" && action && !startup) throw new Error("这条修改已在其他窗口处理，请查看当前待处理内容。");
       if (result === "retryable" || typeof result === "object") {
         const needsManualRetry = Boolean(syncQueue.blocked());
         const wait = typeof result === "object" ? result : null;
         if (wait?.wait !== "sending")
           setError(needsManualRetry ? "暂时无法同步，修改仍在本机，请稍后重试。" : "暂时无法同步，稍后会自动重试。");
-        if (!needsManualRetry || (wait?.wait === "retry" && action?.kind === "retry")) {
+        if (!needsManualRetry || (wait && action?.kind === "retry")) {
           cancelPendingRetry();
           const delay = wait ? Math.max(0, wait.until - Date.now()) : retryDelay.current;
           pendingRetry.current = window.setTimeout(() => {
@@ -463,18 +504,18 @@ function App() {
       }
     } finally {
       pendingFlush.current -= 1;
-      if (checkTail && navigator.onLine && syncQueue.hasReadyHead(false))
+      if (checkTail && navigator.onLine && syncQueue.hasReadyHead())
         void flush().catch(e => setError(e.message));
     }
-  }, [readQueue, cancelPendingRetry, requireLogin, clearConnectionError, scheduleRefresh, setError]);
+  }, [cancelPendingRetry, requireLogin, clearConnectionError, scheduleRefresh, setError, setNotice]);
   useEffect(() => {
     if (!logged || !online) return;
     cancelPendingRetry();
-    const startup = startupAttempted.current ? null : startupBlocked;
+    const startup = startupAttempted.current ? null : syncQueue.blocked();
     startupAttempted.current = true;
     void flushPendingMutations(startup ? { kind: "retry", target: startup } : undefined, true)
       .catch(e => setError(e.message));
-  }, [logged, online, startupBlocked, cancelPendingRetry, flushPendingMutations, setError]);
+  }, [logged, online, cancelPendingRetry, flushPendingMutations, setError]);
   useEffect(() => {
     if (!logged || !online || blocked || !pendingCount) return;
     void flushPendingMutations().catch(e => setError(e.message));
@@ -486,7 +527,6 @@ function App() {
 
   async function queueMutation(value: Omit<OfflineMutation, "id" | "createdAt">) {
     await syncQueue.enqueue(value);
-    readQueue();
     setError("");
     void flushPendingMutations().catch(e => setError(e.message));
   }
@@ -495,16 +535,34 @@ function App() {
       method: editing ? "PUT" : "POST", body: value as unknown as Record<string, unknown> });
   }
   async function openBlockedEditor(target: BlockedMutation) {
+    const epoch = loginEpoch.current;
     const snapshot = await refresh();
-    setBlockedEditor({ target, ...prepareEntryRecovery(target, snapshot, newEntry()) });
+    if (epoch === loginEpoch.current)
+      setBlockedEditor({ target, ...prepareEntryRecovery(target, snapshot, newEntry()) });
   }
   async function rebaseBlocked(target: BlockedMutation) {
+    const epoch = loginEpoch.current;
     const snapshot = await refresh();
-    await flushPendingMutations({ kind: "edit", target, change: rebaseChange(target, snapshot) });
+    if (epoch === loginEpoch.current)
+      await flushPendingMutations({ kind: "edit", target, change: rebaseChange(target, snapshot) });
+  }
+  async function openLatestSettings(target: BlockedMutation) {
+    const section = recoverySettings(target);
+    if (!section) return;
+    const epoch = loginEpoch.current;
+    const snapshot = await refresh();
+    if (epoch !== loginEpoch.current || syncQueue.blocked()?.id !== target.id) return;
+    setSettingsRecovery({ id: target.id, section });
+    setShowBlocked(false);
+    navigate("settings");
+    if (target.type === "account.update") {
+      const account = snapshot.accounts.find(value => value.id === target.path.split("/")[2]);
+      if (account) setAccountEditor(account);
+    }
   }
   async function retryQueueStorage() {
     try {
-      await syncQueue.retryStorage().finally(readQueue);
+      await syncQueue.retryStorage();
       await flushPendingMutations();
     } catch (error) {
       setError((error as Error).message);
@@ -574,17 +632,21 @@ function App() {
       .reduce((sum, account) => sum + account.balance_cents, 0),
   })).filter(group => (state?.accounts || []).some(account => (account.group_id || account.kind) === group.id)), [state?.account_groups, state?.accounts]);
   const queueNotice = blocked ? "有 1 项修改未能同步，点此处理" : `${pendingCount} 项等待同步，点此查看`;
-  const storageNotice = storageError && <div className="queue-storage-notice" role="alert">
-    <span>{memoryCount ? `${memoryCount} 项修改只保留在此页面，请勿关闭或刷新。` : "未能保存同步状态，请释放本机空间。"}</span>
-    <button type="button" className="secondary" onClick={() => void retryQueueStorage()}>重试本机保存</button>
+  const storageNotice = (storageError || fallback) && <div className="queue-storage-notice" role={storageError ? "alert" : undefined}>
+    {storageError && <>
+      <span>{memoryCount} 项修改只保留在此页面，请勿关闭或刷新。</span>
+      <button type="button" className="secondary" onClick={() => void retryQueueStorage()}>重试本机保存</button>
+    </>}
+    {fallback && <span>本机使用兼容存储，多窗口同步保护有限。</span>}
   </div>;
   const queuePanel = showBlocked && pendingCount > 0 && !blockedEditor && (
     <Modal title={blocked ? "处理未同步的修改" : "等待同步的修改"} onClose={() => setShowBlocked(false)}>
-      {blocked ? <BlockedSyncDetails key={blocked.id} item={blocked} state={beforeBlocked} waiting={pendingCount - 1}
+      {blocked ? <BlockedSyncDetails key={blocked.id} item={blocked} state={serverSnapshot} waiting={pendingCount - 1}
         onRetry={() => flushPendingMutations({ kind: "retry", target: blocked })}
         onEdit={() => openBlockedEditor(blocked)}
         onRebase={() => rebaseBlocked(blocked)}
-        onDiscard={() => flushPendingMutations({ kind: "discard", target: blocked })} />
+        onOpenSettings={() => openLatestSettings(blocked)}
+        onDiscard={confirm => flushPendingMutations({ kind: "discard", target: blocked, confirm })} />
         : <div className="blocked-sync-details">
           <ol>{queueView.items.map(item => <li key={item.id}>{describeBlocked(item, null).title}</li>)}</ol>
           <p>{logged ? "恢复联网后会按保存顺序自动同步。" : "连接账本后会按保存顺序自动同步。"}</p>
@@ -629,6 +691,7 @@ function App() {
             setError("");
             try {
               await api("/login", { password });
+              loginEpoch.current += 1;
               await refresh();
               setPassword("");
             } catch (e) {
@@ -752,8 +815,7 @@ function App() {
             onClick={() => {
               api("/logout", {}).then(() => {
                 resetHistory();
-                setLogged(false);
-                setState(null);
+                closeSession();
               });
             }}
           ><LogOut size={18} aria-hidden="true" /></button>
@@ -1472,9 +1534,11 @@ function App() {
             </section>
           </>
         )}
-        {page === "settings" && state && <OrderSettings state={state} defaults={categories}
+        {page === "settings" && state && <OrderSettings
+          key={latestSettings?.id ?? "settings"} initialSection={latestSettings?.section}
+          state={(latestSettings && serverSnapshot) || state} defaults={categories}
           onCategoryChange={async value => { await queueMutation({type:"category.change",path:"/categories",method:"POST",body:value as unknown as Record<string,unknown>}); }}
-          onPasswordChanged={() => { resetHistory(); setLogged(false); setState(null); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
+          onPasswordChanged={() => { resetHistory(); closeSession(); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
           onEditAccount={setAccountEditor}
           onRenameAccountGroup={async (id,name,expected_name) => {await queueMutation({type:"account-group.rename",path:`/account-groups/${id}`,method:"PUT",body:{name,expected_name}});}}
           onAccountGroupChange={async (id, value) => {
@@ -1539,7 +1603,7 @@ function App() {
       {accountEditor && (
         <AccountDialog
           initial={accountEditor}
-          groups={state?.account_groups ?? []}
+          groups={((latestSettings && serverSnapshot) || state)?.account_groups ?? []}
           onClose={() => setAccountEditor(null)}
           onSave={async (value) => {
             const creating = !value.id;

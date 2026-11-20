@@ -141,6 +141,8 @@ function connectionFailure(error: unknown) {
     : new RequestError("network", "无法连接账本服务，请检查网络后重试。");
 }
 
+export const requestDeadlineMs = 45_000;
+
 export async function api<T>(
   path: string,
   body?: unknown,
@@ -150,7 +152,7 @@ export async function api<T>(
   const response = await fetch("/api" + path, {
     method: method || (body === undefined ? "GET" : "POST"),
     credentials: "same-origin",
-    signal: AbortSignal.timeout(45000),
+    signal: AbortSignal.timeout(requestDeadlineMs),
     headers: {
       ...(body instanceof FormData ? {} : { "Content-Type": "application/json" }),
       ...(mutationId ? { "X-Mingzhang-Mutation": mutationId } : {}),

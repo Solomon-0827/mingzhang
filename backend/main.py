@@ -98,19 +98,38 @@ async def protect(request, call_next):
 
 def run_mutation(request: Request, apply):
     mutation_id = request.headers.get("x-mingzhang-mutation", "")
-    if mutation_id and (len(mutation_id) > 100 or not mutation_id.replace("-", "").isalnum()):
-        fail("同步任务编号无效")
+    if mutation_id:
+        validate_mutation_id(mutation_id)
     with connect() as db:
         # A concurrent replay must wait for both the change and its receipt.
         db.execute("BEGIN IMMEDIATE")
         if mutation_id:
             receipt = db.execute("SELECT result FROM mutation_receipts WHERE id=?", (mutation_id,)).fetchone()
             if receipt is not None:
-                return json.loads(receipt["result"]) if receipt["result"] is not None else {"ok": True, "duplicate": True}
+                return receipt_result(receipt)
         result = apply(db)
         if mutation_id:
             db.execute("INSERT INTO mutation_receipts(id,result) VALUES (?,?)", (mutation_id, json.dumps(result)))
         return result
+
+
+def validate_mutation_id(mutation_id):
+    if len(mutation_id) > 100 or not mutation_id.replace("-", "").isalnum():
+        fail("同步任务编号无效")
+
+
+def receipt_result(receipt):
+    return json.loads(receipt["result"]) if receipt["result"] is not None else {"ok": True, "duplicate": True}
+
+
+@app.get("/api/mutation-receipts/{mutation_id}", dependencies=[Depends(authenticated)])
+def mutation_receipt(mutation_id: str):
+    validate_mutation_id(mutation_id)
+    with connect() as db:
+        # Check after any writer already committing this receipt has finished.
+        db.execute("BEGIN IMMEDIATE")
+        receipt = db.execute("SELECT result FROM mutation_receipts WHERE id=?", (mutation_id,)).fetchone()
+    return {"committed": receipt is not None, "result": receipt_result(receipt) if receipt is not None else None}
 
 
 class Login(BaseModel):
@@ -214,12 +233,14 @@ def sync_state(body: SyncStateRequest):
     with connect() as db:
         # Read the ledger and receipts from the same SQLite snapshot.
         db.execute("BEGIN")
+        db.execute("SELECT 1 FROM settings LIMIT 1").fetchone()
+        observed_at = time.time_ns()
         result = ledger_state(db)
         committed = [row[0] for row in db.execute(
             "SELECT id FROM mutation_receipts WHERE id IN (SELECT value FROM json_each(?))",
             (json.dumps(body.mutation_ids),),
         )]
-    return {"snapshot": result, "committed": committed}
+    return {"snapshot": result, "committed": committed, "observed_at": str(observed_at)}
 
 
 @app.post("/api/categories", dependencies=[Depends(authenticated)])

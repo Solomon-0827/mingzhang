@@ -1,33 +1,30 @@
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createQueueLock, createSyncQueue } from "./sync-queue";
-import { canRebase, describeBlocked, EntryRecoveryComparison, entryRecoveryChange, prepareEntryRecovery, rebaseChange } from "./blocked-sync";
-import { api, RequestError, type Entry, type State } from "./types";
+import { createSyncQueue, inFlightTimeout, type BlockedMutation } from "./sync-queue";
+import { blockedKey, openMutationStore, queueKey, snapshotKey } from "./mutation-store";
+import {
+  BlockedSyncDetails, canRebase, describeBlocked, EntryRecoveryComparison,
+  entryRecoveryChange, prepareEntryRecovery, rebaseChange,
+} from "./blocked-sync";
+import { api, RequestError, requestDeadlineMs, type Entry, type State } from "./types";
 import { applyMutation, type OfflineMutation } from "./offline-mutations";
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
-  onReadLength?: () => void;
-  get length() {
-    this.onReadLength?.();
-    return this.values.size;
-  }
+  get length() { return this.values.size; }
   getItem(key: string) { return this.values.get(key) ?? null; }
   maxCharacters = Infinity;
   rejectWritesTo: string[] = [];
-  rejectNextWriteTo?: string;
-  onRemove?: (key: string) => void;
   setItem(key: string, value: string) {
     const otherSize = [...this.values].reduce((sum, [name, raw]) => name === key ? sum : sum + raw.length, 0);
-    const rejectOnce = this.rejectNextWriteTo === key;
-    if (rejectOnce) this.rejectNextWriteTo = undefined;
-    if (rejectOnce || this.rejectWritesTo.includes(key) || otherSize + value.length > this.maxCharacters) {
+    if (this.rejectWritesTo.includes(key) || otherSize + value.length > this.maxCharacters) {
       throw new DOMException("storage is full", "QuotaExceededError");
     }
     this.values.set(key, value);
   }
-  removeItem(key: string) { this.values.delete(key); this.onRemove?.(key); }
+  removeItem(key: string) { this.values.delete(key); }
   key(index: number) { return [...this.values.keys()][index] ?? null; }
   clear() { this.values.clear(); }
 }
@@ -50,21 +47,11 @@ function createEntry(id: string) {
   return { type: "entry.create", path: "/entries", method: "POST", body: entry(id) } as const;
 }
 
-function setup(initial = snapshot, withoutWebLocks = false, withLeaseStore = false) {
+function setup(initial = snapshot, database = new IDBFactory()) {
   const storage = new MemoryStorage();
-  const locks = new Map<string, Promise<unknown>>();
-  type Lock = Parameters<typeof createSyncQueue>[0]["lock"];
-  type LeaseStore = NonNullable<Parameters<Parameters<Lock>[1]>[0]>;
-  let lease: LeaseStore["value"] = null;
-  const lock: Lock = (name, run) => {
-    const next = (locks.get(name) ?? Promise.resolve()).then(() =>
-      run(withLeaseStore && name === sharedKey ? { value: lease, save: value => { lease = value; } } : undefined));
-    locks.set(name, next.catch(() => undefined));
-    return next;
-  };
-  const send = vi.fn(async (_item: OfflineMutation): Promise<unknown> => undefined);
   let server = initial;
   const receipts = new Set<string>();
+  const send = vi.fn(async (_item: OfflineMutation): Promise<unknown> => undefined);
   function commit(item: OfflineMutation) {
     if (receipts.has(item.id)) return;
     server = applyMutation(server, item);
@@ -72,235 +59,402 @@ function setup(initial = snapshot, withoutWebLocks = false, withLeaseStore = fal
   }
   const serverSnapshot = (ids: string[]) => ({ snapshot: server, committed: ids.filter(id => receipts.has(id)) });
   const fetchSnapshot = vi.fn(async (ids: string[]) => serverSnapshot(ids));
-  const open = () => createSyncQueue({ storage, lock: withoutWebLocks ? createQueueLock() : lock,
-    send: async item => { await send(item); commit(item); }, fetchSnapshot });
-  return { storage, send, fetchSnapshot, commit, serverSnapshot, open, queue: open() };
+  const fetchReceipt = vi.fn(async (id: string) => ({ committed: receipts.has(id), result: null }));
+  const open = () => createSyncQueue({ storage, database,
+    send: async item => { await send(item); commit(item); }, fetchSnapshot, fetchReceipt });
+  return { storage, database, send, fetchSnapshot, fetchReceipt, commit, serverSnapshot, receipts, open, queue: open() };
 }
 
 const reject = (message = "请选择有效的账户", status = 400) => new RequestError("rejected", message, status);
+const rawEntry = (id: string, createdAt = 1): OfflineMutation => ({ ...createEntry(id), id, createdAt });
+const category = (path: string, version: number) => ({
+  type: "category.change", method: "POST", path: "/categories",
+  body: { action: "add", path, level: "parent", kind: "expense", version },
+}) as const;
+const withCatalog = { ...snapshot, category_catalog: { items: {}, hidden: [], version: 1 } };
+const discard = (target: BlockedMutation, confirm = vi.fn(() => true)) =>
+  ({ kind: "discard", target, confirm } as const);
 
-describe("sync queue", () => {
-  it("keeps a rejected head and its followers across reloads, without sending on automatic triggers", async () => {
-    const { queue, send, open } = setup();
+afterEach(() => vi.restoreAllMocks());
+
+describe("transactional sync queue", () => {
+  it("durably interleaves 400 saves from two tabs and sends them in IndexedDB key order without Web Locks", async () => {
+    const { queue, open, send, receipts } = setup();
+    const other = open();
+    await Promise.all([queue, other].map(async (tab, index) => {
+      for (let i = 0; i < 200; i += 1) await tab.enqueue(createEntry(`${index}-${i}`));
+    }));
+    const reloaded = open();
+    await reloaded.load();
+    const order = reloaded.view().items.map(item => item.id);
+    expect(order).toHaveLength(400);
+    expect(new Set(order).size).toBe(400);
+    for (let i = 0; i < 2; i += 1)
+      expect(reloaded.view().items.filter(item => String(item.body.id).startsWith(i + "-")).map(item => item.body.id))
+        .toEqual(Array.from({ length: 200 }, (_, index) => `${i}-${index}`));
+    await Promise.all([queue.flush(), other.flush()]);
+    expect(send.mock.calls.map(([item]) => item.id)).toEqual(order);
+    expect(receipts.size).toBe(400);
+    await reloaded.load();
+    expect(reloaded.view().count).toBe(0);
+    expect(reloaded.view().state?.entries).toHaveLength(400);
+  }, 15_000);
+
+  it("imports v1 order, preserves an append during import, and remembers IDs after acknowledgement", async () => {
+    const { storage, database, queue, open, send } = setup();
+    const initial = [rawEntry("z", 99), rawEntry("a", 1)];
+    const follower = rawEntry("later", 0);
+    storage.setItem(queueKey, JSON.stringify(initial));
+    const store = await openMutationStore(database);
+    expect(store).toBeTruthy();
+    const add = IDBObjectStore.prototype.add;
+    let appended = false;
+    vi.spyOn(IDBObjectStore.prototype, "add").mockImplementation(function (this: IDBObjectStore, ...args) {
+      if (this.name === "changes" && !appended) {
+        storage.setItem(queueKey, JSON.stringify([...initial, follower]));
+        appended = true;
+      }
+      return add.apply(this, args);
+    });
+
+    await queue.refresh();
+    expect(JSON.parse(storage.getItem(queueKey)!)).toEqual([follower]);
+    expect(await queue.flush()).toBe("synced");
+    expect(send.mock.calls.map(([item]) => item.id)).toEqual(["z", "a", "later"]);
+    const last = rawEntry("last");
+    storage.setItem(queueKey, JSON.stringify([...initial, last]));
+    expect(await open().flush()).toBe("synced");
+    expect(send.mock.calls.map(([item]) => item.id)).toEqual(["z", "a", "later", "last"]);
+    expect(storage.getItem(queueKey)).toBeNull();
+  });
+
+  it("persists a blocked head across reloads and sends the replacement in the same position with a fresh receipt", async () => {
+    const { queue, open, send } = setup();
+    await queue.refresh();
     await queue.enqueue(createEntry("first"));
     await queue.enqueue(createEntry("later"));
     send.mockRejectedValueOnce(reject());
     expect(await queue.flush()).toBe("blocked");
-    const afterReload = open();
-    const blocked = afterReload.view().blocked!;
-    expect(blocked).toMatchObject({ body: { id: "first" }, blocked: { status: 400, message: "请选择有效的账户", at: expect.any(Number) } });
-    expect(afterReload.view().count).toBe(2);
-    await afterReload.enqueue(createEntry("newest"));
-    expect(await afterReload.flush()).toBe("idle");
-    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["first"]);
-    expect(afterReload.view().state?.entries).toHaveLength(3);
+    const reloaded = open();
+    await reloaded.load();
+    const target = reloaded.blocked()!;
+    expect(target).toMatchObject({ body: { id: "first" }, blocked: { status: 400, at: expect.any(Number) } });
+    expect(reloaded.view().state?.entries).toHaveLength(2);
+    expect(await reloaded.flush()).toBe("idle");
+    expect(await reloaded.flush({ kind: "edit", target, change: createEntry("replacement") })).toBe("synced");
+    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["first", "replacement", "later"]);
+    expect(send.mock.calls[1][0].id).not.toBe(target.id);
+    expect(send.mock.calls[1][0].createdAt).toBe(target.createdAt);
+    expect(reloaded.view().count).toBe(0);
   });
 
-  it("retries the same receipt and payload explicitly, then drains in order on success", async () => {
-    const { queue, send } = setup();
-    await queue.enqueue(createEntry("first"));
-    await queue.enqueue(createEntry("later"));
-    send.mockRejectedValueOnce(reject()).mockRejectedValueOnce(reject("版本已更新", 409));
+  it.each(["network", "timeout", "unavailable"] as const)("automatically retries an edited payload after %s", async kind => {
+    const { queue, send, open } = setup();
+    const replacement = createEntry("replacement");
+    await queue.enqueue(createEntry("original"));
+    send.mockRejectedValueOnce(reject()).mockRejectedValueOnce(new RequestError(kind, "temporary"));
     await queue.flush();
-    const target = queue.view().blocked!;
-    expect(await queue.flush({ kind: "retry", target })).toBe("blocked");
-    const latest = queue.view().blocked!;
-    expect(latest.blocked).toMatchObject({ status: 409, message: "版本已更新" });
+    expect(await queue.flush({ kind: "edit", target: queue.blocked()!, change: replacement })).toBe("retryable");
+    const other = open();
+    await other.load();
+    expect(other.view()).toMatchObject({ count: 1, blocked: null });
+    expect(await other.flush()).toBe("synced");
+    expect(send.mock.calls[2][0].body).toEqual(replacement.body);
+  });
+
+  it("checks the live receipt before confirmation, removes only the confirmed discard and flushes the follower", async () => {
+    const { queue, send, fetchReceipt } = setup();
+    await queue.refresh();
+    await queue.enqueue(createEntry("discard"));
+    await queue.enqueue(createEntry("follower"));
+    send.mockRejectedValueOnce(reject());
+    await queue.flush();
+    const confirm = vi.fn(() => {
+      expect(fetchReceipt).toHaveBeenLastCalledWith(queue.blocked()!.id);
+      return true;
+    });
+    const cancelled = discard(queue.blocked()!, vi.fn(() => false));
+    expect(await queue.flush(cancelled)).toBe("cancelled");
     expect(queue.view().count).toBe(2);
-    expect(await queue.flush({ kind: "retry", target: latest })).toBe("synced");
-    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["first", "first", "first", "later"]);
-    expect(send.mock.calls.slice(0, 3).map(([item]) => item.id)).toEqual(Array(3).fill(target.id));
-    expect(send.mock.calls.slice(0, 3).map(([item]) => item.body)).toEqual(Array(3).fill(target.body));
+    expect(await queue.flush(discard(queue.blocked()!, confirm))).toBe("synced");
+    expect(queue.view().state?.entries.map(item => item.id)).toEqual(["follower"]);
+    expect(queue.view().count).toBe(0);
+    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["discard", "follower"]);
+  });
+
+  it("acknowledges a retry with a lost response before offering discard confirmation", async () => {
+    const { queue, send, commit, fetchReceipt, open } = setup(withCatalog);
+    await queue.refresh();
+    await queue.enqueue(category("已提交", 1));
+    send.mockRejectedValueOnce(reject()).mockImplementationOnce(async item => {
+      commit(item);
+      throw new RequestError("network", "response lost");
+    });
+    await queue.flush();
+    const target = queue.blocked()!;
+    expect(await queue.flush({ kind: "retry", target })).toBe("retryable");
+    const other = open();
+    await other.load();
+    const confirm = vi.fn(() => true);
+    expect(await other.flush(discard(target, confirm))).toBe("already-synced");
+    expect(fetchReceipt).toHaveBeenCalledWith(target.id);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(other.view().state?.category_catalog?.version).toBe(2);
+    expect(other.view().count).toBe(0);
+  });
+
+  it("guards an active retry in another tab for longer than three request deadlines", async () => {
+    const { queue, open, send, fetchReceipt } = setup();
+    await queue.refresh();
+    await queue.enqueue(createEntry("race"));
+    send.mockRejectedValueOnce(reject());
+    await queue.flush();
+    const target = queue.blocked()!;
+    const start = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+    let release!: () => void;
+    let entered!: () => void;
+    const sending = new Promise<void>(resolve => { entered = resolve; });
+    send.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; entered(); }));
+    const retry = queue.flush({ kind: "retry", target });
+    await sending;
+    clock.mockReturnValue(start + 3 * requestDeadlineMs + 1000);
+    expect(inFlightTimeout).toBeGreaterThan(3 * requestDeadlineMs);
+    const other = open();
+    await other.load();
+    expect(await other.flush(discard(target))).toBe("in-flight");
+    expect(fetchReceipt).not.toHaveBeenCalled();
+    release();
+    expect(await retry).toBe("synced");
+    await other.load();
+    expect(other.view().count).toBe(0);
+  });
+
+  it("checks the receipt after the record's in-flight timeout", async () => {
+    const { queue, database, open, commit, send } = setup();
+    await queue.refresh();
+    await queue.enqueue(createEntry("abandoned"));
+    send.mockRejectedValueOnce(reject());
+    await queue.flush();
+    const target = queue.blocked()!;
+    const store = (await openMutationStore(database))!;
+    await store.changeHead(target.id, head => ({ ...head, status: "in_flight", since: Date.now() - inFlightTimeout, attempt: "abandoned-tab" }));
+    commit(target);
+    const reloaded = open();
+    await reloaded.load();
+    expect(await reloaded.flush(discard(target))).toBe("already-synced");
+    expect(reloaded.view().count).toBe(0);
+  });
+
+  it("keeps retry behind a discard in progress in another tab", async () => {
+    const { queue, open, send, fetchReceipt } = setup();
+    await queue.refresh();
+    await queue.enqueue(createEntry("discard-race"));
+    send.mockRejectedValueOnce(reject());
+    await queue.flush();
+    const target = queue.blocked()!;
+    let reply!: () => void;
+    let entered!: () => void;
+    const checking = new Promise<void>(resolve => { entered = resolve; });
+    fetchReceipt.mockImplementationOnce(() => new Promise(resolve => {
+      reply = () => resolve({ committed: false, result: null });
+      entered();
+    }));
+
+    const discarding = queue.flush(discard(target));
+    await checking;
+    expect(await open().flush({ kind: "retry", target })).toMatchObject({ wait: "sending" });
+    reply();
+    expect(await discarding).toBe("synced");
+    expect(send).toHaveBeenCalledOnce();
     expect(queue.view().count).toBe(0);
   });
 
-  it("edits in place with a new receipt and keeps the replacement if the retry fails", async () => {
-    const original = entry("existing", 100, 4);
-    const { queue, send, open } = setup({ ...snapshot, entries: [original] });
-    await queue.enqueue({ ...createEntry(original.id), type: "entry.update", path: "/entries/existing", method: "PUT" });
-    await queue.enqueue(createEntry("later"));
-    send.mockRejectedValueOnce(reject("版本已更新", 409)).mockRejectedValueOnce(reject("金额无效"));
-    await queue.flush();
-    const target = queue.view().blocked!;
-    const body = entry(original.id, 200, original.version);
-    expect(await queue.flush({ kind: "edit", target, change: { type: target.type, path: target.path, method: target.method, body } })).toBe("blocked");
-    const replacement = open().view().blocked!;
-    expect(replacement).toMatchObject({ body, path: target.path, createdAt: target.createdAt });
-    expect(replacement.id).not.toBe(target.id);
-    expect(send.mock.calls[1][0].body).toEqual(body);
-    expect(await queue.flush({ kind: "discard", target })).toBe("changed");
-    expect(await queue.flush({ kind: "retry", target: replacement })).toBe("synced");
-    expect(queue.view().state?.entries.find(item => item.id === original.id)).toMatchObject({ amount_cents: 200, version: 5 });
-    expect(send.mock.calls.at(-1)?.[0].body.id).toBe("later");
-  });
-
-  it("discards only the confirmed change, rolls back its local effect, and retains earlier successes", async () => {
-    const { queue, send, open } = setup();
-    for (const id of ["accepted", "rejected", "later"]) await queue.enqueue(createEntry(id));
-    send.mockResolvedValueOnce(undefined).mockRejectedValueOnce(reject())
-      .mockRejectedValueOnce(new RequestError("network", "offline"));
-    await queue.flush();
-    const beforeDiscard = queue.view();
-    expect(beforeDiscard.state?.accounts[0].balance_cents).toBe(9700);
-    const onDiscard = vi.fn(() => expect(queue.view().state?.accounts[0].balance_cents).toBe(9800));
-    expect(await queue.flush({ kind: "discard", target: beforeDiscard.blocked! }, onDiscard)).toBe("retryable");
-    expect(onDiscard).toHaveBeenCalledOnce();
-    expect(open().view()).toMatchObject({ count: 1, blocked: null });
-    expect(open().view().state?.entries.map(item => item.id)).toEqual(["later", "accepted"]);
+  it("acknowledges the current head while a new IndexedDB change is appended during the snapshot request", async () => {
+    const { queue, open, fetchSnapshot, serverSnapshot, send } = setup();
+    await queue.enqueue(createEntry("head"));
+    fetchSnapshot.mockImplementationOnce(async ids => {
+      await open().enqueue(createEntry("added-during-send"));
+      return serverSnapshot(ids);
+    });
     expect(await queue.flush()).toBe("synced");
-    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["accepted", "rejected", "later", "later"]);
+    expect(fetchSnapshot).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["head", "added-during-send"]);
+    expect(queue.view().count).toBe(0);
   });
 
-  it.each(["network", "timeout", "unavailable"] as const)("allows automatic retry after %s", async kind => {
-    const { queue, send } = setup();
-    await queue.enqueue(createEntry("first"));
-    send.mockRejectedValueOnce(new RequestError(kind, "temporary", kind === "unavailable" ? 503 : undefined));
+  it("rebuilds from a receipt-covered snapshot without replaying a committed catalog change", async () => {
+    const { queue, send, commit, open } = setup(withCatalog);
+    await queue.enqueue(category("已提交", 1));
+    send.mockImplementationOnce(async item => { commit(item); throw new RequestError("timeout", "response lost"); });
     expect(await queue.flush()).toBe("retryable");
-    expect(queue.view()).toMatchObject({ count: 1, blocked: null });
-    expect(await queue.flush()).toBe("synced");
+    const other = open();
+    await other.refresh();
+    expect(other.view().state?.category_catalog?.version).toBe(2);
+    await other.enqueue(category("随后提交", other.view().state!.category_catalog!.version));
+    expect(await other.flush()).toBe("synced");
+    expect(send.mock.calls.map(([item]) => item.body.version)).toEqual([1, 1, 2]);
+    expect(send.mock.calls[1][0].id).toBe(send.mock.calls[0][0].id);
+    expect(other.view().state?.category_catalog?.version).toBe(3);
   });
 
-  it("requests re-login on 401 and keeps the queue eligible after login", async () => {
+  it("refreshes receipt coverage when a v1 tab appends and commits during a snapshot request", async () => {
+    const { storage, queue, commit, serverSnapshot, fetchSnapshot } = setup(withCatalog);
+    const head = { ...category("先提交", 1), id: "head", createdAt: 1 };
+    const follower = { ...category("稍后提交", 2), id: "follower", createdAt: 2 };
+    storage.setItem(queueKey, JSON.stringify([head]));
+    commit(head);
+    fetchSnapshot.mockImplementationOnce(async ids => {
+      storage.setItem(queueKey, JSON.stringify([follower]));
+      commit(follower);
+      return serverSnapshot(ids);
+    });
+    await queue.refresh();
+    expect(fetchSnapshot.mock.calls.map(([ids]) => ids)).toEqual([[head.id], [head.id, follower.id]]);
+    expect(queue.view().state?.category_catalog?.version).toBe(3);
+  });
+
+  it("keeps a rejection visible and disables discard without a server snapshot", async () => {
+    const { storage, queue, send, fetchReceipt, open } = setup();
+    storage.setItem("mingzhang.local-state.v1", JSON.stringify({ state: snapshot, applied: [] }));
+    await queue.enqueue(createEntry("offline"));
+    send.mockRejectedValueOnce(reject());
+    await queue.flush();
+    const reloaded = open();
+    await reloaded.load();
+    const target = reloaded.blocked()!;
+    const callbacks = { onRetry: vi.fn(), onEdit: vi.fn(), onRebase: vi.fn(), onOpenSettings: vi.fn(), onDiscard: vi.fn() };
+    const panel = renderToStaticMarkup(createElement(BlockedSyncDetails, { item: target, state: null, waiting: 0, ...callbacks }));
+    expect(panel).toContain("联网后才能放弃这条修改");
+    expect(panel).toMatch(/discard-sync" disabled="">放弃这条修改/);
+    expect(await reloaded.flush(discard(target))).toBe("no-snapshot");
+    expect(fetchReceipt).not.toHaveBeenCalled();
+    expect(reloaded.view()).toMatchObject({ count: 1, state: null, blocked: target });
+  });
+
+  it("leaves the blocked item untouched when the receipt check is offline", async () => {
+    const { queue, send, fetchReceipt } = setup();
+    await queue.refresh();
+    await queue.enqueue(createEntry("offline"));
+    send.mockRejectedValueOnce(reject());
+    await queue.flush();
+    fetchReceipt.mockRejectedValueOnce(new RequestError("network", "offline"));
+    const action = discard(queue.blocked()!);
+    expect(await queue.flush(action)).toBe("receipt-unavailable");
+    expect(action.confirm).not.toHaveBeenCalled();
+    expect(queue.view().count).toBe(1);
+  });
+
+  it("keeps FIFO memory saves after IndexedDB quota errors and persists them after acknowledgements", async () => {
+    const { queue, database, send } = setup();
+    await queue.refresh();
+    await queue.enqueue(createEntry("durable"));
+    const store = (await openMutationStore(database))!;
+    const add = IDBObjectStore.prototype.add;
+    let full = true;
+    vi.spyOn(IDBObjectStore.prototype, "add").mockImplementation(function (this: IDBObjectStore, ...args) {
+      if (this.name === "changes" && full) throw new DOMException("full", "QuotaExceededError");
+      return add.apply(this, args);
+    });
+    await queue.enqueue(createEntry("memory1"));
+    await queue.enqueue(createEntry("memory2"));
+    expect(queue.view()).toMatchObject({ count: 3, memoryCount: 2, storageError: true });
+    expect((await store.list()).map(record => record.item.body.id)).toEqual(["durable"]);
+    send.mockImplementationOnce(async () => { full = false; })
+      .mockImplementationOnce(async () => {
+        expect((await store.list()).map(record => record.item.body.id)).toEqual(["memory1", "memory2"]);
+      });
+    expect(await queue.flush()).toBe("synced");
+    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["durable", "memory1", "memory2"]);
+    expect(queue.view()).toMatchObject({ count: 0, memoryCount: 0, storageError: false });
+  });
+
+  it("drains even with a full snapshot cache and preserves the latest snapshot in memory", async () => {
+    const { queue, send, storage } = setup();
+    storage.rejectWritesTo = [snapshotKey];
+    await queue.enqueue(createEntry("durable"));
+    expect(await queue.flush()).toBe("synced");
+    expect(send).toHaveBeenCalledOnce();
+    expect(queue.view().state?.entries[0].id).toBe("durable");
+    expect(storage.getItem(snapshotKey)).toBeNull();
+  });
+
+  it("uses the v1 array when IndexedDB open fails and can drain it at quota", async () => {
+    const database = new IDBFactory();
+    vi.spyOn(database, "open").mockImplementation(() => { throw new DOMException("disabled", "SecurityError"); });
+    const { queue, storage, send } = setup(snapshot, database);
+    const legacy = { ...rawEntry("legacy"), body: { ...entry("legacy"), memo: "x".repeat(2000) } };
+    const v1 = JSON.stringify([legacy]);
+    storage.setItem(queueKey, v1);
+    storage.maxCharacters = v1.length;
+    await queue.enqueue(createEntry("memory"));
+    expect(queue.view()).toMatchObject({ fallback: true, count: 2, memoryCount: 1 });
+    expect(storage.getItem(queueKey)).toBe(v1);
+    expect(await queue.flush()).toBe("synced");
+    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["legacy", "memory"]);
+    expect(storage.getItem(queueKey)).toBeNull();
+  });
+
+  it("preserves blocked metadata and supports retry and discard in the v1 fallback", async () => {
+    const database = new IDBFactory();
+    vi.spyOn(database, "open").mockImplementation(() => { throw new DOMException("disabled", "SecurityError"); });
+    const { queue, storage, open, send } = setup(snapshot, database);
+    await queue.refresh();
+    await queue.enqueue(createEntry("reject"));
+    send.mockRejectedValueOnce(reject()).mockRejectedValueOnce(reject("still rejected", 409));
+    expect(await queue.flush()).toBe("blocked");
+    expect(storage.getItem(blockedKey)).toContain(queue.blocked()!.id);
+    const other = open();
+    await other.load();
+    expect(await other.flush({ kind: "retry", target: other.blocked()! })).toBe("blocked");
+    expect(other.blocked()?.blocked.status).toBe(409);
+    expect(await other.flush(discard(other.blocked()!))).toBe("synced");
+    expect(storage.getItem(queueKey)).toBeNull();
+    expect(storage.getItem(blockedKey)).toBeNull();
+  });
+
+  it("shares Retry-After across tabs without marking the change blocked", async () => {
+    const { queue, open, send } = setup();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    await queue.enqueue(createEntry("rate-limited"));
+    send.mockRejectedValueOnce(new RequestError("unavailable", "稍后再试", 429, 3000));
+    expect(await queue.flush()).toEqual({ wait: "retry", until: 13_000 });
+    expect(await open().flush()).toEqual({ wait: "retry", until: 13_000 });
+    expect(send).toHaveBeenCalledOnce();
+    clock.mockReturnValue(13_000);
+    expect(await open().flush()).toBe("synced");
+  });
+
+  it("preserves the head on 401 and resumes after login", async () => {
     const { queue, send } = setup();
-    await queue.enqueue(createEntry("first"));
-    send.mockRejectedValueOnce(new RequestError("unauthorized", "请重新登录", 401));
+    await queue.enqueue(createEntry("auth"));
+    send.mockRejectedValueOnce(new RequestError("unauthorized", "重新登录", 401));
     expect(await queue.flush()).toBe("unauthorized");
     expect(queue.view()).toMatchObject({ count: 1, blocked: null });
     expect(await queue.flush()).toBe("synced");
   });
-
-  it("keeps the block if an explicit replay meets a temporary failure or expired session", async () => {
-    const { queue, send } = setup();
-    await queue.enqueue(createEntry("first"));
-    send.mockRejectedValueOnce(reject())
-      .mockRejectedValueOnce(new RequestError("timeout", "timeout"))
-      .mockRejectedValueOnce(new RequestError("unauthorized", "expired", 401));
-    await queue.flush();
-    const target = queue.view().blocked!;
-    expect(await queue.flush({ kind: "retry", target })).toBe("retryable");
-    expect(await queue.flush()).toBe("idle");
-    expect(await queue.flush({ kind: "retry", target })).toBe("unauthorized");
-    expect(await queue.flush()).toBe("idle");
-    expect(queue.view().blocked).toEqual(target);
-    expect(send).toHaveBeenCalledTimes(3);
-  });
-
-  it("serializes two tabs while allowing either tab to save locally during a request", async () => {
-    const { queue, send, open } = setup();
-    const second = open();
-    await queue.enqueue(createEntry("first"));
-    let signalStarted!: () => void;
-    let resolveResponse!: () => void;
-    const started = new Promise<void>(resolve => { signalStarted = resolve; });
-    const response = new Promise<void>(resolve => { resolveResponse = resolve; });
-    send.mockImplementationOnce(async () => {
-      signalStarted();
-      return response;
-    });
-    const firstFlush = queue.flush();
-    await started;
-    await second.enqueue(createEntry("later"));
-    const secondFlush = second.flush();
-    expect(second.view().count).toBe(2);
-    expect(send).toHaveBeenCalledOnce();
-    resolveResponse();
-    expect(await firstFlush).toBe("synced");
-    expect(await secondFlush).toBe("idle");
-    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["first", "later"]);
-  });
-
-  it("opens the previous queue and cached ledger offline without double-applying changes", async () => {
-    const { storage, queue, fetchSnapshot, open } = setup();
-    const previous = { ...createEntry("old"), id: "pending-old", createdAt: 100 };
-    storage.setItem("mingzhang.offline-mutations.v1", JSON.stringify([previous]));
-    storage.setItem("mingzhang.local-state.v1", JSON.stringify({ state: { ...snapshot, entries: [entry("old")] }, applied: [previous.id] }));
-    fetchSnapshot.mockRejectedValueOnce(new RequestError("network", "offline"));
-    await queue.enqueue(createEntry("later"));
-    expect(await queue.flush()).toBe("retryable");
-    expect(open().view().state?.entries.map(item => item.id)).toEqual(["later", "old"]);
-    expect(open().view().count).toBe(2);
-  });
 });
 
-const sharedKey = "mingzhang.offline-mutations.v1";
-const sidecarKey = "mingzhang.offline-mutations.blocked.v1";
-const cacheKey = "mingzhang.sync-snapshot.v1";
-const openQueue = (storage: Storage): OfflineMutation[] => JSON.parse(storage.getItem(sharedKey) ?? "[]");
-
-describe("review regressions", () => {
-  it("shares the original array and sees an older tab append after rejection", async () => {
-    const { storage, queue, send, open } = setup();
-    const old = { ...createEntry("old"), id: "old-client", createdAt: 1 };
-    storage.setItem(sharedKey, JSON.stringify([old]));
-    send.mockRejectedValueOnce(reject());
-    expect(await queue.flush()).toBe("blocked");
-    expect(JSON.parse(storage.getItem(sharedKey)!)).toEqual([old]);
-    expect(JSON.parse(storage.getItem(sidecarKey)!)).toEqual({ [old.id]: expect.objectContaining({ status: 400 }) });
-
-    const appended = { ...createEntry("later"), id: "old-client-later", createdAt: 2 };
-    storage.setItem(sharedKey, JSON.stringify([old, appended]));
-    const reloaded = open();
-    expect(reloaded.view().count).toBe(2);
-    expect(reloaded.blocked()?.id).toBe(old.id);
-    // An older client may remove the blocked head without knowing about its metadata.
-    storage.setItem(sharedKey, JSON.stringify([appended]));
-    expect(reloaded.blocked()).toBeNull();
-    expect(await reloaded.flush()).toBe("synced");
-    expect(send.mock.calls.map(([item]) => item.id)).toEqual([old.id, appended.id]);
+describe("blocked sync recovery", () => {
+  it("only rebases category additions with no possible overwrite", () => {
+    const add = { ...category("新分类", 0), id: "add", createdAt: 1 };
+    const deleteCategory = { ...add, body: { ...add.body, action: "delete" } };
+    const order = { ...rawEntry("order"), type: "order.update", path: "/display-order" } as const;
+    const account = { ...rawEntry("account"), type: "account.update", path: "/accounts/cash" } as const;
+    expect(canRebase(add, withCatalog)).toBe(true);
+    expect(rebaseChange(add, withCatalog).body.version).toBe(1);
+    expect(canRebase(add, { ...withCatalog, category_catalog: { ...withCatalog.category_catalog, hidden: ["新分类"] } })).toBe(false);
+    for (const item of [deleteCategory, order, account]) expect(canRebase(item, withCatalog)).toBe(false);
   });
 
-  it("refreshes and flushes when an old snapshot leaves no quota for a new cache", async () => {
-    const { storage, queue, send } = setup();
-    const old = { ...createEntry("old"), id: "old-client", createdAt: 1 };
-    storage.setItem(sharedKey, JSON.stringify([old]));
-    storage.setItem("mingzhang.local-state.v1", "x".repeat(3700));
-    storage.maxCharacters = 4050;
-    await expect(queue.refresh()).resolves.toEqual(snapshot);
-    expect(await queue.flush()).toBe("synced");
-    expect(send).toHaveBeenCalledExactlyOnceWith(old);
-    expect(queue.view().state?.entries.map(item => item.id)).toEqual(["old"]);
-  });
-
-  it("evicts cached state and drains the durable head before persisting an in-memory save", async () => {
-    const { storage, queue, send } = setup();
-    await queue.refresh();
-    storage.setItem("mingzhang.local-state.v1", "x".repeat(3700));
-    storage.maxCharacters = 4250;
-    await queue.enqueue(createEntry("priority"));
-    expect(storage.getItem("mingzhang.local-state.v1")).toBeNull();
-    expect(queue.view()).toMatchObject({ count: 1, storageError: false });
-
-    const durable = storage.getItem(sharedKey)!;
-    storage.maxCharacters = durable.length + 256;
-    await queue.enqueue(createEntry("memory"));
-    await queue.enqueue(createEntry("memory2"));
-    expect(queue.view()).toMatchObject({ count: 3, storageError: true });
-    expect(openQueue(storage)).toEqual(JSON.parse(durable));
-    expect(queue.view().state?.entries.map(value => value.id)).toContain("memory");
-    send.mockImplementationOnce(async () => {
-      expect(openQueue(storage)).toEqual(JSON.parse(durable));
-    }).mockImplementationOnce(async () => {
-      expect(openQueue(storage).map(item => item.body.id)).toEqual(["memory"]);
-      expect(queue.view().memoryCount).toBe(1);
-    }).mockImplementationOnce(async () => {
-      expect(openQueue(storage).map(item => item.body.id)).toEqual(["memory2"]);
-      expect(queue.view().memoryCount).toBe(0);
-    });
-    expect(await queue.flush()).toBe("synced");
-    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["priority", "memory", "memory2"]);
-    expect(queue.view()).toMatchObject({ count: 0, storageError: false, memoryCount: 0 });
-  });
-
-  it("refreshes, flushes, retries and discards without Web Locks", async () => {
-    const { queue, send } = setup(snapshot, true);
-    await expect(queue.refresh()).resolves.toEqual(snapshot);
-    await queue.enqueue(createEntry("first"));
-    await queue.enqueue(createEntry("later"));
-    send.mockRejectedValueOnce(reject()).mockRejectedValueOnce(reject());
-    expect(await queue.flush()).toBe("blocked");
-    expect(await queue.flush({ kind: "retry", target: queue.blocked()! })).toBe("blocked");
-    expect(await queue.flush({ kind: "discard", target: queue.blocked()! })).toBe("synced");
-    expect(queue.view().count).toBe(0);
+  it.each(["account.update", "order.update"] as const)("offers latest settings instead of rebase for %s", type => {
+    const body = type === "order.update" ? { accounts: ["cash"], categories: [], version: 0 } : entry("cash");
+    const item = { ...rawEntry("stale"), type, body, blocked: { status: 409, message: "过期", at: 1 } };
+    const callbacks = { onRetry: vi.fn(), onEdit: vi.fn(), onRebase: vi.fn(), onOpenSettings: vi.fn(), onDiscard: vi.fn() };
+    const panel = renderToStaticMarkup(createElement(BlockedSyncDetails, { item, state: snapshot, waiting: 0, ...callbacks }));
+    expect(panel).toContain("打开最新设置");
+    expect(panel).toContain("覆盖其他设备");
+    expect(panel).not.toContain("基于最新数据重新同步");
   });
 
   it("starts stale edits with every current field and saves only visible choices", () => {
@@ -326,40 +480,15 @@ describe("review regressions", () => {
     expect(change.body).not.toHaveProperty("remaining_cents");
   });
 
-  it("turns a colliding create into a PUT using the same entry id and latest version", async () => {
+  it("turns a colliding create into an update on the same entry and current version", () => {
     const current = { ...entry("existing", 350, 4), merchant: "服务器商家" };
-    const server = { ...snapshot, entries: [current] };
-    const { queue, send } = setup(server);
-    await queue.enqueue(createEntry("existing"));
-    await queue.enqueue(createEntry("later"));
-    send.mockRejectedValueOnce(reject("编号已使用", 409));
-    await queue.flush();
-    const target = queue.blocked()!;
-    const recovery = prepareEntryRecovery(target, server, entry(""));
+    const item = { ...rawEntry("existing"), blocked: { status: 409, message: "编号已使用", at: 1 } };
+    const recovery = prepareEntryRecovery(item, { ...snapshot, entries: [current] }, entry(""));
     const change = entryRecoveryChange(recovery.entry, Boolean(recovery.current), { ...recovery.entry, amount_cents: 200 });
-    expect(await queue.flush({ kind: "edit", target, change })).toBe("synced");
-    expect(send.mock.calls[1][0]).toMatchObject({
+    expect(change).toMatchObject({
       type: "entry.update", method: "PUT", path: "/entries/existing",
       body: { id: current.id, version: current.version, amount_cents: 200, merchant: current.merchant },
     });
-    expect(send.mock.calls[2][0].body.id).toBe("later");
-  });
-
-  it.each(["network", "timeout", "unavailable"] as const)("automatically retries an edited payload after %s", async kind => {
-    const { queue, send, open } = setup();
-    const original = createEntry("original");
-    await queue.enqueue(original);
-    send.mockRejectedValueOnce(reject("版本已更新", 409));
-    await queue.flush();
-    const target = queue.blocked()!;
-    const body = { ...original.body, amount_cents: 300 };
-    send.mockRejectedValueOnce(new RequestError(kind, "temporary"));
-    const action = { kind: "edit", target, body, change: { ...original, body } } as const;
-    expect(await queue.flush(action)).toBe("retryable");
-    expect(open().view()).toMatchObject({ count: 1, blocked: null });
-    expect(queue.hasReadyHead()).toBe(true);
-    expect(await queue.flush()).toBe("synced");
-    expect(send.mock.calls[2][0].body).toEqual(body);
   });
 
   it("lists named before-to-after order and favorite differences for discard", () => {
@@ -409,231 +538,6 @@ describe("request failures", () => {
       await expect(api("/state")).rejects.toMatchObject({ kind, status, retryAfterMs });
     } finally {
       now.mockRestore();
-    }
-  });
-});
-
-describe("second review regressions", () => {
-  const rawEntry = (id: string, createdAt = 1): OfflineMutation => ({ ...createEntry(id), id, createdAt });
-  const category = (path: string, version: number) => ({
-    type: "category.change", method: "POST", path: "/categories",
-    body: { action: "add", path, level: "parent", kind: "expense", version },
-  }) as const;
-  const withCatalog = { ...snapshot, category_catalog: { items: {}, hidden: [], version: 1 } };
-
-  it("keeps an older tab's append interleaved with acknowledgement", async () => {
-    const { storage, queue, send } = setup(snapshot, true);
-    const head = rawEntry("head");
-    const follower = rawEntry("follower", 2);
-    storage.setItem(sharedKey, JSON.stringify([head]));
-    send.mockImplementationOnce(async () => {
-      storage.onReadLength = () => {
-        storage.onReadLength = undefined;
-        storage.setItem(sharedKey, JSON.stringify([...openQueue(storage), follower]));
-      };
-    });
-    expect(await queue.flush()).toBe("synced");
-    expect(send.mock.calls.map(([item]) => item.id)).toEqual([head.id, follower.id]);
-    expect(openQueue(storage)).toEqual([]);
-  });
-
-  it("re-reads the current array when cache eviction interleaves with a legacy append", async () => {
-    const { storage, queue, send } = setup(snapshot, true);
-    const head = rawEntry("head");
-    const follower = rawEntry("follower", 2);
-    storage.setItem(sharedKey, JSON.stringify([head]));
-    send.mockImplementationOnce(async () => {
-      storage.rejectNextWriteTo = sharedKey;
-      storage.onRemove = key => {
-        if (key !== cacheKey) return;
-        storage.onRemove = undefined;
-        storage.setItem(sharedKey, JSON.stringify([...openQueue(storage), follower]));
-      };
-    });
-    expect(await queue.flush()).toBe("synced");
-    expect(send.mock.calls.map(([item]) => item.id)).toEqual([head.id, follower.id]);
-  });
-
-  it("drains a completely full legacy queue before a localStorage lease slot exists", async () => {
-    const { storage, queue, send } = setup(snapshot, false, true);
-    const original = rawEntry("legacy-head");
-    const head = { ...original, body: { ...original.body, memo: "x".repeat(400) } };
-    storage.setItem(sharedKey, JSON.stringify([head]));
-    storage.maxCharacters = storage.getItem(sharedKey)!.length;
-    await queue.enqueue(createEntry("z"));
-    expect(queue.view()).toMatchObject({ count: 2, storageError: true });
-    expect(await queue.flush()).toBe("synced");
-    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["legacy-head", "z"]);
-  });
-
-  it("refuses discard from another tab for the full duration of a retry", async () => {
-    const { storage, queue, open, send } = setup(snapshot, true);
-    await queue.enqueue(createEntry("retry"));
-    send.mockRejectedValueOnce(reject());
-    await queue.flush();
-    const second = open();
-    const target = second.blocked()!;
-    let started!: () => void;
-    let reply!: () => void;
-    const sending = new Promise<void>(resolve => { started = resolve; });
-    send.mockImplementationOnce(() => new Promise<void>(resolve => { reply = resolve; started(); }));
-
-    const retry = queue.flush({ kind: "retry", target });
-    await sending;
-    try {
-      expect(await second.flush({ kind: "discard", target })).toBe("in-flight");
-      expect(openQueue(storage).map(item => item.id)).toEqual([target.id]);
-    } finally {
-      reply();
-      await retry;
-    }
-    expect(openQueue(storage)).toEqual([]);
-    expect(await second.flush({ kind: "retry", target })).toBe("changed");
-  });
-
-  it("protects a blocked head from discard while a retry loads its snapshot", async () => {
-    const { storage, queue, open, send, fetchSnapshot } = setup(snapshot, true);
-    await queue.enqueue(createEntry("discard-me"));
-    send.mockRejectedValueOnce(reject());
-    await queue.flush();
-    const target = queue.blocked()!;
-    storage.removeItem(cacheKey);
-    const second = open();
-    let started!: () => void;
-    let finish!: () => void;
-    const fetching = new Promise<void>(resolve => { started = resolve; });
-    fetchSnapshot.mockImplementationOnce(() => new Promise(resolve => {
-      finish = () => resolve({ snapshot, committed: [] });
-      started();
-    }));
-    const retry = second.flush({ kind: "retry", target });
-    await fetching;
-    try {
-      expect(await queue.flush({ kind: "discard", target })).toBe("in-flight");
-    } finally {
-      finish();
-      await retry;
-    }
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(await queue.flush({ kind: "discard", target })).toBe("changed");
-  });
-
-  it("keeps an offline rejection actionable after a reload without a cached snapshot", async () => {
-    const { storage, queue, send, fetchSnapshot, open } = setup();
-    await queue.enqueue(createEntry("offline-rejected"));
-    send.mockRejectedValueOnce(reject());
-    await queue.flush();
-    storage.removeItem(cacheKey);
-    const reloaded = open();
-    fetchSnapshot.mockRejectedValue(new RequestError("network", "offline"));
-    const target = reloaded.blocked()!;
-    expect(reloaded.view()).toMatchObject({ count: 1, blocked: target, state: null });
-    expect(await reloaded.flush({ kind: "discard", target })).toBe("idle");
-    expect(reloaded.view()).toMatchObject({ count: 0, blocked: null });
-  });
-
-  it("replays a committed category receipt without incrementing the catalog locally", async () => {
-    const { queue, open, send, commit } = setup(withCatalog);
-    await queue.enqueue(category("已提交", 1));
-    send.mockImplementationOnce(async item => {
-      commit(item);
-      throw new RequestError("network", "response lost");
-    });
-    expect(await queue.flush()).toBe("retryable");
-
-    const reloaded = open();
-    await reloaded.refresh();
-    expect(reloaded.view().state?.category_catalog?.version).toBe(2);
-    await reloaded.enqueue(category("随后提交", reloaded.view().state!.category_catalog!.version));
-    expect(await reloaded.flush()).toBe("synced");
-    expect(send.mock.calls.map(([item]) => item.body.version)).toEqual([1, 1, 2]);
-    expect(send.mock.calls[1][0].id).toBe(send.mock.calls[0][0].id);
-    expect(reloaded.view().state?.category_catalog?.version).toBe(3);
-  });
-
-  it("refreshes receipt coverage when a legacy tab appends and commits during a snapshot request", async () => {
-    const { storage, queue, commit, serverSnapshot, fetchSnapshot } = setup(withCatalog);
-    const head = { ...category("先提交", 1), id: "head", createdAt: 1 };
-    const follower = { ...category("稍后提交", 2), id: "follower", createdAt: 2 };
-    storage.setItem(sharedKey, JSON.stringify([head]));
-    commit(head);
-    fetchSnapshot.mockImplementationOnce(async ids => {
-      storage.setItem(sharedKey, JSON.stringify([head, follower]));
-      commit(follower);
-      return serverSnapshot(ids ?? []);
-    });
-    await queue.refresh();
-    expect(fetchSnapshot.mock.calls.map(([ids]) => ids)).toEqual([[head.id], [head.id, follower.id]]);
-    expect(queue.view().state?.category_catalog?.version).toBe(3);
-  });
-
-  it("replaces a blocked head in array order despite equal times and a new ID", async () => {
-    const { storage, queue, send } = setup();
-    const head = rawEntry("a");
-    const follower = rawEntry("b");
-    storage.setItem(sharedKey, JSON.stringify([head, follower]));
-    send.mockRejectedValueOnce(reject());
-    await queue.flush();
-    const ids = vi.spyOn(crypto, "randomUUID").mockReturnValueOnce("ffffffff-ffff-ffff-ffff-ffffffffffff");
-    try {
-      const target = queue.blocked()!;
-      expect(await queue.flush({ kind: "edit", target, change: createEntry("replacement") })).toBe("synced");
-    } finally {
-      ids.mockRestore();
-    }
-    expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["a", "replacement", "b"]);
-  });
-
-  it("starts with the stored array order even if timestamps and IDs go backwards", async () => {
-    const { storage, queue, send } = setup();
-    storage.setItem(sharedKey, JSON.stringify([rawEntry("z", 10), rawEntry("a", 1)]));
-    send.mockRejectedValueOnce(reject());
-    expect(await queue.flush()).toBe("blocked");
-    expect(queue.blocked()?.id).toBe("z");
-  });
-
-  it("rebases a versioned non-entry change only when the user replaces it", async () => {
-    const { queue, send } = setup(withCatalog);
-    await queue.enqueue(category("手动重试", 0));
-    send.mockRejectedValueOnce(reject("分类已修改", 409));
-    await queue.flush();
-    const target = queue.blocked()!;
-    expect(canRebase(target)).toBe(true);
-    expect(await queue.flush()).toBe("idle");
-    expect(send).toHaveBeenCalledTimes(1);
-    const change = rebaseChange(target, await queue.refresh());
-    expect(await queue.flush({ kind: "edit", target, change })).toBe("synced");
-    expect(send.mock.calls[1][0]).toMatchObject({ body: { ...target.body, version: 1 } });
-    expect(send.mock.calls[1][0].id).not.toBe(target.id);
-  });
-
-  it("rebases display order and versioned account changes with the latest metadata", () => {
-    const server = { ...snapshot, ordering: { accounts: ["cash"], categories: ["B"], version: 3 } };
-    const order = { ...rawEntry("order"), type: "order.update", path: "/display-order",
-      body: { accounts: ["cash"], categories: ["A", "B"], version: 1 } } as const;
-    const account = { ...rawEntry("account"), type: "account.update", path: "/accounts/cash",
-      body: { id: "cash", version: 0, target_balance_cents: 20_000, expected_balance_cents: 8_000, opening_cents: 8_000 } } as const;
-    const deletion = { ...account, type: "account.delete", path: "/accounts/cash/delete", body: { version: 0 } } as const;
-    expect(rebaseChange(order, server).body).toEqual({ ...order.body, version: 3 });
-    expect(rebaseChange(account, server).body).toEqual({ ...account.body, version: 1, expected_balance_cents: 10_000, opening_cents: 10_000 });
-    expect(rebaseChange(deletion, server).body).toEqual({ version: 1 });
-  });
-
-  it("shares the Retry-After deadline across tabs and retries automatically after it", async () => {
-    const { queue, open, send } = setup(snapshot, true);
-    const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
-    try {
-      await queue.enqueue(createEntry("rate-limited"));
-      send.mockRejectedValueOnce(new RequestError("unavailable", "稍后再试", 429, 3000));
-      expect(await queue.flush()).toEqual({ wait: "retry", until: 13_000 });
-      expect(open().view()).toMatchObject({ count: 1, blocked: null });
-      expect(await open().flush()).toEqual({ wait: "retry", until: 13_000 });
-      expect(send).toHaveBeenCalledOnce();
-      clock.mockReturnValue(13_000);
-      expect(await open().flush()).toBe("synced");
-      expect(send).toHaveBeenCalledTimes(2);
-    } finally {
-      clock.mockRestore();
     }
   });
 });

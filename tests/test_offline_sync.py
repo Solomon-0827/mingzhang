@@ -178,3 +178,30 @@ def test_recreated_group_keeps_new_client_id(client):
         "/api/accounts",
         json={"id": account_id, "name": "依赖新类型", "kind": "bank", "group_id": new_id, "opening_cents": 0},
     ).status_code == 200
+
+
+def test_receipt_status_returns_the_original_committed_result(client):
+    mutation_id = str(uuid4())
+    path = f"/api/mutation-receipts/{mutation_id}"
+    assert client.get(path).json() == {"committed": False, "result": None}
+    headers = {"X-Mingzhang-Mutation": mutation_id}
+    body = {"id": str(uuid4()), "name": "查回执", "kind": "cash", "opening_cents": 0}
+
+    created = client.post("/api/accounts", json=body, headers=headers)
+    assert created.status_code == 200
+    assert client.get(path).json() == {"committed": True, "result": created.json()}
+    assert client.post("/api/accounts", json=body, headers=headers).json() == created.json()
+    assert client.get(path).headers["cache-control"] == "no-store"
+
+    client.post("/api/logout")
+    assert client.get(path).status_code == 401
+
+
+def test_receipt_status_handles_legacy_receipts_and_invalid_ids(client):
+    mutation_id = str(uuid4())
+    with connect() as db:
+        db.execute("INSERT INTO mutation_receipts(id) VALUES (?)", (mutation_id,))
+    assert client.get(f"/api/mutation-receipts/{mutation_id}").json() == {
+        "committed": True, "result": {"ok": True, "duplicate": True},
+    }
+    assert client.get("/api/mutation-receipts/invalid!").status_code == 400

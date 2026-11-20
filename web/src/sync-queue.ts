@@ -1,404 +1,351 @@
 import { replayMutations, type OfflineMutation } from "./offline-mutations";
-import { RequestError, type State } from "./types";
+import {
+  evictCaches, isQuota, localStorageStore, openMutationStore, readJson, readLegacy,
+  removeImported, snapshotKey, type QueueRecord,
+} from "./mutation-store";
+import { RequestError, requestDeadlineMs, type State } from "./types";
 
-export const queueKey = "mingzhang.offline-mutations.v1";
-export const blockedKey = "mingzhang.offline-mutations.blocked.v1";
-const leaseKey = queueKey + ".lease";
-const syncLock = queueKey + ".sync";
-const snapshotKey = "mingzhang.sync-snapshot.v1";
-const legacyStateKey = "mingzhang.local-state.v1";
-const legacyPrefix = "mingzhang.pending-entry.v1.";
-// Both requests have a 45-second timeout. Expiration also lets a tab recover a closed sender.
-const leaseDuration = 120_000;
+const syncLock = "mingzhang.offline-mutations.v1.sync";
+// Allow a send and two snapshot requests, plus a full request deadline of margin.
+export const inFlightTimeout = 4 * requestDeadlineMs;
 
-type Rejection = { status: number; message: string; at: number };
-type BlockedMutation = OfflineMutation & { blocked: Rejection };
+export type BlockedMutation = OfflineMutation & { blocked: NonNullable<QueueRecord["blocked"]> };
 type NewMutation = Omit<OfflineMutation, "id" | "createdAt">;
-type QueueAction =
+export type QueueAction =
   | { kind: "retry"; target: BlockedMutation }
-  | { kind: "discard"; target: BlockedMutation }
+  | { kind: "discard"; target: BlockedMutation; confirm: (snapshot: State) => boolean }
   | { kind: "edit"; target: BlockedMutation; change: NewMutation };
-export type SyncSnapshot = { snapshot: State; committed: string[] };
-type Lease = { id: string; owner: string; until: number; kind: "sending" | "retry" };
-type LeaseStore = { value: Lease | null; save: (lease: Lease | null) => void };
-type QueueTask<T> = (leaseStore?: LeaseStore) => T | Promise<T>;
-type QueueLock = <T>(name: string, run: QueueTask<T>) => Promise<T>;
+export type SyncSnapshot = { snapshot: State; committed: string[]; observed_at?: string };
+export type ReceiptStatus = { committed: boolean; result: unknown };
 type FlushResult = "idle" | "synced" | "blocked" | "retryable" | "unauthorized" | "changed" | "in-flight" |
+  "already-synced" | "cancelled" | "no-snapshot" | "receipt-unavailable" | "storage-full" |
   { wait: "retry" | "sending"; until: number };
 
-export function createQueueLock(locks?: LockManager, database = globalThis.indexedDB): QueueLock {
-  const local = new Map<string, Promise<unknown>>();
-  let opened: Promise<IDBDatabase | null> | undefined;
-
-  function openStorageLock() {
-    return opened ??= new Promise<IDBDatabase | null>(resolve => {
-      const request = database.open("mingzhang.sync", 1);
-      request.onupgradeneeded = () => request.result.createObjectStore("queue");
-      request.onsuccess = () => {
-        request.result.onversionchange = () => { request.result.close(); opened = undefined; };
-        resolve(request.result);
-      };
-      request.onerror = request.onblocked = () => resolve(null);
-    }).catch(() => null);
-  }
-
-  async function storageTask<T>(run: QueueTask<T>): Promise<T> {
-    const db = database && await openStorageLock();
-    if (!db) return run();
-    let transaction: IDBTransaction;
-    try { transaction = db.transaction("queue", "readwrite"); }
-    catch { return run(); }
-    // Both kinds of tabs share this short transaction. Only synchronous storage work runs here.
-    return new Promise((resolve, reject) => {
-      const store = transaction.objectStore("queue");
-      const request = store.get("lease");
-      let result: T | Promise<T>;
-      request.onsuccess = () => {
-        try { result = run({ value: request.result ?? null, save: lease => { store.put(lease, "lease"); } }); }
-        catch (error) { reject(error); }
-      };
-      transaction.oncomplete = () => resolve(result);
-      transaction.onabort = () => reject(transaction.error);
-    });
-  }
-
-  return async <T>(name: string, run: QueueTask<T>): Promise<T> => {
-    const task = () => name === queueKey ? storageTask(run) : run();
-    if (locks) return await locks.request(name, () => Promise.resolve(task()));
-    const next = (local.get(name) ?? Promise.resolve()).then(task);
-    local.set(name, next.catch(() => undefined));
-    return next;
-  };
-}
-
-export function isQueueStorageKey(key: string | null) {
-  return key === null || [queueKey, blockedKey, snapshotKey, legacyStateKey].includes(key) || key.startsWith(legacyPrefix);
-}
-
-function parse(raw: string | null) {
-  try { return JSON.parse(raw || "null"); }
-  catch { return null; }
+function ready(record: QueueRecord, blocked = record.blocked): QueueRecord {
+  const { item, retryAt, legacy } = record;
+  return { item, retryAt, legacy, status: blocked ? "blocked" : "pending", blocked };
 }
 
 export function createSyncQueue({
-  storage, lock, send, fetchSnapshot,
+  storage, database, locks, send, fetchSnapshot, fetchReceipt, onStoredChange = () => {},
 }: {
   storage: Storage;
-  lock: QueueLock;
+  database?: IDBFactory;
+  locks?: LockManager;
   send: (item: OfflineMutation) => Promise<unknown>;
   fetchSnapshot: (ids: string[]) => Promise<SyncSnapshot>;
+  fetchReceipt: (id: string) => Promise<ReceiptStatus>;
+  onStoredChange?: (uncachedSnapshot?: SyncSnapshot) => void;
 }) {
-  const owner = crypto.randomUUID();
+  let fallback = false;
+  const opened = openMutationStore(database).then(store => {
+    fallback = !store;
+    return store ?? localStorageStore(storage);
+  });
+  let records: QueueRecord[] = [];
+  let memory: OfflineMutation[] = [];
   let cache: SyncSnapshot | null = null;
   let cachedRaw: string | null = null;
-  let unsaved: OfflineMutation[] = [];
-  let unsavedRejection: { id: string; value: Rejection } | null = null;
+  let revision = 0;
+  let memoryWrites = Promise.resolve();
+  let loadNumber = 0;
+  const listeners = new Set<() => void>();
 
-  function readQueue() {
-    const legacy: OfflineMutation[] = [];
-    const legacyKeys: string[] = [];
-    for (let index = 0; index < storage.length; index += 1) {
-      const key = storage.key(index);
-      if (!key?.startsWith(legacyPrefix)) continue;
-      const value = parse(storage.getItem(key));
-      const entry = value?.entry ?? value;
-      if (!entry?.id) continue;
-      legacyKeys.push(key);
-      legacy.push({ id: entry.id, type: "entry.create", path: "/entries", method: "POST", body: entry,
-        createdAt: Number.isFinite(value?.queued_at) ? value.queued_at : 0 });
-    }
-    const stored = parse(storage.getItem(queueKey));
-    const pending: OfflineMutation[] = Array.isArray(stored) ? stored.filter(item => item?.id && item?.path && item?.type) : [];
-    const ids = new Set(pending.map(item => item.id));
-    for (const item of legacy) {
-      if (ids.has(item.id)) continue;
-      ids.add(item.id);
-      pending.push(item);
-    }
-    return { pending, legacyKeys };
+  function notify() {
+    revision += 1;
+    for (const listener of listeners) listener();
   }
 
-  function withCacheEviction<T>(write: () => T): T {
-    try {
-      return write();
-    } catch (error) {
-      if (!(error instanceof Error) || error.name !== "QuotaExceededError") throw error;
-      readCache();
-      storage.removeItem(snapshotKey);
-      storage.removeItem(legacyStateKey);
-      cachedRaw = null;
-      return write();
-    }
-  }
-
-  // Re-read even on the quota retry so a legacy append during eviction is kept.
-  function updateQueue(change: (current: OfflineMutation[]) => OfflineMutation[] | null) {
-    return withCacheEviction(() => {
-      const { pending, legacyKeys } = readQueue();
-      const next = change(pending);
-      if (!next) return false;
-      storage.setItem(queueKey, JSON.stringify(next));
-      for (const key of legacyKeys) storage.removeItem(key);
-      return true;
-    });
+  function takeSnapshot(saved: SyncSnapshot) {
+    if (!cache?.observed_at || (saved.observed_at !== undefined && saved.observed_at >= cache.observed_at))
+      cache = saved;
   }
 
   function readCache() {
     const raw = storage.getItem(snapshotKey);
-    if (raw !== cachedRaw) {
-      cachedRaw = raw;
-      // A quota eviction can remove the shared cache while this tab still has a usable snapshot.
-      if (raw !== null) cache = parse(raw);
-    }
-    return cache;
+    if (raw === cachedRaw) return;
+    cachedRaw = raw;
+    const saved = readJson(raw);
+    if (saved?.snapshot && Array.isArray(saved.committed)) takeSnapshot(saved);
   }
 
-  function writeCache(value: SyncSnapshot) {
-    cache = value;
+  function writeCache(saved: SyncSnapshot) {
+    readCache();
+    takeSnapshot(saved);
     try {
-      const raw = JSON.stringify(value);
+      const raw = JSON.stringify(cache);
       storage.setItem(snapshotKey, raw);
       cachedRaw = raw;
+      return undefined;
     } catch {
       storage.removeItem(snapshotKey);
       cachedRaw = null;
+      return cache ?? undefined;
     }
   }
 
-  function readBlocked(item?: OfflineMutation): BlockedMutation | null {
-    if (!item) return null;
-    const value = unsavedRejection?.id === item.id ? unsavedRejection.value :
-      parse(storage.getItem(blockedKey))?.[item.id];
-    return value && Number.isInteger(value.status) && value.status >= 400 && value.status < 500 &&
-      typeof value.message === "string" && Number.isFinite(value.at) ? { ...item, blocked: value } : null;
+  async function importLegacy() {
+    const store = await opened;
+    if (!store.importLegacy) return true;
+    const { records: legacy } = readLegacy(storage);
+    if (!legacy.length) return true;
+    let length = legacy.length;
+    while (length) {
+      const batch = legacy.slice(0, length);
+      try {
+        await store.importLegacy(batch);
+      } catch (error) {
+        if (!isQuota(error)) throw error;
+        length = Math.floor(length / 2);
+        continue;
+      }
+      // The source may have grown while IndexedDB was committing. Remove only IDs now durable.
+      const ids = new Set(batch.map(record => record.item.id));
+      try { removeImported(storage, ids); }
+      catch (error) { if (!isQuota(error)) throw error; }
+      onStoredChange();
+      return length === legacy.length;
+    }
+    return false;
   }
 
-  function persistRejection(id: string, value: Rejection) {
-    try {
-      withCacheEviction(() => {
-        const { pending } = readQueue();
-        if (pending[0]?.id !== id) return;
-        const stored = parse(storage.getItem(blockedKey));
-        const rejections = Object.fromEntries(pending.filter(item => stored?.[item.id]).map(item => [item.id, stored[item.id]]));
-        storage.setItem(blockedKey, JSON.stringify({ ...rejections, [id]: value }));
-      });
-      unsavedRejection = null;
-    } catch {
-      unsavedRejection = { id, value };
+  async function readRecords() {
+    const store = await opened;
+    return store.list(fallback ? undefined : readLegacy(storage).records);
+  }
+
+  async function load(uncachedSnapshot?: SyncSnapshot) {
+    const number = ++loadNumber;
+    if (uncachedSnapshot) takeSnapshot(uncachedSnapshot);
+    while (number === loadNumber) {
+      readCache();
+      const snapshot = cache;
+      const current = await readRecords();
+      if (number !== loadNumber) return;
+      readCache();
+      if (snapshot !== cache) continue;
+      records = current;
+      notify();
+      return;
     }
   }
 
-  function clearRejection(id: string) {
-    if (unsavedRejection?.id === id) unsavedRejection = null;
-    const stored = parse(storage.getItem(blockedKey));
-    if (!stored?.[id]) return;
-    delete stored[id];
-    if (Object.keys(stored).length) storage.setItem(blockedKey, JSON.stringify(stored));
-    else storage.removeItem(blockedKey);
+  function blocked() {
+    const head = records[0];
+    return head?.blocked ? { ...head.item, blocked: head.blocked } : null;
   }
 
-  function storedLease(store?: LeaseStore): Lease | null {
-    return store?.value ?? parse(storage.getItem(leaseKey));
+  function derive() {
+    const durable = records.map(record => record.item);
+    const ids = new Set(durable.map(item => item.id));
+    const items = [...durable, ...memory.filter(item => !ids.has(item.id))];
+    const committed = new Set(cache?.committed);
+    return {
+      items, count: items.length, blocked: blocked(), snapshot: cache?.snapshot ?? null,
+      state: cache ? replayMutations(cache.snapshot, items.filter(item => !committed.has(item.id))) : null,
+      fallback, memoryCount: memory.length, storageError: Boolean(memory.length),
+    };
   }
-
-  function readLease(id: string, store?: LeaseStore) {
-    const lease = storedLease(store);
-    return lease?.id === id && lease.until > Date.now() ? lease : null;
-  }
-
-  function writeLease(lease: Lease | null, store?: LeaseStore) {
-    // Reserve a fixed-size slot before new queue writes, so a full queue can still start sending.
-    try {
-      withCacheEviction(() => storage.setItem(leaseKey, JSON.stringify(lease).padEnd(256)));
-      if (store?.value) store.save(null);
-    } catch (error) {
-      // An old tab may have filled localStorage before the slot could be reserved.
-      if (!store || !(error instanceof Error) || error.name !== "QuotaExceededError") throw error;
-      store.save(lease);
-    }
-  }
-
-  function reserveLease(store?: LeaseStore) {
-    if (storage.getItem(leaseKey) === null && !store?.value) writeLease(null, store);
-  }
-
-  function releaseLease(id: string, store?: LeaseStore, retryAt?: number) {
-    const lease = storedLease(store);
-    if (lease?.id !== id || lease.owner !== owner || lease.kind !== "sending") return;
-    writeLease(retryAt === undefined ? null : { ...lease, kind: "retry", until: retryAt }, store);
-  }
-
+  let viewed = -1;
+  let cachedView: ReturnType<typeof derive>;
   function view() {
-    const { pending } = readQueue();
-    const blocked = readBlocked(pending[0]);
-    const items = [...pending, ...unsaved];
-    const memoryCount = unsaved.length;
-    const storageError = Boolean(memoryCount || (blocked?.id && blocked.id === unsavedRejection?.id));
-    const saved = readCache();
-    if (saved) {
-      const committed = new Set(saved.committed);
-      return { items, count: items.length, blocked, state: replayMutations(saved.snapshot, items.filter(item => !committed.has(item.id))),
-        beforeBlocked: blocked ? saved.snapshot : null, storageError, memoryCount };
+    if (viewed !== revision) {
+      cachedView = derive();
+      viewed = revision;
     }
-    // The old snapshot can already contain queued changes. It is only a display fallback.
-    const cached = parse(storage.getItem(legacyStateKey));
-    const state = cached?.state ?? cached;
-    const applied = new Set<string>(Array.isArray(cached?.applied) ? cached.applied : []);
-    const base: State | null = state?.account_groups ? state : null;
-    return { items, count: items.length, blocked, state: base ? replayMutations(base, items.filter(item => !applied.has(item.id))) : null,
-      beforeBlocked: blocked && !applied.has(blocked.id) ? base : null, storageError, memoryCount };
+    return cachedView;
   }
 
-  async function reconcile<T>(apply: (saved: SyncSnapshot, store?: LeaseStore) => T, sendingId?: string): Promise<T> {
-    while (true) {
-      const ids = new Set(readQueue().pending.map(item => item.id));
-      const saved = await fetchSnapshot([...ids]);
-      const result = await lock(queueKey, store => {
-        if (readQueue().pending.every(item => ids.has(item.id))) return { value: apply(saved, store) };
-        // An earlier client may have appended and committed a change while the snapshot was loading.
-        const lease = sendingId && readLease(sendingId, store);
-        if (lease && lease.owner === owner) writeLease({ ...lease, until: Date.now() + leaseDuration }, store);
-        return null;
-      });
-      if (result) return result.value;
-    }
-  }
-
-  async function refreshSnapshot() {
-    const previous = readCache();
-    return reconcile(saved => {
-      const latest = readCache();
-      if (latest && latest !== previous) return latest.snapshot;
-      writeCache(saved);
-      return saved.snapshot;
-    });
-  }
-
-  function changeHead(action: Exclude<QueueAction, { kind: "retry" }>, store?: LeaseStore) {
-    const head = readQueue().pending[0];
-    if (head?.id !== action.target.id || !readBlocked(head)) return "changed";
-    if (readLease(head.id, store)?.kind === "sending") return "in-flight";
-    if (readCache()?.committed?.includes(head.id)) return "changed";
-    // A replacement stays in the same slot and gets a fresh receipt.
-    const replacement = action.kind === "edit" ? { ...action.change, id: crypto.randomUUID(), createdAt: head.createdAt } : null;
-    try {
-      const changed = updateQueue(current => current[0]?.id !== head.id ? null
-        : replacement ? current.map(item => item.id === head.id ? replacement : item) : current.filter(item => item.id !== head.id));
-      if (!changed) return "changed";
-    } catch (error) {
-      if (!(error instanceof Error) || error.name !== "QuotaExceededError") throw error;
-      throw new Error("本机空间不足，原修改仍在待同步列表，请释放空间后重试。");
-    }
-    clearRejection(head.id);
-    return null;
-  }
-
-  function saveUnsaved(store?: LeaseStore) {
-    if (!unsaved.length) return;
-    try { reserveLease(store); }
-    catch (error) {
-      if (error instanceof Error && error.name === "QuotaExceededError") return;
-      throw error;
-    }
-    try {
-      updateQueue(current => [...current, ...unsaved]);
-      unsaved = [];
-    } catch (error) {
-      if (!(error instanceof Error) || error.name !== "QuotaExceededError") throw error;
-      while (unsaved.length) {
+  function saveMemory() {
+    const write = memoryWrites.then(async () => {
+      const store = await opened;
+      let saved = false;
+      const legacyImported = !memory.length || await importLegacy();
+      while (legacyImported && memory.length) {
+        const item = memory[0];
         try {
-          updateQueue(current => [...current, unsaved[0]]);
-          unsaved.shift();
+          if (fallback) {
+            try { await store.append(item); }
+            catch (error) {
+              if (!isQuota(error)) throw error;
+              readCache();
+              evictCaches(storage);
+              await store.append(item);
+            }
+          } else {
+            await store.append(item);
+          }
         } catch (error) {
-          if (!(error instanceof Error) || error.name !== "QuotaExceededError") throw error;
+          if (!isQuota(error)) throw error;
           break;
         }
+        memory = memory.slice(1);
+        saved = true;
       }
-    }
-  }
-
-  function retryStorage(store?: LeaseStore) {
-    saveUnsaved(store);
-    if (unsavedRejection) persistRejection(unsavedRejection.id, unsavedRejection.value);
-  }
-
-  async function flush(action?: QueueAction, onAction = () => {}): Promise<FlushResult> {
-    if (action?.kind === "edit" || action?.kind === "discard") {
-      const recovery = action;
-      const refused = await lock(queueKey, store => changeHead(recovery, store));
-      if (refused) return refused;
-      action = undefined;
-      onAction();
-    }
-
-    return lock(syncLock, async () => {
-      let synced = false;
-      while (true) {
-        const attempt = await lock(queueKey, store => {
-          if (!readQueue().pending.length) saveUnsaved(store);
-          const head = readQueue().pending[0];
-          const blocked = readBlocked(head);
-          if (action && (action.target.id !== head?.id || !blocked)) return { stop: "changed" as const };
-          if (!head || (blocked && !action)) return { stop: synced ? "synced" as const : "idle" as const };
-          const lease = readLease(head.id, store);
-          if (lease) return { stop: lease.kind === "sending" && action ? "in-flight" as const : { wait: lease.kind, until: lease.until } };
-          writeLease({ id: head.id, owner, until: Date.now() + leaseDuration, kind: "sending" }, store);
-          return { item: head };
-        });
-        if (!attempt.item) return attempt.stop;
-        const item = attempt.item;
-        let accepted = false;
-        let retryAt: number | undefined;
-        try {
-          if (!readCache()) await refreshSnapshot();
-          const pending = await lock(queueKey, store =>
-            readQueue().pending[0]?.id === item.id && readLease(item.id, store)?.owner === owner);
-          if (!pending || readQueue().pending[0]?.id !== item.id) return "changed";
-          await send(item);
-          accepted = true;
-          await reconcile((saved, store) => {
-            updateQueue(current => current.some(entry => entry.id === item.id) ? current.filter(entry => entry.id !== item.id) : null);
-            clearRejection(item.id);
-            saveUnsaved(store);
-            writeCache(saved);
-          }, item.id);
-          synced = true;
-          action = undefined;
-        } catch (error) {
-          if (!(error instanceof RequestError)) throw error;
-          if (accepted) await lock(queueKey, () => clearRejection(item.id));
-          if (error.kind === "unauthorized") return "unauthorized";
-          if (error.kind !== "rejected" || accepted) {
-            retryAt = error.retryAfterMs === undefined ? undefined : Date.now() + error.retryAfterMs;
-            return retryAt === undefined ? "retryable" : { wait: "retry", until: retryAt };
-          }
-          return await lock(queueKey, () => {
-            if (readQueue().pending[0]?.id !== item.id) return "changed";
-            persistRejection(item.id, { status: error.status!, message: error.message, at: Date.now() });
-            return "blocked";
-          });
-        } finally {
-          await lock(queueKey, store => releaseLease(item.id, store, retryAt));
-        }
-      }
+      if (saved) onStoredChange();
+      await load();
     });
+    memoryWrites = write.catch(() => {});
+    return write;
+  }
+
+  // The server reads receipts and the ledger together. A change that appeared while
+  // the request was running may already be in that snapshot, especially from a v1 tab.
+  async function fetchCoveredSnapshot(claim?: { id: string; attempt: string }) {
+    for (let request = 0; request < 2; request += 1) {
+      const ids = new Set((await readRecords()).map(record => record.item.id));
+      const requested = claim ? new Set([...ids, claim.id]) : ids;
+      const saved = await fetchSnapshot([...requested]);
+      const current = await readRecords();
+      const unchanged = current.filter(record => ids.has(record.item.id)).length === ids.size;
+      // While this head is held, a new IndexedDB record cannot have been sent.
+      // A v1 tab can still send an item before or during its import.
+      const holdingHead = claim && current[0]?.attempt === claim.attempt;
+      const covered = current.every(record => ids.has(record.item.id) || (holdingHead && !record.legacy));
+      if (unchanged && covered && (!claim || saved.committed.includes(claim.id))) return saved;
+    }
+    throw new RequestError("unavailable", "同步期间账本仍在变化，请稍后重试。");
+  }
+
+  async function refresh() {
+    await importLegacy();
+    await load();
+    const saved = await fetchCoveredSnapshot();
+    const uncached = writeCache(saved);
+    if (uncached) onStoredChange(uncached);
+    await load();
+    return cache!.snapshot;
+  }
+
+  async function runFlush(action?: QueueAction): Promise<FlushResult> {
+    const store = await opened;
+    let synced = false;
+    while (true) {
+      await importLegacy();
+      let head = await store.head();
+      if (!head && memory.length) {
+        await saveMemory();
+        head = await store.head();
+      }
+      if (action && (action.target.id !== head?.item.id || !head.blocked))
+        return cache?.committed.includes(action.target.id) ? "already-synced" : "changed";
+      if (!head || (!action && head.blocked)) {
+        await load();
+        if (!head && (records.length || memory.length)) return "storage-full";
+        return synced ? "synced" : "idle";
+      }
+
+      const id = head.item.id;
+      const attempt = (locks ? "locked:" : "") + crypto.randomUUID();
+      const recovery = action?.kind === "discard" || action?.kind === "edit" ? action : undefined;
+      const now = Date.now();
+      let wait: FlushResult = "changed";
+      const claimed = await store.changeHead(id, current => {
+        if (action && !current.blocked) return undefined;
+        const canReplay = !recovery && locks && current.attempt?.startsWith("locked:");
+        if (!canReplay && current.status === "in_flight" && current.since! + inFlightTimeout > now) {
+          wait = recovery ? "in-flight" : { wait: "sending", until: current.since! + inFlightTimeout };
+          return undefined;
+        }
+        if (!action && current.blocked) return undefined;
+        if (!recovery && current.retryAt && current.retryAt > now) {
+          wait = { wait: "retry", until: current.retryAt };
+          return undefined;
+        }
+        if (recovery?.kind === "discard" && !cache) {
+          wait = "no-snapshot";
+          return undefined;
+        }
+        return { ...current, status: "in_flight", since: now, attempt };
+      });
+      if (!claimed) return wait;
+
+      let accepted = false;
+      const finish = (change: (current: QueueRecord) => QueueRecord | null | undefined) =>
+        store.changeHead(id, current => current.attempt === attempt ? change(current) : undefined);
+      try {
+        if (Date.now() >= now + inFlightTimeout) return "changed";
+        if (recovery) {
+          const receipt = await fetchReceipt(id);
+          accepted = receipt.committed;
+          if (!accepted) {
+            if (recovery.kind === "discard" && !recovery.confirm(cache!.snapshot)) return "cancelled";
+            const changed = await finish(current => {
+              // Confirmation may have been open longer than the in-flight deadline.
+              if (Date.now() >= now + inFlightTimeout) return undefined;
+              if (recovery.kind === "discard") return null;
+              return { item: { ...recovery.change, id: crypto.randomUUID(), createdAt: current.item.createdAt }, status: "pending" };
+            });
+            if (!changed) return "changed";
+            onStoredChange();
+            await load();
+            action = undefined;
+            synced ||= recovery.kind === "discard";
+            continue;
+          }
+        } else {
+          await send(head.item);
+          accepted = true;
+        }
+        const saved = await fetchCoveredSnapshot({ id, attempt });
+        // Publish the confirmed server snapshot before removing the matching local change.
+        const uncached = writeCache(saved);
+        const acknowledged = await finish(() => null);
+        onStoredChange(uncached);
+        if (!acknowledged) return recovery ? "already-synced" : "changed";
+        await saveMemory();
+        synced = true;
+        if (recovery) return "already-synced";
+        action = undefined;
+      } catch (error) {
+        if (isQuota(error) && recovery) throw new Error("本机空间不足，原修改仍在待同步列表，请释放空间后重试。");
+        if (!(error instanceof RequestError)) throw error;
+        if (error.kind === "unauthorized") return "unauthorized";
+        if (accepted && recovery) return "already-synced";
+        if (recovery) return "receipt-unavailable";
+        if (error.kind === "rejected" && !accepted) {
+          const blocked = { status: error.status!, message: error.message, at: Date.now() };
+          if (await finish(current => ready(current, blocked))) onStoredChange();
+          return "blocked";
+        }
+        if (error.retryAfterMs !== undefined) {
+          const until = Date.now() + error.retryAfterMs;
+          if (await finish(current => ({
+            ...ready(current), retryAt: until, ...(accepted && { status: "pending", blocked: undefined }),
+          }))) onStoredChange();
+          return { wait: "retry", until };
+        }
+        return "retryable";
+      } finally {
+        if (await finish(current => accepted
+          ? { item: current.item, legacy: current.legacy, status: "pending" }
+          : ready(current))) onStoredChange();
+        await load();
+      }
+    }
+  }
+
+  async function flush(action?: QueueAction): Promise<FlushResult> {
+    readCache();
+    if (!locks) return runFlush(action);
+    if (action) {
+      // Refuse an action on the active head instead of queuing it behind a send.
+      return locks.request(syncLock, { ifAvailable: true }, async (lock): Promise<FlushResult> => lock ? runFlush(action) : "in-flight");
+    }
+    return locks.request(syncLock, () => runFlush());
   }
 
   return {
-    view,
-    hasReadyHead: (includeMemory = true) => {
-      const head = readQueue().pending[0];
-      return head ? !readBlocked(head) : includeMemory && Boolean(unsaved.length);
+    view, load, refresh, flush, blocked,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
     },
-    blocked: () => readBlocked(readQueue().pending[0]),
-    enqueue: (item: NewMutation) => lock(queueKey, store => {
-      unsaved.push({ ...item, id: crypto.randomUUID(), createdAt: Date.now() });
-      saveUnsaved(store);
-    }),
-    retryStorage: () => lock(queueKey, retryStorage),
-    refresh: () => lock(syncLock, refreshSnapshot),
-    flush,
+    hasReadyHead: () => records[0] ? !records[0].blocked : Boolean(memory.length),
+    enqueue: async (item: NewMutation) => {
+      memory = [...memory, { ...item, id: crypto.randomUUID(), createdAt: Date.now() }];
+      await saveMemory();
+    },
+    retryStorage: saveMemory,
   };
 }
-
-export type { BlockedMutation, QueueAction };
