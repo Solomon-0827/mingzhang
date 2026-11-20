@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Popover } from "antd";
 import { Entry, Kind, State, cents, labels, money, today, ordered } from "./types";
 import { AccountSelect, StyledDate, StyledSelect, CategorySelect } from "./controls";
+import { categoriesForKind } from "./category-groups";
 
 type Field =
   | "date"
@@ -76,7 +77,7 @@ export function EntryField({
   const set = <K extends keyof Entry>(key: K, value: Entry[K]) =>
     setDraft((old) => ({ ...old, [key]: value }));
   const refKind = draft.kind === "refund" ? "expense" : undefined;
-  const categoryOptions = ordered(state.category_catalog ? Object.keys(state.category_catalog.items).filter(p => state.category_catalog!.items[p].includes(draft.kind)) : Array.from(
+  const categoryOptions = ordered(state.category_catalog ? categoriesForKind(state.category_catalog, draft.kind) : Array.from(
     new Set([
       ...(draft.kind === "income"
         ? ["收入/工资", "收入/其他"]

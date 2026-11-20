@@ -1,3 +1,13 @@
+import type { CategoryCatalog, Kind } from "./types";
+
+export function categoryAllowsKind(catalog: CategoryCatalog, path: string, kind: Kind) {
+  return !Object.hasOwn(catalog.items, path) || catalog.items[path].includes(kind);
+}
+
+export function categoriesForKind(catalog: CategoryCatalog, kind: Kind) {
+  return Object.keys(catalog.items).filter(path => categoryAllowsKind(catalog, path, kind));
+}
+
 export function categoryGroups(values: string[]) {
   const groups = new Map<string, string[]>();
   for (const value of values) {

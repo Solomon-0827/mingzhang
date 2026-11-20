@@ -12,6 +12,7 @@ import {
 } from "./types";
 import { EntryField } from "./entry-field";
 import { StyledSelect, StyledDate, CategoryMultiSelect } from "./controls";
+import { categoryAllowsKind } from "./category-groups";
 
 function totals(entries: Entry[]) {
   return entries.reduce(
@@ -445,14 +446,22 @@ function BulkEntryDialog({entries,state,onClose,onSave}:{entries:Entry[];state:S
   const [account,setAccount]=useState("");
   const [date,setDate]=useState(today());
   const [busy,setBusy]=useState(false), [error,setError]=useState("");
-  const categoryOptions=Array.from(new Set([
-    ...Object.keys(state.category_catalog?.items || {}),
-    ...state.entries.map(entry=>entry.category),
-  ])).filter(Boolean);
+  const catalog = state.category_catalog;
+  const kinds = [...new Set(entries.map(entry => entry.kind).filter(kind => kind === "income" || kind === "expense"))];
+  const categoryOptions = Array.from(new Set([
+    ...Object.keys(catalog?.items || {}),
+    ...state.entries.map(entry => entry.category),
+  ])).filter(path => path.trim() && (!catalog || (
+    !catalog.hidden.includes(path) && !catalog.retired?.includes(path)
+    && kinds.every(kind => categoryAllowsKind(catalog, path, kind))
+  )));
   const enabled=fields.category || fields.amount || fields.account || fields.date;
   const submit=async()=>{
     if(!enabled)return;
     if(fields.category && !category){setError("请选择分类");return;}
+    if(fields.category && !categoryOptions.includes(category)){
+      setError("所选分类不适用于部分账目的交易类型，请重新选择");return;
+    }
     if(fields.account && !account){setError("请选择账户");return;}
     const invalid=fields.account && entries.some(entry=>entry.to_account_id===account && ["transfer","repay","collect"].includes(entry.kind));
     if(invalid){setError("所选账户与部分账目的对方账户相同，请换一个账户");return;}

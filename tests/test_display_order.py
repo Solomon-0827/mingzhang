@@ -1,3 +1,31 @@
+import pytest
+
+
+@pytest.mark.parametrize("stored", [False, True], ids=["default-order", "stored-order"])
+def test_category_rename_then_save_display_order(client, stored):
+    state = client.get('/api/state').json()
+    assert state['ordering']['version'] == 0
+    if stored:
+        initial = {**state['ordering'], 'categories': ['日常/餐饮'], 'favorites': ['日常/餐饮']}
+        assert client.put('/api/display-order', json=initial).status_code == 200
+        state = client.get('/api/state').json()
+
+    response = client.post('/api/categories', json={
+        'action': 'rename', 'path': '日常/餐饮', 'name': '吃饭', 'version': state['category_catalog']['version'],
+    })
+    assert response.status_code == 200
+    renamed_version = state['ordering']['version'] + 1
+    renamed = client.get('/api/state').json()['ordering']
+    payload = {'accounts': [], 'categories': ['日常/购物', '日常/吃饭'], 'version': renamed_version}
+    assert client.put('/api/display-order', json=payload).status_code == 200
+    assert renamed['version'] == renamed_version
+    if stored:
+        assert renamed['categories'] == renamed['favorites'] == ['日常/吃饭']
+    saved = client.get('/api/state').json()['ordering']
+    assert saved['version'] == renamed_version + 1
+    assert saved['categories'] == payload['categories']
+
+
 def test_display_order_persists_and_rejects_stale_or_invalid_updates(client):
     a = client.post('/api/accounts', json={'name': 'A'}).json()['id']
     b = client.post('/api/accounts', json={'name': 'B'}).json()['id']
@@ -58,6 +86,23 @@ def test_favorites_follow_category_rename_and_removal(client):
     before = client.get('/api/state').json()['ordering']
     after = change('delete', 'parent', '日用')
     assert after['favorites'] == ['收入/工资']
-    assert after['version'] > before['version']
+    assert after['version'] == before['version'] + 1
     assert client.put('/api/display-order', json=before).status_code == 409
-    assert change('restore', 'parent', '日用')['favorites'] == ['收入/工资']
+    restored = change('restore', 'parent', '日用')
+    assert restored['favorites'] == ['收入/工资']
+    assert restored['version'] == after['version']
+
+
+def test_adding_child_prunes_favorited_parent_placeholder(client):
+    assert client.post('/api/categories', json={
+        'action': 'add', 'level': 'parent', 'path': '旅行', 'version': 0,
+    }).status_code == 200
+    assert client.put('/api/display-order', json={
+        'accounts': [], 'categories': [], 'favorites': ['旅行'], 'version': 0,
+    }).status_code == 200
+    assert client.post('/api/categories', json={
+        'action': 'add', 'path': '旅行/机票', 'version': 1,
+    }).status_code == 200
+    order = client.get('/api/state').json()['ordering']
+    assert order['favorites'] == []
+    assert order['version'] == 2

@@ -23,7 +23,19 @@ from backend.auth import authenticated, hash_password, token_hash, verify_passwo
 from backend.categories import CategoryChange, catalog, change_category
 from backend.db import backup, connect, db_path, initialize
 from backend.importing import commit_import, preview, read_file
-from backend.ledger import Account, AccountUpdate, Entry, audit, fail, report, save_entry, set_deleted, snapshot, today
+from backend.ledger import (
+    KIND_LABELS,
+    Account,
+    AccountUpdate,
+    Entry,
+    audit,
+    fail,
+    report,
+    save_entry,
+    set_deleted,
+    snapshot,
+    today,
+)
 
 BACKUP_DIR = Path(os.environ.get("LEDGER_BACKUPS", "backups"))
 
@@ -503,17 +515,6 @@ def export_csv():
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["日期", "类型", "金额", "账户", "转入账户", "分类", "商家", "备注", "关联交易", "交易编号"])
-    labels = dict(
-        income="收入",
-        expense="支出",
-        transfer="转账",
-        refund="退款",
-        lend="借出",
-        borrow="借入",
-        repay="还款",
-        collect="回款",
-    )
-
     def safe(value):
         value = str(value or "")
         return "'" + value if value.startswith(("=", "+", "-", "@", "\t", "\r")) else value
@@ -523,7 +524,7 @@ def export_csv():
             writer.writerow(
                 [
                     x["date"],
-                    labels[x["kind"]],
+                    KIND_LABELS[x["kind"]],
                     f"{x['amount_cents'] / 100:.2f}",
                     safe(accounts[x["account_id"]]),
                     safe(accounts.get(x["to_account_id"], "")),

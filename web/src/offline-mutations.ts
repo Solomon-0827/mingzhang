@@ -139,14 +139,18 @@ function changeCategory(state: State, change: CategoryChange): State {
       retired.add(oldPath); retired.delete(newPath);
     }
     entries = entries.map(entry => mapping.has(entry.category) ? { ...entry, category: mapping.get(entry.category)!, version: entry.version + 1 } : entry);
-    if (ordering) {
-      ordering.categories = ordering.categories.map(path => mapping.get(path) || path);
-      ordering.favorites = ordering.favorites?.map(path => mapping.get(path) || path);
-      ordering.version += 1;
-    }
+    ordering ??= { accounts: [], categories: [], favorites: [], version: 0 };
+    ordering.categories = [...new Set(ordering.categories.map(path => mapping.get(path) ?? path))];
+    ordering.favorites = [...new Set((ordering.favorites || []).map(path => mapping.get(path) ?? path))];
+    ordering.version += 1;
+  }
+  if ((change.action === "add" || change.action === "restore") && Object.hasOwn(items, parent)
+    && Object.keys(items).some(path => path.startsWith(parent + "/"))
+    && !entries.some(entry => entry.category === parent)) {
+    delete items[parent];
   }
   if (ordering) {
-    const favorites = (ordering.favorites || []).filter(path => Boolean(items[path]) && !hidden.has(path));
+    const favorites = (ordering.favorites || []).filter(path => Object.hasOwn(items, path) && !hidden.has(path));
     if (favorites.length !== (ordering.favorites || []).length) { ordering.favorites = favorites; ordering.version += 1; }
   }
   catalog.hidden = [...hidden].sort();
