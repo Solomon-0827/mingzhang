@@ -2448,3 +2448,39 @@ footer > .desktop-downloads { margin-left: auto; }
 .chart-series-controls button:focus-visible { outline:2px solid #302f29; outline-offset:2px; }
 .curve-hidden-mark { width:14px; text-align:center; }
 .chart-empty-hint { font-size:12px; color:#71695c; }
+
+.sidebar-bottom .sync-blocked,
+.sync-blocked-mobile,
+.blocked-sync-actions .discard-sync {
+  color: #a8483c;
+}
+.sidebar-bottom .sync-blocked {
+  text-align: left;
+  font-weight: 600;
+}
+.sync-blocked svg { flex-shrink: 0; }
+.sync-blocked-mobile,
+.sync-blocked-short { display: none; }
+.sidebar-collapsed .sidebar-bottom .sync-blocked { flex-direction: column; gap: 2px; }
+.sidebar-collapsed .sync-blocked-short { display: inline; font-size: 10px; }
+.blocked-sync-details {
+  padding: 0 26px 24px;
+  overflow-wrap: anywhere;
+}
+.blocked-sync-details dl { margin: 12px 0; }
+.blocked-sync-details dl div { display: grid; grid-template-columns: 5em 1fr; gap: 8px; }
+.blocked-sync-details dt { color: var(--muted); }
+.blocked-sync-details dd { margin: 0; white-space: pre-wrap; }
+.blocked-sync-details textarea { width: 100%; min-height: 9em; }
+.blocked-sync-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+@media (max-width: 780px) {
+  .sync-blocked-mobile {
+    display: block;
+    align-self: stretch;
+    padding: 12px 18px;
+    background: #f8ece7;
+    font-weight: 600;
+    text-align: left;
+  }
+}

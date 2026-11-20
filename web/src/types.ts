@@ -114,6 +114,25 @@ export function cents(value: string) {
   if (!Number.isSafeInteger(n)) throw new Error("金额超出范围");
   return negative ? -n : n;
 }
+export type RequestFailure = "network" | "timeout" | "unavailable" | "unauthorized" | "rejected";
+
+export class RequestError extends Error {
+  constructor(readonly kind: RequestFailure, message: string, readonly status?: number) {
+    super(message);
+    this.name = "RequestError";
+  }
+}
+
+export function isUnauthorized(error: unknown) {
+  return error instanceof RequestError && error.kind === "unauthorized";
+}
+
+function connectionFailure(error: unknown) {
+  return error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)
+    ? new RequestError("timeout", "请求超时，请检查网络后重试；输入内容已保留。")
+    : new RequestError("network", "无法连接账本服务，请检查网络后重试。");
+}
+
 export async function api<T>(
   path: string,
   body?: unknown,
@@ -134,24 +153,19 @@ export async function api<T>(
         : body instanceof FormData
           ? body
           : JSON.stringify(body),
-  }).catch((error: Error) => {
-    throw new Error(
-      error.name === "TimeoutError" || error.name === "AbortError"
-        ? "请求超时，请检查网络后重试；输入内容已保留。"
-        : "无法连接账本服务，请检查网络后重试。",
-    );
-  });
+  }).catch((error: unknown) => { throw connectionFailure(error); });
   if (!response.ok) {
-    const value = await response
-      .json()
-      .catch(() => ({ detail: "服务暂时不可用" }));
-    throw new Error(
-      response.status === 401
-        ? "请重新登录"
-        : typeof value.detail === "string"
-          ? value.detail
-          : "请检查必填项、金额和日期",
-    );
+    if (response.status === 401)
+      throw new RequestError("unauthorized", "请重新登录", response.status);
+    const detail = await response.json().then(value => value?.detail).catch(() => undefined);
+    const status = response.status;
+    if (status < 400 || status >= 500)
+      throw new RequestError("unavailable", typeof detail === "string" ? detail : "服务暂时不可用", status);
+    const message = typeof detail === "string" ? detail
+      : Array.isArray(detail) ? detail.map(item => [Array.isArray(item?.loc) ? item.loc.slice(1).join(".") : "", item?.msg]
+        .filter(Boolean).join("：")).filter(Boolean).join("；")
+      : "请检查必填项、金额和日期";
+    throw new RequestError("rejected", message || "请检查必填项、金额和日期", status);
   }
-  return response.json();
+  return response.json().catch((error: unknown) => { throw connectionFailure(error); });
 }
