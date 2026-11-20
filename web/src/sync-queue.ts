@@ -40,7 +40,6 @@ export function createSyncQueue({
   onStoredChange?: (uncachedSnapshot?: SyncSnapshot) => void;
 }) {
   let fallback = false;
-  let legacyImportCompleted = false;
   let startupPending = true;
   const v1Store = localStorageStore(storage);
   const opened = openMutationStore(database).then(store => {
@@ -96,7 +95,7 @@ export function createSyncQueue({
       const raw = JSON.stringify(cache);
       try { storage.setItem(snapshotKey, raw); }
       catch (error) {
-        if (!isQuota(error) || !legacyImportCompleted || !evictLegacySnapshot(storage)) throw error;
+        if (!isQuota(error) || !evictLegacySnapshot(storage)) throw error;
         storage.setItem(snapshotKey, raw);
       }
       cachedRaw = raw;
@@ -130,10 +129,7 @@ export function createSyncQueue({
       break;
     }
     const complete = length === legacy.length;
-    if (complete) {
-      legacyImportCompleted = true;
-      evictLegacySnapshot(storage);
-    }
+    if (complete) evictLegacySnapshot(storage);
     return complete;
   }
 
@@ -261,7 +257,7 @@ export function createSyncQueue({
 
   async function runFlush(action?: QueueAction, canRunAutomatically?: () => boolean): Promise<FlushResult> {
     const durable = await opened;
-    let synced = false;
+    let progress: "idle" | "synced" = "idle";
     while (true) {
       const imported = await importLegacy();
       let store = durable;
@@ -277,9 +273,9 @@ export function createSyncQueue({
       }
       let pageOnly = false;
       if (!head && imported && memory.length) {
-        if (sendingMemory) return action ? "in-flight" : "idle";
+        if (sendingMemory) return action ? "in-flight" : progress;
         await saveMemory();
-        if (sendingMemory) return action ? "in-flight" : "idle";
+        if (sendingMemory) return action ? "in-flight" : progress;
         sendingMemory = true;
         // Prevent a concurrent save from persisting the same page-only head mid-send.
         await memoryWrites;
@@ -288,7 +284,7 @@ export function createSyncQueue({
         pageOnly = !head && memory.length > 0;
         if (pageOnly) head = memory[0];
       }
-      if (canRunAutomatically && !canRunAutomatically()) return "idle";
+      if (canRunAutomatically && !canRunAutomatically()) return progress;
       const startup = Boolean(canRunAutomatically && startupPending);
       if (startup && head?.blocked) action = { kind: "retry", target: head.item };
       if (action && (action.target.id !== head?.item.id || (action.kind === "edit" && !head.blocked)))
@@ -297,7 +293,7 @@ export function createSyncQueue({
         await load();
         if (!head && (records.length || memory.length)) return "storage-full";
         if (startup && canRunAutomatically?.()) startupPending = false;
-        return synced ? "synced" : "idle";
+        return progress;
       }
 
       const id = head.item.id;
@@ -347,7 +343,7 @@ export function createSyncQueue({
         return changed;
       };
       try {
-        if (canRunAutomatically && !canRunAutomatically()) return "idle";
+        if (canRunAutomatically && !canRunAutomatically()) return progress;
         if (startup) startupPending = false;
         if (recovery) {
           const expectedEpoch = cache?.ledger_epoch;
@@ -378,7 +374,7 @@ export function createSyncQueue({
             onStoredChange();
             await load();
             action = undefined;
-            synced ||= recovery.kind === "discard";
+            if (recovery.kind === "discard") progress = "synced";
             continue;
           }
         } else {
@@ -406,7 +402,7 @@ export function createSyncQueue({
         onStoredChange();
         if (!acknowledged) return recovery ? "already-synced" : "changed";
         await saveMemory();
-        synced = true;
+        progress = "synced";
         if (recovery) return "already-synced";
         action = undefined;
       } catch (error) {
