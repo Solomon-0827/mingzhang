@@ -111,17 +111,20 @@ function rebuild(state: State): State {
 function changeCategory(state: State, change: CategoryChange): State {
   if (!state.category_catalog) return state;
   const catalog = structuredClone(state.category_catalog);
-  const items = catalog.items;
+  // Category paths are user-entered keys, including names like "__proto__".
+  const items = Object.assign(Object.create(null) as typeof catalog.items, catalog.items);
+  catalog.items = items;
   const hidden = new Set(catalog.hidden);
   const retired = new Set(catalog.retired || []);
-  const removedKinds = {...(catalog.removed_kinds || {})};
+  const removedKinds = Object.assign(Object.create(null) as NonNullable<typeof catalog.removed_kinds>, catalog.removed_kinds);
   const parent = change.path.split("/")[0];
   const affected = Object.keys(items).filter(path => path === change.path || (change.level === "parent" && path.startsWith(change.path + "/")));
   let entries = state.entries;
-  let ordering = state.ordering ? { ...state.ordering, categories: [...state.ordering.categories], favorites: [...(state.ordering.favorites || [])] } : undefined;
+  const ordering = state.ordering ? { ...state.ordering } : undefined;
   if (change.action === "add") {
     items[change.path] = [change.kind || "expense"];
     hidden.delete(change.path);
+    retired.delete(change.path);
   } else if (change.action === "delete") {
     for (const path of affected) { removedKinds[path] = items[path]; delete items[path]; hidden.add(path); }
     if (change.level === "child" && !Object.keys(items).some(path => path === parent || path.startsWith(parent + "/")))
@@ -139,20 +142,19 @@ function changeCategory(state: State, change: CategoryChange): State {
       retired.add(oldPath); retired.delete(newPath);
     }
     entries = entries.map(entry => mapping.has(entry.category) ? { ...entry, category: mapping.get(entry.category)!, version: entry.version + 1 } : entry);
-    ordering ??= { accounts: [], categories: [], favorites: [], version: 0 };
-    ordering.categories = [...new Set(ordering.categories.map(path => mapping.get(path) ?? path))];
-    ordering.favorites = [...new Set((ordering.favorites || []).map(path => mapping.get(path) ?? path))];
-    ordering.version += 1;
+    if (ordering) {
+      ordering.categories = [...new Set(ordering.categories.map(path => mapping.get(path) ?? path))];
+      if (ordering.favorites)
+        ordering.favorites = [...new Set(ordering.favorites.map(path => mapping.get(path) ?? path))];
+    }
   }
   if ((change.action === "add" || change.action === "restore") && Object.hasOwn(items, parent)
     && Object.keys(items).some(path => path.startsWith(parent + "/"))
     && !entries.some(entry => entry.category === parent)) {
     delete items[parent];
   }
-  if (ordering) {
-    const favorites = (ordering.favorites || []).filter(path => Object.hasOwn(items, path) && !hidden.has(path));
-    if (favorites.length !== (ordering.favorites || []).length) { ordering.favorites = favorites; ordering.version += 1; }
-  }
+  if (ordering?.favorites)
+    ordering.favorites = ordering.favorites.filter(path => Object.hasOwn(items, path) && !hidden.has(path) && !retired.has(path));
   catalog.hidden = [...hidden].sort();
   catalog.retired = [...retired];
   catalog.removed_kinds = removedKinds;
@@ -205,7 +207,7 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
     const order = body as unknown as DisplayOrder;
     const ranks = new Map(order.accounts.map((id, index) => [id, index]));
     const groupRanks = new Map((order.account_groups || []).map((id, index) => [id, index]));
-    return { ...state, ordering: { ...order, version: order.version + 1 },
+    return { ...state, ordering: { ...order, favorites: order.favorites ?? state.ordering?.favorites, version: order.version + 1 },
       accounts: [...state.accounts].sort((a, b) => (ranks.get(a.id) ?? order.accounts.length) - (ranks.get(b.id) ?? order.accounts.length)),
       account_groups: [...state.account_groups].sort((a, b) => (groupRanks.get(a.id) ?? groupRanks.size) - (groupRanks.get(b.id) ?? groupRanks.size)) };
   }

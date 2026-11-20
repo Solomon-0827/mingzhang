@@ -79,7 +79,7 @@ def audit(db, action, payload):
     db.execute("INSERT INTO audit(action,payload) VALUES (?,?)", (action, json.dumps(payload, ensure_ascii=False)))
 
 
-def validate_entry(db, data, exclude=None, *, check_category_kind=True):
+def validate_entry(db, data, exclude=None):
     for aid in [data["account_id"]] + ([data["to_account_id"]] if data["to_account_id"] else []):
         if not db.execute("SELECT id FROM accounts WHERE id=?", (aid,)).fetchone():
             fail("账户不存在")
@@ -127,16 +127,8 @@ def validate_entry(db, data, exclude=None, *, check_category_kind=True):
         fail("该交易类型不应关联原交易")
     if kind in ["lend", "borrow"] and not data["counterparty"].strip():
         fail("借贷需要填写往来对象")
-    if kind in ["income", "expense"]:
-        category = data["category"]
-        if not category.strip():
-            fail("请选择或填写分类")
-        allowed = category_state["items"].get(category)
-        if check_category_kind and allowed is not None and kind not in allowed:
-            if not db.execute(
-                "SELECT 1 FROM entries WHERE id=? AND category=? AND kind=?", (exclude, category, kind)
-            ).fetchone():
-                fail("分类不适用于此交易类型，请重新选择")
+    if kind in ["income", "expense"] and not data["category"].strip():
+        fail("请选择或填写分类")
     if exclude:
         linked = list(db.execute("SELECT * FROM entries WHERE reference_id=? AND deleted=0", (exclude,)))
         if linked:
@@ -157,7 +149,7 @@ def save_entry(db, entry, editing=False, batch_id=None, fingerprint=None):
     data = entry.model_dump(mode="json")
     existing = db.execute("SELECT * FROM entries WHERE id=?", (data["id"],)).fetchone()
     if not editing and existing:
-        validate_entry(db, data, data["id"], check_category_kind=batch_id is None)
+        validate_entry(db, data, data["id"])
         if all(existing[k] == v for k, v in data.items() if k != "version") and not existing["deleted"]:
             return dict(existing)
         fail("交易编号已使用，请刷新后重试", 409)
@@ -165,8 +157,7 @@ def save_entry(db, entry, editing=False, batch_id=None, fingerprint=None):
         fail("交易不存在", 404)
     if editing and data["version"] != existing["version"]:
         fail("这笔交易已在另一端修改，请刷新后重新编辑", 409)
-    # Imports preserve the category and kind recorded in the source ledger.
-    validate_entry(db, data, data["id"] if editing else None, check_category_kind=batch_id is None)
+    validate_entry(db, data, data["id"] if editing else None)
     if editing:
         data["version"] += 1
         keys = [k for k in data if k != "id"]
@@ -204,6 +195,9 @@ def display_order(db):
 def snapshot(db):
     accounts = [dict(x) for x in db.execute("SELECT * FROM accounts ORDER BY rowid")]
     ordering = display_order(db)
+    category_state = catalog(db)
+    if "favorites" in ordering:
+        ordering["favorites"] = [p for p in ordering["favorites"] if p in category_state["items"]]
     ranks = {aid: i for i, aid in enumerate(ordering["accounts"])}
     accounts.sort(key=lambda a: ranks.get(a["id"], len(ranks)))
     entries = [dict(x) for x in db.execute("SELECT * FROM entries ORDER BY date DESC,created_at DESC,rowid DESC")]
@@ -240,7 +234,7 @@ def snapshot(db):
         accounts=accounts,
         account_groups=groups,
         ordering=ordering,
-        category_catalog=catalog(db),
+        category_catalog=category_state,
         entries=entries,
         assets=assets,
         liabilities=liabilities,

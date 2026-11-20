@@ -5,7 +5,9 @@ export function categoryAllowsKind(catalog: CategoryCatalog, path: string, kind:
 }
 
 export function categoriesForKind(catalog: CategoryCatalog, kind: Kind) {
-  return Object.keys(catalog.items).filter(path => categoryAllowsKind(catalog, path, kind));
+  return Object.keys(catalog.items).filter(path =>
+    !catalog.hidden.includes(path) && !catalog.retired?.includes(path) && categoryAllowsKind(catalog, path, kind)
+  );
 }
 
 export function categoryGroups(values: string[]) {

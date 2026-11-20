@@ -39,7 +39,7 @@ import {
   today,
 } from "./types";
 import { AccountSelect, ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
-import { categoryAllowsKind, categoriesForKind, categoryLeaf } from "./category-groups";
+import { categoriesForKind, categoryLeaf } from "./category-groups";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import "./paper-theme.css";
@@ -439,13 +439,6 @@ function App() {
     void flushPendingMutations();
   }
   async function saveEntry(value: Entry, editing = false) {
-    const catalog = state?.category_catalog;
-    if (catalog && (value.kind === "income" || value.kind === "expense") && !categoryAllowsKind(catalog, value.category, value.kind)) {
-      const previous = editing ? state?.entries.find(entry => entry.id === value.id) : undefined;
-      if (previous?.kind !== value.kind || previous.category !== value.category) {
-        throw new Error("分类不适用于此交易类型，请重新选择");
-      }
-    }
     queueMutation({ type: editing ? "entry.update" : "entry.create", path: editing ? `/entries/${value.id}` : "/entries",
       method: editing ? "PUT" : "POST", body: value as unknown as Record<string, unknown> });
   }

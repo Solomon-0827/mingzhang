@@ -232,6 +232,7 @@ export function EntryField({
                   disabled={busy}
                   onChange={(e) => {
                     const kind = e.target.value as Kind;
+                    const catalog = state.category_catalog;
                     const next = {
                       ...draft,
                       kind,
@@ -239,7 +240,8 @@ export function EntryField({
                         ? state.accounts.find(a => !["receivable", "liability"].includes(a.kind))?.id || "" : draft.account_id,
                       to_account_id: null,
                       reference_id: null,
-                      category: kind === "income" ? "收入/工资" : kind === "expense" ? "日常/餐饮" : "",
+                      category: catalog && (kind === "income" || kind === "expense")
+                        ? ordered(categoriesForKind(catalog, kind), state.ordering?.categories)[0] ?? "" : "",
                     };
                     setDraft(next);
                     if (ready(next)) void save(next);

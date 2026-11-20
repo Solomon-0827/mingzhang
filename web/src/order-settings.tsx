@@ -89,7 +89,7 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
     const previous={accounts,categories,favorites,account_groups:accountGroups};
     const value={...previous,...next,version:state.ordering?.version ?? 0};
     setAccounts(value.accounts);setCategories(value.categories);setFavorites(value.favorites);setAccountGroups(value.account_groups);
-    try {await onSave(value);} catch(e) {setAccounts(previous.accounts);setCategories(previous.categories);setFavorites(previous.favorites);setAccountGroups(previous.account_groups);setError((e as Error).message);} finally {saving.current=false;setBusy(false);}
+    try {await onSave({...value,favorites:next.favorites});} catch(e) {setAccounts(previous.accounts);setCategories(previous.categories);setFavorites(previous.favorites);setAccountGroups(previous.account_groups);setError((e as Error).message);} finally {saving.current=false;setBusy(false);}
   };
   const [selectedAccountGroup,setSelectedAccountGroup]=useState("");
   const accountGroup=state.account_groups.find(g=>g.id===selectedAccountGroup) ?? state.account_groups[0];

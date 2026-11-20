@@ -234,11 +234,13 @@ def save_display_order(body: DisplayOrder):
         if len(groups) != len(set(groups)) or not set(groups) <= known_groups:
             fail("账户类型排序包含重复或不存在的类型")
         payload["account_groups"] = groups
-        favorites = body.favorites if body.favorites is not None else (json.loads(current[0]).get("favorites", []) if current else [])
+        stored_favorites = json.loads(current[0]).get("favorites", []) if current else []
+        favorites = body.favorites if body.favorites is not None else stored_favorites
         active = catalog(db)["items"]
-        if len(favorites) != len(set(favorites)) or any(p not in active for p in favorites):
+        # An offline order save can carry a previously saved favorite that has since become inactive.
+        if len(favorites) != len(set(favorites)) or any(p not in active and p not in stored_favorites for p in favorites):
             fail("常用分类不能重复，且必须是未删除的分类")
-        payload["favorites"] = favorites
+        payload["favorites"] = [p for p in favorites if p in active]
         payload["version"] += 1
         db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('display_order',?)",
                    (json.dumps(payload, ensure_ascii=False),))

@@ -47,7 +47,7 @@ class CategoryChange(BaseModel):
 
 
 def change_category(db, body):
-    from backend.ledger import audit, display_order, fail
+    from backend.ledger import audit, fail
     db.execute('BEGIN IMMEDIATE')
     value = catalog(db)
     if value['version'] != body.version:
@@ -121,18 +121,14 @@ def change_category(db, body):
                 db.execute('UPDATE entries SET category=?,version=version+1 WHERE category=?', (new, old))
             # Renaming back to an earlier name makes that name active again.
             value['retired'] = [p for p in value['retired'] if p not in mapping.values()]
-    order = display_order(db)
-    version = order['version']
     if mapping:
-        order['categories'] = list(dict.fromkeys(mapping.get(p, p) for p in order['categories']))
-        order['favorites'] = list(dict.fromkeys(mapping.get(p, p) for p in order.get('favorites', [])))
-        order['version'] += 1
-    favorites = [p for p in order.get('favorites', []) if p in items and p not in hidden]
-    if favorites != order.get('favorites', []):
-        order['favorites'] = favorites
-        order['version'] += 1
-    if order['version'] != version:
-        db.execute("INSERT OR REPLACE INTO settings VALUES ('display_order',?)", (json.dumps(order, ensure_ascii=False),))
+        row = db.execute("SELECT value FROM settings WHERE key='display_order'").fetchone()
+        if row:
+            order = json.loads(row[0])
+            for key in ('categories', 'favorites'):
+                if key in order:
+                    order[key] = list(dict.fromkeys(mapping.get(p, p) for p in order[key]))
+            db.execute("UPDATE settings SET value=? WHERE key='display_order'", (json.dumps(order, ensure_ascii=False),))
     value.update(hidden=sorted(hidden), version=value['version'] + 1)
     db.execute("INSERT OR REPLACE INTO settings VALUES ('category_catalog',?)", (json.dumps(value, ensure_ascii=False),))
     audit(db, 'category.' + body.action, body.model_dump())
