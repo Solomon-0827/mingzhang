@@ -50,6 +50,10 @@ def initialize():
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS mutation_receipts(
           id TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, result TEXT);
+        CREATE TABLE IF NOT EXISTS cancelled_mutations(id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS ledger_revision(
+          id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL);
+        INSERT OR IGNORE INTO ledger_revision VALUES (1, 0);
         """)
 
         if "result" not in {r[1] for r in db.execute("PRAGMA table_info(mutation_receipts)")}:
@@ -61,6 +65,10 @@ def initialize():
         for kind, name in [("bank", "银行卡"), ("wallet", "电子钱包"), ("cash", "现金"),
                            ("credit", "信用卡"), ("receivable", "债权"), ("liability", "负债")]:
             db.execute("INSERT OR IGNORE INTO account_groups(id,name,kind) VALUES (?,?,?)", (kind, name, kind))
+
+
+def advance_ledger_revision(db):
+    db.execute("UPDATE ledger_revision SET revision=revision+1 WHERE id=1")
 
 
 def backup(destination):

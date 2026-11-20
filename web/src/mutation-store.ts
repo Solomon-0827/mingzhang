@@ -8,21 +8,26 @@ const legacyStateKey = "mingzhang.local-state.v1";
 const legacyPrefix = "mingzhang.pending-entry.v1.";
 
 export type Rejection = { status: number; message: string; at: number };
-export type QueueRecord = {
-  item: OfflineMutation;
+type QueueStatus = {
   status: "pending" | "blocked" | "in_flight";
   blocked?: Rejection;
   since?: number;
   attempt?: string;
   retryAt?: number;
-  legacy?: true;
 };
+export type QueueRecord = QueueStatus & {
+  item: OfflineMutation;
+  legacy?: true;
+  statusUnsaved?: true;
+};
+type StoredChange = Pick<QueueRecord, "item" | "legacy"> & Partial<QueueStatus>;
+type StoredStatus = QueueStatus & { key: IDBValidKey };
 
 type HeadChange = (head: QueueRecord) => QueueRecord | null | undefined;
 export type MutationStore = {
   list(legacy?: QueueRecord[]): Promise<QueueRecord[]>;
   head(): Promise<QueueRecord | undefined>;
-  append(item: OfflineMutation): Promise<void>;
+  append(item: OfflineMutation, status?: QueueStatus): Promise<void>;
   changeHead(id: string, change: HeadChange): Promise<boolean>;
   importLegacy?(records: QueueRecord[]): Promise<void>;
 };
@@ -105,14 +110,18 @@ export function removeImported(storage: Storage, ids: Set<string>) {
 export function openMutationStore(database?: IDBFactory): Promise<MutationStore | null> {
   if (!database) return Promise.resolve(null);
   return new Promise<IDBDatabase | null>(resolve => {
-    const request = database.open("mingzhang.mutations", 1);
+    const request = database.open("mingzhang.mutations", 2);
     let blocked = false;
     request.onupgradeneeded = () => {
       const db = request.result;
-      const changes = db.createObjectStore("changes", { autoIncrement: true });
-      changes.createIndex("id", "item.id", { unique: true });
-      // An old tab can write back a v1 ID after its IndexedDB record has already been removed.
-      db.createObjectStore("imported");
+      if (!db.objectStoreNames.contains("changes")) {
+        const changes = db.createObjectStore("changes", { autoIncrement: true });
+        changes.createIndex("id", "item.id", { unique: true });
+        // An old tab can write back a v1 ID after its IndexedDB record has already been removed.
+        db.createObjectStore("imported");
+      }
+      // Version 1 inline status remains readable until a sidecar supersedes it.
+      db.createObjectStore("status", { keyPath: "key" });
     };
     request.onsuccess = () => {
       if (blocked) request.result.close();
@@ -126,30 +135,61 @@ export function openMutationStore(database?: IDBFactory): Promise<MutationStore 
   }).then(db => db && indexedDbStore(db), () => null);
 }
 
+function statusOf(record: Partial<QueueStatus>): QueueStatus {
+  const { status = "pending", blocked, since, attempt, retryAt } = record;
+  return { status, blocked, since, attempt, retryAt };
+}
+
 function indexedDbStore(db: IDBDatabase): MutationStore {
-  function run<T>(stores: string[], mode: IDBTransactionMode, work: (tx: IDBTransaction, result: (value: T) => void) => void) {
+  let runtime: { id: string; base: string; status: QueueStatus } | undefined;
+
+  function run<T>(stores: string[], mode: IDBTransactionMode, work: (
+    tx: IDBTransaction, result: (value: T) => void, abort: (error: unknown) => void,
+  ) => void) {
     return new Promise<T>((resolve, reject) => {
       const tx = db.transaction(stores, mode);
       let value: T;
       let requestError: DOMException | null = null;
+      let synchronousError: unknown;
+      const abort = (error: unknown) => { synchronousError = error; tx.abort(); };
       tx.onerror = event => { requestError = (event.target as IDBRequest).error; };
       tx.oncomplete = () => resolve(value);
-      tx.onabort = () => reject(tx.error ?? requestError);
-      try { work(tx, result => { value = result; }); }
-      catch (error) { tx.abort(); reject(error); }
+      tx.onabort = () => reject(synchronousError ?? requestError ?? tx.error);
+      try { work(tx, result => { value = result; }, abort); }
+      catch (error) { abort(error); }
     });
   }
 
-  function withSpace(record: QueueRecord) {
-    // Reserve space for the in-flight marker while the record is still pending.
-    return { ...record, reserved: record.status === "in_flight" ? "" : " ".repeat(128) };
+  function addChange(tx: IDBTransaction, change: StoredChange, status: QueueStatus, abort: (error: unknown) => void) {
+    const added = tx.objectStore("changes").add(change);
+    if (!status.blocked && status.retryAt === undefined) return;
+    added.onsuccess = () => {
+      try { tx.objectStore("status").put({ key: added.result, ...statusOf(status) }); }
+      catch (error) { abort(error); }
+    };
   }
 
-  return {
-    list: (legacy = []) => run<QueueRecord[]>(legacy.length ? ["changes", "imported"] : ["changes"], "readonly", (tx, result) => {
-      const request = tx.objectStore("changes").getAll();
+  function withStatus(change: StoredChange, status: QueueStatus | undefined): QueueRecord {
+    const durable = statusOf(status ?? change);
+    const volatile = runtime?.id === change.item.id && runtime.base === JSON.stringify(durable) ? runtime : undefined;
+    return { item: change.item, legacy: change.legacy, ...(volatile?.status ?? durable),
+      statusUnsaved: volatile ? true : undefined };
+  }
+
+  const head = async () => (await list([], 1))[0];
+  function list(legacy: QueueRecord[], limit?: number) {
+    const stores = legacy.length ? ["changes", "status", "imported"] : ["changes", "status"];
+    return run<QueueRecord[]>(stores, "readonly", (tx, result) => {
+      const changes = tx.objectStore("changes");
+      const items = changes.getAll(undefined, limit);
+      const keys = changes.getAllKeys(undefined, limit);
+      const statuses = tx.objectStore("status").getAll();
       let pending: QueueRecord[];
-      request.onsuccess = () => { pending = request.result; result(pending); };
+      statuses.onsuccess = () => {
+        const byKey = new Map((statuses.result as StoredStatus[]).map(status => [status.key, status]));
+        pending = (items.result as StoredChange[]).map((item, index) => withStatus(item, byKey.get(keys.result[index])));
+        result(pending);
+      };
       if (legacy.length) {
         const imported = tx.objectStore("imported");
         for (const record of legacy) {
@@ -157,27 +197,55 @@ function indexedDbStore(db: IDBDatabase): MutationStore {
           seen.onsuccess = () => { if (seen.result === undefined) pending.push(record); };
         }
       }
+    });
+  }
+
+  return {
+    list: (legacy = []) => list(legacy),
+    head,
+    append: (item, status) => run<void>(status ? ["changes", "status"] : ["changes"], "readwrite", (tx, _, abort) => {
+      addChange(tx, { item }, status ?? { status: "pending" }, abort);
     }),
-    head: () => run<QueueRecord | undefined>(["changes"], "readonly", (tx, result) => {
-      const request = tx.objectStore("changes").getAll(undefined, 1);
-      request.onsuccess = () => result(request.result[0]);
-    }),
-    append: item => run<void>(["changes"], "readwrite", tx => {
-      tx.objectStore("changes").add(withSpace({ item, status: "pending" }));
-    }),
-    changeHead: (id, change) => run<boolean>(["changes"], "readwrite", (tx, result) => {
-      const request = tx.objectStore("changes").openCursor();
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (!cursor || cursor.value.item.id !== id) return result(false);
-        const next = change(cursor.value);
-        if (next === undefined) return result(false);
-        if (next === null) cursor.delete();
-        else cursor.update(withSpace(next));
-        result(true);
-      };
-    }),
-    importLegacy: records => run<void>(["changes", "imported"], "readwrite", tx => {
+    changeHead: async (id, change) => {
+      let attemptedStatus: typeof runtime;
+      try {
+        const changed = await run<boolean>(["changes", "status"], "readwrite", (tx, result, abort) => {
+          const statuses = tx.objectStore("status");
+          const request = tx.objectStore("changes").openCursor();
+          request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor || cursor.value.item.id !== id) return result(false);
+            const saved = statuses.get(cursor.primaryKey);
+            saved.onsuccess = () => {
+              try {
+                const next = change(withStatus(cursor.value, saved.result));
+                if (next === undefined) return result(false);
+                if (next === null) {
+                  cursor.delete();
+                  statuses.delete(cursor.primaryKey);
+                } else if (next.item.id !== id) {
+                  cursor.update({ item: next.item, legacy: next.legacy });
+                  statuses.delete(cursor.primaryKey);
+                } else {
+                  const base = JSON.stringify(statusOf(saved.result ?? cursor.value));
+                  const status = statusOf(next);
+                  attemptedStatus = { id, base, status };
+                  if (base !== JSON.stringify(status)) statuses.put({ key: cursor.primaryKey, ...status });
+                }
+                result(true);
+              } catch (error) { abort(error); }
+            };
+          };
+        });
+        if (changed && runtime?.id === id) runtime = undefined;
+        return changed;
+      } catch (error) {
+        if (!attemptedStatus || !isQuota(error)) throw error;
+        runtime = attemptedStatus;
+        return true;
+      }
+    },
+    importLegacy: records => run<void>(["changes", "imported", "status"], "readwrite", (tx, _, abort) => {
       const changes = tx.objectStore("changes");
       const imported = tx.objectStore("imported");
       const ids = changes.index("id");
@@ -192,9 +260,11 @@ function indexedDbStore(db: IDBDatabase): MutationStore {
           if (seen.result !== undefined) return next();
           const existing = ids.getKey(id);
           existing.onsuccess = () => {
-            if (existing.result === undefined) changes.add(withSpace(record));
-            imported.add(true, id);
-            next();
+            try {
+              if (existing.result === undefined) addChange(tx, { item: record.item, legacy: true }, record, abort);
+              imported.add(true, id);
+              next();
+            } catch (error) { abort(error); }
           };
         };
       }
@@ -206,10 +276,11 @@ function indexedDbStore(db: IDBDatabase): MutationStore {
 export function localStorageStore(storage: Storage): MutationStore {
   let runtime: QueueRecord | undefined;
   let unsavedRejection = false;
-  function read() {
+  function read(): QueueRecord[] {
     return readLegacy(storage).records.map(record => {
       if (runtime?.item.id !== record.item.id) return record;
-      if (runtime.status === "in_flight" || unsavedRejection) return runtime;
+      if (runtime.status === "in_flight" || unsavedRejection)
+        return { ...runtime, statusUnsaved: unsavedRejection ? true : undefined };
       return { ...record, retryAt: runtime.retryAt };
     });
   }
@@ -223,8 +294,9 @@ export function localStorageStore(storage: Storage): MutationStore {
   return {
     list: async () => read(),
     head: async () => read()[0],
-    append: async item => {
+    append: async (item, status) => {
       const { records, entryKeys } = readLegacy(storage);
+      if (status?.blocked) setRejection(item.id, status.blocked);
       writeV1(storage, [...records.map(record => record.item), item]);
       for (const key of entryKeys.values()) storage.removeItem(key);
     },
@@ -250,7 +322,7 @@ export function localStorageStore(storage: Storage): MutationStore {
       } else {
         // A full v1 array must be sendable without allocating another localStorage key.
         runtime = next;
-        if (next.blocked?.at !== head.blocked?.at || next.blocked?.message !== head.blocked?.message ||
+        if (unsavedRejection || next.blocked?.at !== head.blocked?.at || next.blocked?.message !== head.blocked?.message ||
           next.blocked?.status !== head.blocked?.status) {
           try {
             try { setRejection(id, next.blocked); }

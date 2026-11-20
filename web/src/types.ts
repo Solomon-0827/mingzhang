@@ -114,7 +114,7 @@ export function cents(value: string) {
   if (!Number.isSafeInteger(n)) throw new Error("金额超出范围");
   return negative ? -n : n;
 }
-export type RequestFailure = "network" | "timeout" | "unavailable" | "unauthorized" | "rejected";
+export type RequestFailure = "network" | "timeout" | "unavailable" | "unauthorized" | "rejected" | "cancelled";
 
 export class RequestError extends Error {
   constructor(readonly kind: RequestFailure, message: string, readonly status?: number, readonly retryAfterMs?: number) {
@@ -167,8 +167,11 @@ export async function api<T>(
   if (!response.ok) {
     if (response.status === 401)
       throw new RequestError("unauthorized", "请重新登录", response.status);
-    const detail = await response.json().then(value => value?.detail).catch(() => undefined);
+    const failure = await response.json().catch(() => undefined);
+    const detail = failure?.detail;
     const status = response.status;
+    if (status === 409 && failure?.code === "mutation_cancelled")
+      throw new RequestError("cancelled", "这条修改已被放弃", status);
     if (status === 408 || status === 429)
       throw new RequestError(status === 408 ? "timeout" : "unavailable",
         typeof detail === "string" ? detail : "服务暂时不可用", status, retryAfter(response.headers.get("Retry-After")));

@@ -6,6 +6,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 import xlrd
 
+from backend.db import advance_ledger_revision
 from backend.ledger import Account, Entry, audit, save_entry
 
 SHEETS = {"收入", "支出", "转账", "余额变更", "负债变更", "债权变更"}
@@ -91,4 +92,5 @@ def import_sui(db, content, name, account_kinds=None, calibrations=None):
     db.execute("INSERT INTO imports(id,name,payload,status) VALUES (?,?,?,'committed')",
                (batch_id, name, json.dumps(payload, ensure_ascii=False)))
     audit(db, "import.sui", dict(batch_id=batch_id, records=len(records), sha256=digest))
+    advance_ledger_revision(db)
     return dict(batch_id=batch_id, records=len(records), accounts=len(accounts), sha256=digest)

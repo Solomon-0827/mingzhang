@@ -199,18 +199,18 @@ export function describeBlocked(item: OfflineMutation, state: State | null) {
 }
 
 export function BlockedSyncDetails({ item, state, waiting, onRetry, onEdit, onRebase, onOpenSettings, onDiscard }: {
-  item: BlockedMutation;
+  item: OfflineMutation & Partial<Pick<BlockedMutation, "blocked">>;
   state: State | null;
   waiting: number;
   onRetry: () => Promise<void>;
-  onEdit: () => Promise<void>;
-  onRebase: () => Promise<void>;
-  onOpenSettings: () => Promise<void>;
+  onEdit?: () => Promise<void>;
+  onRebase?: () => Promise<void>;
+  onOpenSettings?: () => Promise<void>;
   onDiscard: (confirm: (snapshot: State) => boolean) => Promise<void>;
 }) {
   const { title, fields } = describeBlocked(item, state);
-  const rebase = item.blocked.status === 409 && canRebase(item, state);
-  const settings = item.blocked.status === 409 && !rebase && recoverySettings(item);
+  const rebase = item.blocked?.status === 409 && canRebase(item, state);
+  const settings = item.blocked?.status === 409 && !rebase && recoverySettings(item);
   const discard = (snapshot: State) => {
     const contents = describeBlocked(item, snapshot).fields.map(([label, value]) => `${label}：${value}`).join("\n");
     return window.confirm(`确定放弃「${title}」？\n\n${contents}\n\n这条本机修改将被移除，无法撤销。后续 ${waiting} 项修改仍会保留。`);
@@ -218,8 +218,8 @@ export function BlockedSyncDetails({ item, state, waiting, onRetry, onEdit, onRe
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [copyText, setCopyText] = useState("");
-  const reason = `${item.blocked.message}（${item.blocked.status}）`;
-  const rejectedAt = new Date(item.blocked.at).toLocaleString("zh-CN");
+  const reason = item.blocked && `${item.blocked.message}（${item.blocked.status}）`;
+  const rejectedAt = item.blocked && new Date(item.blocked.at).toLocaleString("zh-CN");
   async function run(action: () => Promise<void>) {
     setBusy(true);
     setMessage("");
@@ -235,25 +235,26 @@ export function BlockedSyncDetails({ item, state, waiting, onRetry, onEdit, onRe
     <div className="blocked-sync-details" aria-busy={busy}>
       <h3>{title}</h3>
       <dl>{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-      <p><strong>上次拒绝原因</strong> {reason}</p>
-      <p><small>{rejectedAt} · 后续 {waiting} 项修改正在等待同步</small></p>
+      {reason && <p><strong>上次拒绝原因</strong> {reason}</p>}
+      <p><small>{rejectedAt && `${rejectedAt} · `}后续 {waiting} 项修改正在等待同步</small></p>
       {settings && <p>{item.type === "account.update" || item.type === "order.update"
         ? "这条修改使用的是旧设置，直接套用可能覆盖其他设备的账户资料、余额或排序。请打开最新设置重做，再回来放弃这条旧修改。"
         : "对应的设置已发生变化。请打开最新设置重新操作，再回来放弃这条旧修改。"}</p>}
       {!state && <p>联网后才能放弃这条修改</p>}
       <div className="blocked-sync-actions">
         <button type="button" className="primary" autoFocus disabled={busy} onClick={() => void run(onRetry)}>重新同步</button>
-        {(item.type === "entry.create" || item.type === "entry.update") &&
+        {onEdit && (item.type === "entry.create" || item.type === "entry.update") &&
           <button type="button" className="secondary" disabled={busy} onClick={() => void run(onEdit)}>修改后重新同步</button>}
-        {rebase && <button type="button" className="secondary" disabled={busy} onClick={() => {
+        {rebase && onRebase && <button type="button" className="secondary" disabled={busy} onClick={() => {
           if (window.confirm(`确定基于最新数据重新同步「${title}」？这会将排队的修改应用到服务器的最新数据上。`))
             void run(onRebase);
         }}>基于最新数据重新同步</button>}
-        {settings && <button type="button" className="secondary" disabled={busy}
+        {settings && onOpenSettings && <button type="button" className="secondary" disabled={busy}
           onClick={() => void run(onOpenSettings)}>打开最新设置</button>}
         <button type="button" className="secondary" disabled={busy} onClick={() => void run(async () => {
           const text = [title, ...fields.map(([label, value]) => `${label}：${value}`),
-            `拒绝原因：${reason}`, `拒绝时间：${rejectedAt}`, "", "原始 JSON", JSON.stringify(item, null, 2)].join("\n");
+            ...(reason ? [`拒绝原因：${reason}`, `拒绝时间：${rejectedAt}`] : []),
+            "", "原始 JSON", JSON.stringify(item, null, 2)].join("\n");
           try {
             await navigator.clipboard.writeText(text);
             setCopyText("");

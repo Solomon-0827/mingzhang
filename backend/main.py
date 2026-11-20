@@ -21,7 +21,7 @@ from starlette.background import BackgroundTask
 
 from backend.auth import authenticated, hash_password, token_hash, verify_password
 from backend.categories import CategoryChange, catalog, change_category
-from backend.db import backup, connect, db_path, initialize
+from backend.db import advance_ledger_revision, backup, connect, db_path, initialize
 from backend.importing import commit_import, preview, read_file
 from backend.ledger import (
     KIND_LABELS,
@@ -101,13 +101,16 @@ def run_mutation(request: Request, apply):
     if mutation_id:
         validate_mutation_id(mutation_id)
     with connect() as db:
-        # A concurrent replay must wait for both the change and its receipt.
+        # Replay, cancellation and commit all acquire the same SQLite write lock.
         db.execute("BEGIN IMMEDIATE")
         if mutation_id:
             receipt = db.execute("SELECT result FROM mutation_receipts WHERE id=?", (mutation_id,)).fetchone()
             if receipt is not None:
                 return receipt_result(receipt)
+            if db.execute("SELECT 1 FROM cancelled_mutations WHERE id=?", (mutation_id,)).fetchone():
+                return JSONResponse({"code": "mutation_cancelled", "detail": "这条修改已被放弃"}, status_code=409)
         result = apply(db)
+        advance_ledger_revision(db)
         if mutation_id:
             db.execute("INSERT INTO mutation_receipts(id,result) VALUES (?,?)", (mutation_id, json.dumps(result)))
         return result
@@ -130,6 +133,18 @@ def mutation_receipt(mutation_id: str):
         db.execute("BEGIN IMMEDIATE")
         receipt = db.execute("SELECT result FROM mutation_receipts WHERE id=?", (mutation_id,)).fetchone()
     return {"committed": receipt is not None, "result": receipt_result(receipt) if receipt is not None else None}
+
+
+@app.post("/api/mutation-receipts/{mutation_id}/cancel", dependencies=[Depends(authenticated)])
+def cancel_mutation(mutation_id: str):
+    validate_mutation_id(mutation_id)
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        receipt = db.execute("SELECT result FROM mutation_receipts WHERE id=?", (mutation_id,)).fetchone()
+        if receipt is not None:
+            return {"committed": True, "result": receipt_result(receipt)}
+        db.execute("INSERT OR IGNORE INTO cancelled_mutations(id) VALUES (?)", (mutation_id,))
+    return {"committed": False, "result": None}
 
 
 class Login(BaseModel):
@@ -233,14 +248,13 @@ def sync_state(body: SyncStateRequest):
     with connect() as db:
         # Read the ledger and receipts from the same SQLite snapshot.
         db.execute("BEGIN")
-        db.execute("SELECT 1 FROM settings LIMIT 1").fetchone()
-        observed_at = time.time_ns()
+        revision = db.execute("SELECT revision FROM ledger_revision WHERE id=1").fetchone()[0]
         result = ledger_state(db)
         committed = [row[0] for row in db.execute(
             "SELECT id FROM mutation_receipts WHERE id IN (SELECT value FROM json_each(?))",
             (json.dumps(body.mutation_ids),),
         )]
-    return {"snapshot": result, "committed": committed, "observed_at": str(observed_at)}
+    return {"snapshot": result, "committed": committed, "revision": revision}
 
 
 @app.post("/api/categories", dependencies=[Depends(authenticated)])
@@ -499,6 +513,7 @@ async def upload(file: UploadFile = File(...)):
             "INSERT INTO imports(id,name,payload) VALUES (?,?,?)",
             (bid, (file.filename or "")[:200], json.dumps(dict(headers=headers, rows=rows, mapping=mapping))),
         )
+        advance_ledger_revision(db)
     return dict(id=bid, headers=headers, mapping=mapping, sample=rows[:3], count=len(rows))
 
 
@@ -538,6 +553,7 @@ def commit(bid: str, body: Selection):
             fail("该批次已经处理，未重复导入", 409)
         count = commit_import(db, batch, set(body.rows))
         audit(db, "import.commit", {"id": bid, "count": count})
+        advance_ledger_revision(db)
     return {"count": count}
 
 
@@ -552,6 +568,7 @@ def rollback(bid: str):
         for row in rows:
             set_deleted(db, row["id"], row["version"], True)
         db.execute("UPDATE imports SET status='rolled_back' WHERE id=?", (bid,))
+        advance_ledger_revision(db)
     return {"ok": True}
 
 

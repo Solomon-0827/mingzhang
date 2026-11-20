@@ -1,4 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from sqlite3 import IntegrityError
+from threading import Event
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -6,6 +10,78 @@ import pytest
 from backend import main
 from backend.categories import CategoryChange, change_category
 from backend.db import connect
+
+
+@pytest.mark.parametrize("first", ["cancel", "commit"])
+def test_cancel_and_commit_are_exclusive(client, first):
+    mutation_id = str(uuid4())
+    path = f"/api/mutation-receipts/{mutation_id}/cancel"
+    headers = {"X-Mingzhang-Mutation": mutation_id}
+    body = {"id": str(uuid4()), "name": "取消验证", "kind": "cash", "opening_cents": 0}
+    if first == "cancel":
+        assert client.post(path).json() == {"committed": False, "result": None}
+        refused = client.post("/api/accounts", json=body, headers=headers)
+        assert refused.status_code == 409
+        assert refused.json()["code"] == "mutation_cancelled"
+        assert client.get("/api/state").json()["accounts"] == []
+        assert client.post(path).json() == {"committed": False, "result": None}
+        # A new payload version uses a different receipt ID.
+        assert client.post("/api/accounts", json=body, headers={
+            "X-Mingzhang-Mutation": str(uuid4()),
+        }).status_code == 200
+    else:
+        committed = client.post("/api/accounts", json=body, headers=headers)
+        assert committed.status_code == 200
+        assert client.post(path).json() == {"committed": True, "result": committed.json()}
+        assert client.post("/api/accounts", json=body, headers=headers).json() == committed.json()
+
+
+@pytest.mark.parametrize("first", ["cancel", "commit"])
+def test_concurrent_cancel_and_commit_serialize_on_two_connections(client, monkeypatch, first):
+    mutation_id = str(uuid4())
+    path = f"/api/mutation-receipts/{mutation_id}/cancel"
+    headers = {"X-Mingzhang-Mutation": mutation_id}
+    body = {"id": str(uuid4()), "name": "并发取消验证", "kind": "cash", "opening_cents": 0}
+    winner_has_written, loser_began, release = Event(), Event(), Event()
+
+    @contextmanager
+    def controlled_connection():
+        with connect() as db:
+            winner = not winner_has_written.is_set()
+            if not winner:
+                db.set_trace_callback(lambda sql: loser_began.set() if sql == "BEGIN IMMEDIATE" else None)
+            yield db
+            if winner:
+                winner_has_written.set()
+                assert release.wait(5)
+
+    monkeypatch.setattr(main, "connect", controlled_connection)
+
+    def cancel():
+        return client.post(path)
+
+    def commit():
+        return client.post("/api/accounts", json=body, headers=headers)
+
+    lead, follow = (cancel, commit) if first == "cancel" else (commit, cancel)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        winning_request = workers.submit(lead)
+        try:
+            assert winner_has_written.wait(2), "first request never wrote"
+            losing_request = workers.submit(follow)
+            assert loser_began.wait(2), "second connection never attempted to acquire the write lock"
+            assert not losing_request.done()
+        finally:
+            release.set()
+        winner, loser = winning_request.result(), losing_request.result()
+    assert winner.status_code == 200
+    if first == "cancel":
+        assert winner.json()["committed"] is False
+        assert loser.status_code == 409
+        assert loser.json()["code"] == "mutation_cancelled"
+    else:
+        assert loser.status_code == 200
+        assert loser.json() == {"committed": True, "result": winner.json()}
 
 
 def test_client_ids_allow_offline_dependency_chain(client):
@@ -104,6 +180,7 @@ def test_mutation_receipt_requires_login(client):
         headers={"X-Mingzhang-Mutation": str(uuid4())},
     )
     assert response.status_code == 401
+    assert client.post(f"/api/mutation-receipts/{uuid4()}/cancel").status_code == 401
 
 
 def test_sync_snapshot_reads_only_receipts_already_reflected_in_its_ledger(client, monkeypatch):
@@ -116,10 +193,11 @@ def test_sync_snapshot_reads_only_receipts_already_reflected_in_its_ledger(clien
 
     def interleave(db):
         ledger = original_snapshot(db)
-        with connect() as writer:
-            writer.execute("BEGIN IMMEDIATE")
-            change_category(writer, CategoryChange(**{**body, "path": "稍后提交分类", "version": version + 1}))
-            writer.execute("INSERT INTO mutation_receipts(id) VALUES (?)", (concurrent,))
+        change = CategoryChange(**{**body, "path": "稍后提交分类", "version": version + 1})
+        main.run_mutation(
+            SimpleNamespace(headers={"x-mingzhang-mutation": concurrent}),
+            lambda writer: change_category(writer, change),
+        )
         return ledger
 
     request = {"mutation_ids": [committed, concurrent, missing]}
@@ -131,10 +209,13 @@ def test_sync_snapshot_reads_only_receipts_already_reflected_in_its_ledger(clien
     assert result["committed"] == [committed]
     assert result["snapshot"]["category_catalog"]["version"] == version + 1
     assert "稍后提交分类" not in result["snapshot"]["category_catalog"]["items"]
+    older_revision = result["revision"]
 
     result = client.post("/api/sync-state", json=request).json()
     assert set(result["committed"]) == {committed, concurrent}
     assert result["snapshot"]["category_catalog"]["version"] == version + 2
+    assert result["revision"] == older_revision + 1
+    assert "observed_at" not in result
     client.post("/api/logout")
     assert client.post("/api/sync-state", json=request).status_code == 401
 

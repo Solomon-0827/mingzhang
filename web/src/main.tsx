@@ -58,6 +58,7 @@ const syncQueue = createSyncQueue({
   send: item => api(item.path, item.body, item.method, item.id),
   fetchSnapshot: mutation_ids => api<SyncSnapshot>("/sync-state", { mutation_ids }),
   fetchReceipt: id => api<ReceiptStatus>(`/mutation-receipts/${encodeURIComponent(id)}`),
+  cancelMutation: id => api<ReceiptStatus>(`/mutation-receipts/${encodeURIComponent(id)}/cancel`, {}),
   onStoredChange: snapshot => {
     try {
       if (queueChannel) queueChannel.postMessage(snapshot ?? null);
@@ -200,7 +201,7 @@ function App() {
   const [lastSync, setLastSync] = useState(""),
     [online, setOnline] = useState(navigator.onLine);
   const [queueView, setQueueView] = useState(syncQueue.view);
-  const { count: pendingCount, blocked, snapshot: serverSnapshot, storageError, memoryCount, fallback } = queueView;
+  const { count: pendingCount, blocked, snapshot: serverSnapshot, storageError, statusUnsaved, memoryCount, fallback } = queueView;
   const [showBlocked, setShowBlocked] = useState(false);
   const [blockedEditor, setBlockedEditor] = useState<{ target: BlockedMutation } & ReturnType<typeof prepareEntryRecovery> | null>(null);
   const loginEpoch = useRef(0);
@@ -470,36 +471,39 @@ function App() {
   }, []);
   const flushPendingMutations = useCallback(async function flush(action?: QueueAction, startup = false) {
     if (!action && (pendingFlush.current || pendingRetry.current !== null)) return;
+    if (action) cancelPendingRetry();
     pendingFlush.current += 1;
     const epoch = loginEpoch.current;
     let checkTail = false;
     try {
-      const result = await syncQueue.flush(action);
+      const result = await syncQueue.flush(action, startup);
       if (epoch !== loginEpoch.current) return;
-      checkTail = result === "idle" || result === "synced" || result === "changed" || result === "already-synced";
+      checkTail = result === "idle" || result === "synced" || result === "changed" ||
+        result === "already-synced" || result === "discarded-elsewhere" || result === "cancelled";
       if (result === "in-flight") throw new Error("另一窗口正在同步这条修改，请等本次同步结束。");
       if (result === "no-snapshot" || result === "receipt-unavailable") throw new Error(
         action?.kind === "discard" ? "联网后才能放弃这条修改" : "暂时无法核对同步状态，请联网后重试。");
       if (result === "already-synced") setNotice("这条修改已同步到服务器。");
+      if (result === "discarded-elsewhere") setNotice("这条修改已在其他窗口放弃。");
       if (result === "changed" && action && !startup) throw new Error("这条修改已在其他窗口处理，请查看当前待处理内容。");
       if (result === "retryable" || typeof result === "object") {
         const needsManualRetry = Boolean(syncQueue.blocked());
         const wait = typeof result === "object" ? result : null;
         if (wait?.wait !== "sending")
           setError(needsManualRetry ? "暂时无法同步，修改仍在本机，请稍后重试。" : "暂时无法同步，稍后会自动重试。");
-        if (!needsManualRetry || (wait && action?.kind === "retry")) {
+        if (!needsManualRetry) {
           cancelPendingRetry();
           const delay = wait ? Math.max(0, wait.until - Date.now()) : retryDelay.current;
           pendingRetry.current = window.setTimeout(() => {
             pendingRetry.current = null;
-            void flush(needsManualRetry ? action : undefined).catch(e => setError(e.message));
+            void flush().catch(e => setError(e.message));
           }, Math.min(delay, 2_147_483_647));
           if (!wait) retryDelay.current = Math.min(retryDelay.current * 2, 60000);
         }
       } else {
         retryDelay.current = 5000;
         if (result === "unauthorized") requireLogin();
-        if (result === "synced" || action?.kind === "discard") scheduleRefresh();
+        if (result === "synced" || result === "discarded-elsewhere" || action?.kind === "discard") scheduleRefresh();
         if (result === "synced") clearConnectionError();
       }
     } finally {
@@ -511,9 +515,9 @@ function App() {
   useEffect(() => {
     if (!logged || !online) return;
     cancelPendingRetry();
-    const startup = startupAttempted.current ? null : syncQueue.blocked();
+    const startup = !startupAttempted.current;
     startupAttempted.current = true;
-    void flushPendingMutations(startup ? { kind: "retry", target: startup } : undefined, true)
+    void flushPendingMutations(undefined, startup)
       .catch(e => setError(e.message));
   }, [logged, online, cancelPendingRetry, flushPendingMutations, setError]);
   useEffect(() => {
@@ -632,25 +636,25 @@ function App() {
       .reduce((sum, account) => sum + account.balance_cents, 0),
   })).filter(group => (state?.accounts || []).some(account => (account.group_id || account.kind) === group.id)), [state?.account_groups, state?.accounts]);
   const queueNotice = blocked ? "有 1 项修改未能同步，点此处理" : `${pendingCount} 项等待同步，点此查看`;
+  const queueHead = blocked ?? queueView.items[0];
   const storageNotice = (storageError || fallback) && <div className="queue-storage-notice" role={storageError ? "alert" : undefined}>
     {storageError && <>
-      <span>{memoryCount} 项修改只保留在此页面，请勿关闭或刷新。</span>
+      {memoryCount > 0 && <span>{memoryCount} 项修改只保留在此页面，请勿关闭或刷新。</span>}
+      {statusUnsaved && <span>本机空间不足，同步状态暂时只保留在此页面。</span>}
       <button type="button" className="secondary" onClick={() => void retryQueueStorage()}>重试本机保存</button>
     </>}
     {fallback && <span>本机使用兼容存储，多窗口同步保护有限。</span>}
   </div>;
   const queuePanel = showBlocked && pendingCount > 0 && !blockedEditor && (
     <Modal title={blocked ? "处理未同步的修改" : "等待同步的修改"} onClose={() => setShowBlocked(false)}>
-      {blocked ? <BlockedSyncDetails key={blocked.id} item={blocked} state={serverSnapshot} waiting={pendingCount - 1}
-        onRetry={() => flushPendingMutations({ kind: "retry", target: blocked })}
-        onEdit={() => openBlockedEditor(blocked)}
-        onRebase={() => rebaseBlocked(blocked)}
-        onOpenSettings={() => openLatestSettings(blocked)}
-        onDiscard={confirm => flushPendingMutations({ kind: "discard", target: blocked, confirm })} />
-        : <div className="blocked-sync-details">
-          <ol>{queueView.items.map(item => <li key={item.id}>{describeBlocked(item, null).title}</li>)}</ol>
-          <p>{logged ? "恢复联网后会按保存顺序自动同步。" : "连接账本后会按保存顺序自动同步。"}</p>
-        </div>}
+      <BlockedSyncDetails key={queueHead.id} item={queueHead} state={serverSnapshot} waiting={pendingCount - 1}
+        onRetry={() => flushPendingMutations({ kind: "retry", target: queueHead })}
+        onEdit={blocked ? () => openBlockedEditor(blocked) : undefined}
+        onRebase={blocked ? () => rebaseBlocked(blocked) : undefined}
+        onOpenSettings={blocked ? () => openLatestSettings(blocked) : undefined}
+        onDiscard={confirm => flushPendingMutations({ kind: "discard", target: queueHead, confirm })} />
+      {!blocked && pendingCount > 1 && <ol>{queueView.items.slice(1).map(item =>
+        <li key={item.id}>{describeBlocked(item, null).title}</li>)}</ol>}
     </Modal>
   );
   if (!checked && !pendingCount)

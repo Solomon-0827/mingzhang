@@ -1,8 +1,8 @@
-import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IDBCursor, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSyncQueue, inFlightTimeout, type BlockedMutation } from "./sync-queue";
+import { createSyncQueue, inFlightTimeout, type BlockedMutation, type SyncSnapshot } from "./sync-queue";
 import { blockedKey, openMutationStore, queueKey, snapshotKey } from "./mutation-store";
 import {
   BlockedSyncDetails, canRebase, describeBlocked, EntryRecoveryComparison,
@@ -57,12 +57,18 @@ function setup(initial = snapshot, database = new IDBFactory()) {
     server = applyMutation(server, item);
     receipts.add(item.id);
   }
-  const serverSnapshot = (ids: string[]) => ({ snapshot: server, committed: ids.filter(id => receipts.has(id)) });
+  const serverSnapshot = (ids: string[]): SyncSnapshot => ({
+    snapshot: server, committed: ids.filter(id => receipts.has(id)), revision: receipts.size,
+  });
   const fetchSnapshot = vi.fn(async (ids: string[]) => serverSnapshot(ids));
   const fetchReceipt = vi.fn(async (id: string) => ({ committed: receipts.has(id), result: null }));
-  const open = () => createSyncQueue({ storage, database,
-    send: async item => { await send(item); commit(item); }, fetchSnapshot, fetchReceipt });
-  return { storage, database, send, fetchSnapshot, fetchReceipt, commit, serverSnapshot, receipts, open, queue: open() };
+  const cancelMutation = vi.fn(async (id: string) => ({ committed: receipts.has(id), result: null }));
+  const open = (locks?: LockManager) => {
+    const options = { storage, database, locks,
+      send: async (item: OfflineMutation) => { await send(item); commit(item); }, fetchSnapshot, fetchReceipt, cancelMutation };
+    return createSyncQueue(options);
+  };
+  return { storage, database, send, fetchSnapshot, fetchReceipt, cancelMutation, commit, serverSnapshot, receipts, open, queue: open() };
 }
 
 const reject = (message = "请选择有效的账户", status = 400) => new RequestError("rejected", message, status);
@@ -78,6 +84,142 @@ const discard = (target: BlockedMutation, confirm = vi.fn(() => true)) =>
 afterEach(() => vi.restoreAllMocks());
 
 describe("transactional sync queue", () => {
+  it("sends through claim quota errors and keeps the rejection actionable through status quota errors", async () => {
+    const { queue, send, cancelMutation } = setup();
+    await queue.refresh();
+    await queue.enqueue(createEntry("durable"));
+    const update = IDBCursor.prototype.update;
+    const payloadWrites = vi.spyOn(IDBCursor.prototype, "update").mockImplementation(function (this: IDBCursor, value) {
+      if ((this.source as IDBObjectStore).name === "changes") throw new DOMException("full", "QuotaExceededError");
+      return update.call(this, value);
+    });
+    const put = IDBObjectStore.prototype.put;
+    const statusWrites = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args) {
+      if (this.name === "status") throw new DOMException("full", "QuotaExceededError");
+      return put.apply(this, args);
+    });
+    send.mockRejectedValueOnce(reject("server rejected", 422)).mockRejectedValueOnce(reject("still rejected", 409));
+    expect(await queue.flush()).toBe("blocked");
+    expect(send).toHaveBeenCalledOnce();
+    expect(payloadWrites).not.toHaveBeenCalled();
+    expect(statusWrites).toHaveBeenCalled();
+    expect(queue.view()).toMatchObject({ count: 1, memoryCount: 0, storageError: true,
+      blocked: { blocked: { message: "server rejected" } } });
+    const target = queue.blocked()!;
+    expect(await queue.flush({ kind: "retry", target })).toBe("blocked");
+    expect(queue.blocked()?.blocked.message).toBe("still rejected");
+    expect(await queue.flush(discard(target))).toBe("synced");
+    expect(cancelMutation).toHaveBeenCalledWith(target.id);
+    expect(queue.view()).toMatchObject({ count: 0, storageError: false });
+  });
+
+  it("retries or discards a pending head after transport failures", async () => {
+    const { queue, send, cancelMutation } = setup();
+    await queue.refresh();
+    await queue.enqueue(createEntry("pending"));
+    const unavailable = new RequestError("unavailable", "temporarily unavailable");
+    send.mockRejectedValueOnce(unavailable).mockRejectedValueOnce(unavailable);
+    expect(await queue.flush()).toBe("retryable");
+    const [target] = queue.view().items;
+    const panel = renderToStaticMarkup(createElement(BlockedSyncDetails, {
+      item: target, state: snapshot, waiting: 0, onRetry: vi.fn(), onDiscard: vi.fn(),
+    }));
+    expect(panel).toContain("重新同步</button>");
+    expect(panel).toMatch(/discard-sync">放弃这条修改/);
+    expect(await queue.flush({ kind: "retry", target })).toBe("retryable");
+    expect(await queue.flush({ kind: "discard", target, confirm: () => true })).toBe("synced");
+    expect(cancelMutation).toHaveBeenCalledWith(target.id);
+    expect(queue.view().count).toBe(0);
+  });
+
+  it("sends a blocked head under Web Locks without writing any in-flight status", async () => {
+    const { open, send } = setup();
+    const locks = { request: (_name: string, ...args: Array<(lock: object) => unknown>) => args.at(-1)!({}) } as unknown as LockManager;
+    const queue = open(locks);
+    await queue.enqueue(createEntry("locked"));
+    send.mockRejectedValueOnce(reject());
+    expect(await queue.flush()).toBe("blocked");
+    const writes = vi.spyOn(IDBObjectStore.prototype, "put");
+    const updates = vi.spyOn(IDBCursor.prototype, "update");
+    expect(await queue.flush({ kind: "retry", target: queue.blocked()! })).toBe("synced");
+    expect(writes).not.toHaveBeenCalled();
+    expect(updates).not.toHaveBeenCalled();
+  });
+
+  it("can discard a page-only head when no durable payload fits", async () => {
+    const { queue, send, cancelMutation } = setup();
+    await queue.refresh();
+    const add = IDBObjectStore.prototype.add;
+    vi.spyOn(IDBObjectStore.prototype, "add").mockImplementation(function (this: IDBObjectStore, ...args) {
+      if (this.name === "changes") throw new DOMException("full", "QuotaExceededError");
+      return add.apply(this, args);
+    });
+    await queue.enqueue(createEntry("page-only"));
+    send.mockRejectedValueOnce(new RequestError("unavailable", "unavailable"));
+    expect(await queue.flush()).toBe("retryable");
+    expect(queue.view().memoryCount).toBe(1);
+    const [target] = queue.view().items;
+    expect(await queue.flush({ kind: "discard", target, confirm: () => true })).toBe("synced");
+    expect(cancelMutation).toHaveBeenCalledWith(target.id);
+    expect(queue.view()).toMatchObject({ count: 0, storageError: false });
+  });
+
+  it("acknowledges when a commit wins between the receipt lookup and confirmed cancellation", async () => {
+    const { queue, commit, cancelMutation } = setup();
+    await queue.refresh();
+    await queue.enqueue(createEntry("commit-first"));
+    const [target] = queue.view().items;
+    const confirm = vi.fn(() => { commit(target); return true; });
+    expect(await queue.flush({ kind: "discard", target, confirm })).toBe("already-synced");
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(cancelMutation).toHaveBeenCalledWith(target.id);
+    expect(queue.view().state?.entries.map(entry => entry.id)).toEqual(["commit-first"]);
+    expect(queue.view().count).toBe(0);
+  });
+
+  it.each([true, false])("re-derives on a cancelled send with local head still present: %s", async stillPresent => {
+    const { queue, database, send } = setup();
+    await queue.refresh();
+    await queue.enqueue(createEntry("cancelled"));
+    const [target] = queue.view().items;
+    send.mockImplementationOnce(async () => {
+      if (!stillPresent) await (await openMutationStore(database))!.changeHead(target.id, () => null);
+      throw new RequestError("cancelled", "已放弃", 409);
+    });
+    expect(await queue.flush()).toBe(stillPresent ? "discarded-elsewhere" : "synced");
+    expect(queue.view().count).toBe(0);
+    expect(queue.view().state?.entries).toEqual([]);
+  });
+
+  it("keeps a newer ledger when the acknowledgement arrives with an older revision", async () => {
+    const { queue, fetchSnapshot, serverSnapshot, commit } = setup();
+    await queue.enqueue(createEntry("committed"));
+    const [head] = queue.view().items;
+    commit(head);
+    const older = { ...serverSnapshot([head.id]), observed_at: "999" };
+    commit(rawEntry("newer"));
+    await queue.load({ ...serverSnapshot([]), observed_at: "100" } as SyncSnapshot);
+    fetchSnapshot.mockResolvedValueOnce(older);
+    expect(await queue.flush()).toBe("synced");
+    expect(queue.view().state?.entries.map(entry => entry.id).sort()).toEqual(["committed", "newer"]);
+    expect(queue.view().count).toBe(0);
+  });
+
+  it.each([408, 429])("attempts a blocked head once on startup after HTTP %i with Retry-After", async status => {
+    const { queue, open, send } = setup();
+    await queue.enqueue(createEntry("blocked-on-startup"));
+    send.mockRejectedValueOnce(reject());
+    expect(await queue.flush()).toBe("blocked");
+    const tab = open();
+    await tab.load();
+    send.mockRejectedValueOnce(new RequestError(status === 408 ? "timeout" : "unavailable", "retry later", status, 1));
+    expect(await tab.flush(undefined, true)).toBe("retryable");
+    expect(await tab.flush()).toBe("idle");
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(tab.view().count).toBe(1);
+    expect(await tab.flush({ kind: "retry", target: tab.blocked()! })).toBe("synced");
+    expect(send).toHaveBeenCalledTimes(3);
+  });
   it("durably interleaves 400 saves from two tabs and sends them in IndexedDB key order without Web Locks", async () => {
     const { queue, open, send, receipts } = setup();
     const other = open();
@@ -508,6 +650,13 @@ describe("blocked sync recovery", () => {
 
 describe("request failures", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it("recognizes a cancellation separately from a normal HTTP 409 rejection", async () => {
+    vi.stubGlobal("fetch", () => Promise.resolve(Response.json({
+      code: "mutation_cancelled", detail: "server wording",
+    }, { status: 409 })));
+    await expect(api("/entries", {})).rejects.toMatchObject({ kind: "cancelled", status: 409 });
+  });
 
   it.each([
     [401, "any wording", "unauthorized", "请重新登录"],
