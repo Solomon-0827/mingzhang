@@ -5,6 +5,7 @@ export const blockedKey = "mingzhang.offline-mutations.blocked.v1";
 export const snapshotKey = "mingzhang.sync-snapshot.v1";
 export const queueSignalKey = "mingzhang.mutations.changed";
 const legacyStateKey = "mingzhang.local-state.v1";
+const legacyEntriesKey = "mingzhang.pending-entries.v1";
 const legacyPrefix = "mingzhang.pending-entry.v1.";
 
 export type Rejection = { status: number; message: string; at: number };
@@ -42,11 +43,17 @@ export function isQuota(error: unknown) {
 }
 
 export function isQueueStorageKey(key: string | null) {
-  return key === null || [queueKey, blockedKey, snapshotKey, queueSignalKey].includes(key) || key.startsWith(legacyPrefix);
+  return key === null || [queueKey, blockedKey, snapshotKey, queueSignalKey, legacyEntriesKey].includes(key) ||
+    key.startsWith(legacyPrefix);
 }
 
 function readV1(storage: Storage): OfflineMutation[] {
   const saved = readJson(storage.getItem(queueKey));
+  return Array.isArray(saved) ? saved : [];
+}
+
+function readPendingEntries(storage: Storage) {
+  const saved = readJson(storage.getItem(legacyEntriesKey));
   return Array.isArray(saved) ? saved : [];
 }
 
@@ -59,17 +66,22 @@ export function readLegacy(storage: Storage) {
   });
   const rejections = readJson(storage.getItem(blockedKey));
   const entryKeys = new Map<string, string>();
+  function addEntry(entry: Record<string, unknown> & { id: string }, createdAt = 0) {
+    if (ids.has(entry.id)) return;
+    ids.add(entry.id);
+    items.push({ id: entry.id, type: "entry.create", path: "/entries", method: "POST", body: entry, createdAt });
+  }
   for (let index = 0; index < storage.length; index += 1) {
     const key = storage.key(index);
     if (!key?.startsWith(legacyPrefix)) continue;
     const value = readJson(storage.getItem(key));
     const entry = value?.entry ?? value;
     if (!entry?.id) continue;
-    entryKeys.set(entry.id, key);
-    if (ids.has(entry.id)) continue;
-    ids.add(entry.id);
-    items.push({ id: entry.id, type: "entry.create", path: "/entries", method: "POST", body: entry,
-      createdAt: Number.isFinite(value?.queued_at) ? value.queued_at : 0 });
+    entryKeys.set(key, entry.id);
+    addEntry(entry, Number.isFinite(value?.queued_at) ? value.queued_at : 0);
+  }
+  for (const entry of readPendingEntries(storage)) {
+    if (typeof entry?.id === "string" && entry.id && Number.isSafeInteger(entry.amount_cents)) addEntry(entry);
   }
   const records = items.map((item): QueueRecord => {
     const value = Object.hasOwn(rejections ?? {}, item.id) ? rejections[item.id] : null;
@@ -87,7 +99,23 @@ function writeV1(storage: Storage, items: OfflineMutation[]) {
 
 export function evictCaches(storage: Storage) {
   storage.removeItem(snapshotKey);
+  evictLegacySnapshot(storage);
+}
+
+export function evictLegacySnapshot(storage: Storage) {
+  if (storage.getItem(legacyStateKey) === null) return false;
   storage.removeItem(legacyStateKey);
+  return true;
+}
+
+function removePendingEntries(storage: Storage, ids: Set<string>, entryKeys: Map<string, string>) {
+  const current = readPendingEntries(storage);
+  const remaining = current.filter(entry => !ids.has(entry?.id));
+  if (!remaining.length && current.length) storage.removeItem(legacyEntriesKey);
+  else if (remaining.length < current.length) storage.setItem(legacyEntriesKey, JSON.stringify(remaining));
+  for (const [key, id] of entryKeys) {
+    if (ids.has(id)) storage.removeItem(key);
+  }
 }
 
 export function removeImported(storage: Storage, ids: Set<string>) {
@@ -95,10 +123,7 @@ export function removeImported(storage: Storage, ids: Set<string>) {
   const current = readV1(storage);
   const remaining = current.filter(item => !ids.has(item?.id));
   if (remaining.length !== current.length) writeV1(storage, remaining);
-  for (const id of ids) {
-    const key = entryKeys.get(id);
-    if (key) storage.removeItem(key);
-  }
+  removePendingEntries(storage, ids, entryKeys);
   const rejections = readJson(storage.getItem(blockedKey));
   if (rejections && Object.keys(rejections).some(id => ids.has(id))) {
     const remaining = Object.fromEntries(Object.entries(rejections).filter(([id]) => !ids.has(id)));
@@ -297,8 +322,9 @@ export function localStorageStore(storage: Storage): MutationStore {
     append: async (item, status) => {
       const { records, entryKeys } = readLegacy(storage);
       if (status?.blocked) setRejection(item.id, status.blocked);
-      writeV1(storage, [...records.map(record => record.item), item]);
-      for (const key of entryKeys.values()) storage.removeItem(key);
+      const items = records.map(record => record.item);
+      writeV1(storage, [...items, item]);
+      removePendingEntries(storage, new Set(items.map(item => item.id)), entryKeys);
     },
     changeHead: async (id, change) => {
       const head = read()[0];
@@ -310,12 +336,11 @@ export function localStorageStore(storage: Storage): MutationStore {
         runtime = undefined;
         unsavedRejection = false;
       } else if (next.item.id !== id) {
-        const current = readLegacy(storage);
+        const { entryKeys } = readLegacy(storage);
         const array = readV1(storage);
         const inArray = array.some(item => item?.id === id);
         writeV1(storage, inArray ? array.map(item => item?.id === id ? next.item : item) : [...array, next.item]);
-        const key = current.entryKeys.get(id);
-        if (key) storage.removeItem(key);
+        removePendingEntries(storage, new Set([id]), entryKeys);
         runtime = undefined;
         unsavedRejection = false;
         setRejection(id);

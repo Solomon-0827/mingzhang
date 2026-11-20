@@ -1,6 +1,6 @@
 import { replayMutations, type OfflineMutation } from "./offline-mutations";
 import {
-  evictCaches, isQuota, localStorageStore, openMutationStore, readJson,
+  evictCaches, evictLegacySnapshot, isQuota, localStorageStore, openMutationStore, readJson,
   removeImported, snapshotKey, type QueueRecord,
 } from "./mutation-store";
 import { RequestError, requestDeadlineMs, type State } from "./types";
@@ -40,6 +40,7 @@ export function createSyncQueue({
   onStoredChange?: (uncachedSnapshot?: SyncSnapshot) => void;
 }) {
   let fallback = false;
+  let startupPending = true;
   const v1Store = localStorageStore(storage);
   const opened = openMutationStore(database).then(store => {
     fallback = !store;
@@ -92,7 +93,11 @@ export function createSyncQueue({
     cache = { ...cache!, committed: cache!.committed.filter(id => covered.has(id)) };
     try {
       const raw = JSON.stringify(cache);
-      storage.setItem(snapshotKey, raw);
+      try { storage.setItem(snapshotKey, raw); }
+      catch (error) {
+        if (!isQuota(error) || !evictLegacySnapshot(storage)) throw error;
+        storage.setItem(snapshotKey, raw);
+      }
       cachedRaw = raw;
       return undefined;
     } catch {
@@ -106,7 +111,6 @@ export function createSyncQueue({
     const store = await opened;
     if (!store.importLegacy) return true;
     const legacy = await v1Store.list();
-    if (!legacy.length) return true;
     let length = legacy.length;
     while (length) {
       const batch = legacy.slice(0, length);
@@ -122,9 +126,11 @@ export function createSyncQueue({
       try { removeImported(storage, ids); }
       catch (error) { if (!isQuota(error)) throw error; }
       onStoredChange();
-      return length === legacy.length;
+      break;
     }
-    return false;
+    const complete = length === legacy.length;
+    if (complete) evictLegacySnapshot(storage);
+    return complete;
   }
 
   async function readRecords() {
@@ -166,6 +172,7 @@ export function createSyncQueue({
       state: cache ? replayMutations(cache.snapshot, items.filter(item => !committed.has(item.id))) : null,
       fallback, memoryCount: memory.length, statusUnsaved: Boolean(records[0]?.statusUnsaved),
       storageError: Boolean(memory.length || records[0]?.statusUnsaved),
+      headSending: (records[0] ?? memory[0])?.status === "in_flight",
     };
   }
   let viewed = -1;
@@ -248,9 +255,9 @@ export function createSyncQueue({
     return cache!.snapshot;
   }
 
-  async function runFlush(action?: QueueAction, startup = false): Promise<FlushResult> {
+  async function runFlush(action?: QueueAction, canRunAutomatically?: () => boolean): Promise<FlushResult> {
     const durable = await opened;
-    let synced = false;
+    let progress: "idle" | "synced" = "idle";
     while (true) {
       const imported = await importLegacy();
       let store = durable;
@@ -266,9 +273,9 @@ export function createSyncQueue({
       }
       let pageOnly = false;
       if (!head && imported && memory.length) {
-        if (sendingMemory) return action ? "in-flight" : "idle";
+        if (sendingMemory) return action ? "in-flight" : progress;
         await saveMemory();
-        if (sendingMemory) return action ? "in-flight" : "idle";
+        if (sendingMemory) return action ? "in-flight" : progress;
         sendingMemory = true;
         // Prevent a concurrent save from persisting the same page-only head mid-send.
         await memoryWrites;
@@ -277,14 +284,16 @@ export function createSyncQueue({
         pageOnly = !head && memory.length > 0;
         if (pageOnly) head = memory[0];
       }
+      if (canRunAutomatically && !canRunAutomatically()) return progress;
+      const startup = Boolean(canRunAutomatically && startupPending);
       if (startup && head?.blocked) action = { kind: "retry", target: head.item };
-      startup = false;
       if (action && (action.target.id !== head?.item.id || (action.kind === "edit" && !head.blocked)))
         return cache?.committed.includes(action.target.id) ? "already-synced" : "changed";
       if (!head || (!action && head.blocked)) {
         await load();
         if (!head && (records.length || memory.length)) return "storage-full";
-        return synced ? "synced" : "idle";
+        if (startup && canRunAutomatically?.()) startupPending = false;
+        return progress;
       }
 
       const id = head.item.id;
@@ -302,8 +311,7 @@ export function createSyncQueue({
       let wait: FlushResult = "changed";
       function canClaim(current: QueueRecord) {
         if (action?.kind === "edit" && !current.blocked) return false;
-        const canReplay = locks && current.attempt?.startsWith("locked:");
-        if (!canReplay && current.status === "in_flight" && current.since! + inFlightTimeout > now) {
+        if (current.status === "in_flight" && current.since! + inFlightTimeout > now) {
           wait = recovery ? "in-flight" : { wait: "sending", until: current.since! + inFlightTimeout };
           return false;
         }
@@ -323,6 +331,7 @@ export function createSyncQueue({
         ? { ...current, status: "in_flight", since: now, attempt } : undefined);
       if (!claimed) {
         if (pageOnly) sendingMemory = false;
+        await load();
         return wait;
       }
 
@@ -334,6 +343,8 @@ export function createSyncQueue({
         return changed;
       };
       try {
+        if (canRunAutomatically && !canRunAutomatically()) return progress;
+        if (startup) startupPending = false;
         if (recovery) {
           const expectedEpoch = cache?.ledger_epoch;
           let receipt = await fetchReceipt(id);
@@ -363,7 +374,7 @@ export function createSyncQueue({
             onStoredChange();
             await load();
             action = undefined;
-            synced ||= recovery.kind === "discard";
+            if (recovery.kind === "discard") progress = "synced";
             continue;
           }
         } else {
@@ -391,13 +402,17 @@ export function createSyncQueue({
         onStoredChange();
         if (!acknowledged) return recovery ? "already-synced" : "changed";
         await saveMemory();
-        synced = true;
+        progress = "synced";
         if (recovery) return "already-synced";
         action = undefined;
       } catch (error) {
         if (isQuota(error) && recovery) throw new Error("本机空间不足，原修改仍在待同步列表，请释放空间后重试。");
         if (!(error instanceof RequestError)) throw error;
-        if (error.kind === "unauthorized") return "unauthorized";
+        if (error.kind === "unauthorized") {
+          // A 401 from the send never reaches the server's mutation handler.
+          if (startup && !accepted) startupPending = true;
+          return "unauthorized";
+        }
         if (recovery && error.ledgerEpoch && error.ledgerEpoch !== cache?.ledger_epoch) {
           try { await fetchAndCacheSnapshot({ id, attempt }); }
           catch (refreshError) {
@@ -430,14 +445,14 @@ export function createSyncQueue({
     }
   }
 
-  async function flush(action?: QueueAction, startup = false): Promise<FlushResult> {
+  async function flush(action?: QueueAction, canRunAutomatically?: () => boolean): Promise<FlushResult> {
     readCache();
-    if (!locks) return runFlush(action, startup);
+    if (!locks) return runFlush(action, action ? undefined : canRunAutomatically);
     if (action) {
       // Refuse an action on the active head instead of queuing it behind a send.
       return locks.request(syncLock, { ifAvailable: true }, async (lock): Promise<FlushResult> => lock ? runFlush(action) : "in-flight");
     }
-    return locks.request(syncLock, () => runFlush(undefined, startup));
+    return locks.request(syncLock, () => runFlush(undefined, canRunAutomatically));
   }
 
   return {
@@ -446,7 +461,7 @@ export function createSyncQueue({
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
-    hasReadyHead: () => Boolean((records[0] ?? memory[0]) && !blocked()),
+    hasReadyHead: () => Boolean((records[0] ?? memory[0]) && (startupPending || !blocked())),
     enqueue: async (item: NewMutation) => {
       memory = [...memory, { item: { ...item, id: crypto.randomUUID(), createdAt: Date.now() }, status: "pending" }];
       await saveMemory();

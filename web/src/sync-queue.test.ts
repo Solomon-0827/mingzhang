@@ -74,6 +74,7 @@ function setup(initial = snapshot, database = new IDBFactory(), ledger_epoch = "
 
 const reject = (message = "请选择有效的账户", status = 400) => new RequestError("rejected", message, status);
 const rawEntry = (id: string, createdAt = 1): OfflineMutation => ({ ...createEntry(id), id, createdAt });
+const oldestEntryKey = "mingzhang.pending-entries.v1";
 const category = (path: string, version: number) => ({
   type: "category.change", method: "POST", path: "/categories",
   body: { action: "add", path, level: "parent", kind: "expense", version },
@@ -282,13 +283,106 @@ describe("transactional sync queue", () => {
     const tab = open();
     await tab.load();
     send.mockRejectedValueOnce(new RequestError(status === 408 ? "timeout" : "unavailable", "retry later", status, 1));
-    expect(await tab.flush(undefined, true)).toBe("retryable");
-    expect(await tab.flush()).toBe("idle");
+    const canRun = () => true;
+    expect(await tab.flush(undefined, canRun)).toBe("retryable");
+    expect(await tab.flush(undefined, canRun)).toBe("idle");
     expect(send).toHaveBeenCalledTimes(2);
     expect(tab.view().count).toBe(1);
     expect(await tab.flush({ kind: "retry", target: tab.blocked()! })).toBe("synced");
     expect(send).toHaveBeenCalledTimes(3);
   });
+
+  it("defers the startup retry while offline or waiting for a claim", async () => {
+    const { queue, open, send, database } = setup();
+    await queue.enqueue(createEntry("blocked-on-startup"));
+    send.mockRejectedValueOnce(reject());
+    expect(await queue.flush()).toBe("blocked");
+
+    const tab = open();
+    expect(await tab.flush(undefined, () => false)).toBe("idle");
+    expect(send).toHaveBeenCalledOnce();
+
+    const store = (await openMutationStore(database))!;
+    const head = (await store.head())!;
+    await store.changeHead(head.item.id, current => ({
+      ...current, status: "in_flight", since: Date.now(), attempt: "other-tab",
+    }));
+    const canRun = () => true;
+    expect(await tab.flush(undefined, canRun)).toMatchObject({ wait: "sending" });
+    expect(tab.view().headSending).toBe(true);
+    expect(send).toHaveBeenCalledOnce();
+    await store.changeHead(head.item.id, () => head);
+    await tab.load();
+    expect(tab.view().headSending).toBe(false);
+
+    send.mockRejectedValueOnce(reject());
+    expect(await tab.flush(undefined, canRun)).toBe("blocked");
+    expect(await tab.flush(undefined, canRun)).toBe("idle");
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(tab.view()).toMatchObject({ count: 1, blocked: { body: { id: "blocked-on-startup" } } });
+  });
+
+  it("retries the blocked startup head once after signing in again when its send returned 401", async () => {
+    const { queue, open, send } = setup();
+    await queue.enqueue(createEntry("blocked-on-startup"));
+    const [head] = queue.view().items;
+    send.mockRejectedValueOnce(reject());
+    expect(await queue.flush()).toBe("blocked");
+    send.mockClear();
+
+    const tab = open();
+    let signedIn = true;
+    const canRun = () => signedIn;
+    send.mockRejectedValueOnce(new RequestError("unauthorized", "重新登录", 401));
+    expect(await tab.flush(undefined, canRun)).toBe("unauthorized");
+    expect(tab.blocked()).toMatchObject(head);
+    signedIn = false;
+    expect(await tab.flush(undefined, canRun)).toBe("idle");
+    expect(send.mock.calls).toEqual([[head]]);
+
+    signedIn = true;
+    expect(await tab.flush(undefined, canRun)).toBe("synced");
+    expect(await tab.flush(undefined, canRun)).toBe("idle");
+    expect(send.mock.calls).toEqual([[head], [head]]);
+    expect(tab.view().count).toBe(0);
+  });
+
+  it("keeps the startup retry pending if automatic sending is disabled after a claim without Web Locks", async () => {
+    const { queue, open, send } = setup();
+    await queue.enqueue(createEntry("blocked-on-startup"));
+    const [head] = queue.view().items;
+    send.mockRejectedValueOnce(reject());
+    expect(await queue.flush()).toBe("blocked");
+    send.mockClear();
+
+    const tab = open();
+    const canRun = vi.fn(() => false).mockReturnValueOnce(true);
+    const result = await tab.flush(undefined, canRun);
+    expect(send).not.toHaveBeenCalled();
+    expect(result).toBe("idle");
+    expect(tab.view()).toMatchObject({ headSending: false, blocked: head });
+    expect(tab.hasReadyHead()).toBe(true);
+
+    canRun.mockReturnValue(true);
+    send.mockRejectedValueOnce(reject());
+    expect(await tab.flush(undefined, canRun)).toBe("blocked");
+    expect(await tab.flush(undefined, canRun)).toBe("idle");
+    expect(send.mock.calls).toEqual([[head]]);
+  });
+
+  it.each(["before", "after"])("reports a partial drain when automatic sending stops %s the next claim", async when => {
+    const { queue, send } = setup();
+    await queue.enqueue(createEntry("sent"));
+    await queue.enqueue(createEntry("waiting"));
+    const [first, second] = queue.view().items;
+    const canRun = vi.fn(() => false)
+      .mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValueOnce(when === "after");
+
+    expect(await queue.flush(undefined, canRun)).toBe("synced");
+    expect(send.mock.calls).toEqual([[first]]);
+    expect(queue.view()).toMatchObject({ items: [second], headSending: false });
+  });
+
   it("durably interleaves 400 saves from two tabs and sends them in IndexedDB key order without Web Locks", async () => {
     const { queue, open, send, receipts } = setup();
     const other = open();
@@ -337,6 +431,52 @@ describe("transactional sync queue", () => {
     expect(await open().flush()).toBe("synced");
     expect(send.mock.calls.map(([item]) => item.id)).toEqual(["z", "a", "later", "last"]);
     expect(storage.getItem(queueKey)).toBeNull();
+  });
+
+  it("imports the oldest pending entries in order without dropping unsaved IDs or replaying duplicates", async () => {
+    const { storage, database, queue, open, send } = setup();
+    const newer = rawEntry("newer", 50);
+    const prefixed = rawEntry("prefixed", 60);
+    const first = rawEntry("z", 0);
+    const second = rawEntry("a", 0);
+    const later = rawEntry("later", 0);
+    const prefixedKey = "mingzhang.pending-entry.v1.prefixed";
+    const oldest = [first.body, entry("newer", 200), entry("prefixed", 300), second.body, entry("z", 400)];
+    storage.setItem(queueKey, JSON.stringify([newer]));
+    storage.setItem(prefixedKey, JSON.stringify({ entry: prefixed.body, queued_at: prefixed.createdAt }));
+    storage.setItem(oldestEntryKey, JSON.stringify(oldest));
+
+    const store = (await openMutationStore(database))!;
+    const add = IDBObjectStore.prototype.add;
+    let full = true;
+    let appended = false;
+    vi.spyOn(IDBObjectStore.prototype, "add").mockImplementation(function (this: IDBObjectStore, ...args) {
+      if (this.name === "changes") {
+        if (full) throw new DOMException("full", "QuotaExceededError");
+        if (!appended) {
+          storage.setItem(oldestEntryKey, JSON.stringify([...oldest, later.body]));
+          appended = true;
+        }
+      }
+      return add.apply(this, args);
+    });
+
+    await queue.refresh();
+    expect(storage.getItem(oldestEntryKey)).toBe(JSON.stringify(oldest));
+    expect(await store.list()).toEqual([]);
+
+    full = false;
+    await queue.refresh();
+    expect((await store.list()).map(record => record.item)).toEqual([newer, prefixed, first, second]);
+    expect(storage.getItem(oldestEntryKey)).toBe(JSON.stringify([later.body]));
+    expect(storage.getItem(prefixedKey)).toBeNull();
+    expect(storage.getItem(queueKey)).toBeNull();
+
+    expect(await open().flush()).toBe("synced");
+    storage.setItem(oldestEntryKey, JSON.stringify(oldest));
+    expect(await open().flush()).toBe("idle");
+    expect(send.mock.calls.map(([item]) => item)).toEqual([newer, prefixed, first, second, later]);
+    expect(storage.getItem(oldestEntryKey)).toBeNull();
   });
 
   it("persists a blocked head across reloads and sends the replacement in the same position with a fresh receipt", async () => {
@@ -590,19 +730,83 @@ describe("transactional sync queue", () => {
     expect(storage.getItem(snapshotKey)).toBeNull();
   });
 
-  it("uses the v1 array when IndexedDB open fails and can drain it at quota", async () => {
+  it.each(["startup", "snapshot write"])("frees space from the v1 snapshot at %s", async when => {
+    const { queue, storage, database, fetchSnapshot, serverSnapshot } = setup();
+    const legacySnapshotKey = "mingzhang.local-state.v1";
+    const legacy = rawEntry("legacy");
+    const v1 = JSON.stringify([legacy]);
+    const unrelated = "keep";
+    const oldCache = JSON.stringify({ state: snapshot, applied: [], padding: "x".repeat(2000) });
+    storage.setItem(queueKey, v1);
+    storage.setItem("other-app", unrelated);
+    storage.maxCharacters = v1.length + oldCache.length + unrelated.length;
+    if (when === "startup") storage.setItem(legacySnapshotKey, oldCache);
+    const removeItem = storage.removeItem.bind(storage);
+    vi.spyOn(storage, "removeItem").mockImplementation(key => {
+      if (key === legacySnapshotKey && storage.getItem(key)) expect(storage.getItem(queueKey)).toBeNull();
+      removeItem(key);
+    });
+    fetchSnapshot.mockImplementationOnce(async ids => {
+      if (when === "snapshot write") {
+        storage.maxCharacters = oldCache.length + unrelated.length;
+        storage.setItem(legacySnapshotKey, oldCache);
+      } else expect(storage.getItem(legacySnapshotKey)).toBeNull();
+      return serverSnapshot(ids);
+    });
+
+    await queue.refresh();
+
+    expect(storage.getItem(legacySnapshotKey)).toBeNull();
+    expect(storage.getItem("other-app")).toBe(unrelated);
+    expect(JSON.parse(storage.getItem(snapshotKey)!)).toEqual(serverSnapshot([]));
+    expect(await (await openMutationStore(database))!.list()).toMatchObject([{ item: legacy }]);
+  });
+
+  it("evicts the obsolete snapshot to cache a refresh with IndexedDB disabled", async () => {
+    const database = new IDBFactory();
+    vi.spyOn(database, "open").mockImplementation(() => { throw new DOMException("disabled", "SecurityError"); });
+    const { queue, storage, serverSnapshot } = setup(snapshot, database);
+    const oldCache = JSON.stringify({ state: snapshot, applied: [], padding: "x".repeat(2000) });
+    const legacySnapshotKey = "mingzhang.local-state.v1";
+    const legacy = rawEntry("queued");
+    const v1 = JSON.stringify([legacy]);
+    const blocked = { status: 400, message: "rejected", at: 1 };
+    const rejections = JSON.stringify({ [legacy.id]: blocked });
+    const prefixedKey = "mingzhang.pending-entry.v1.prefixed";
+    const prefixed = JSON.stringify(entry("prefixed"));
+    const oldest = JSON.stringify([entry("oldest")]);
+    storage.setItem(legacySnapshotKey, oldCache);
+    storage.setItem(queueKey, v1);
+    storage.setItem(blockedKey, rejections);
+    storage.setItem(prefixedKey, prefixed);
+    storage.setItem(oldestEntryKey, oldest);
+    storage.maxCharacters = oldCache.length + v1.length + rejections.length + prefixed.length + oldest.length;
+
+    await queue.refresh();
+
+    expect(storage.getItem(legacySnapshotKey)).toBeNull();
+    expect(JSON.parse(storage.getItem(snapshotKey)!)).toEqual(serverSnapshot([]));
+    expect(storage.getItem(queueKey)).toBe(v1);
+    expect(storage.getItem(blockedKey)).toBe(rejections);
+    expect(storage.getItem(prefixedKey)).toBe(prefixed);
+    expect(storage.getItem(oldestEntryKey)).toBe(oldest);
+    expect(queue.view()).toMatchObject({ fallback: true, blocked: { ...legacy, blocked } });
+  });
+
+  it.each([queueKey, oldestEntryKey])("drains %s when IndexedDB open fails and storage is at quota", async key => {
     const database = new IDBFactory();
     vi.spyOn(database, "open").mockImplementation(() => { throw new DOMException("disabled", "SecurityError"); });
     const { queue, storage, send } = setup(snapshot, database);
     const legacy = { ...rawEntry("legacy"), body: { ...entry("legacy"), memo: "x".repeat(2000) } };
-    const v1 = JSON.stringify([legacy]);
-    storage.setItem(queueKey, v1);
+    const v1 = JSON.stringify([key === oldestEntryKey ? legacy.body : legacy]);
+    storage.setItem(key, v1);
     storage.maxCharacters = v1.length;
     await queue.enqueue(createEntry("memory"));
     expect(queue.view()).toMatchObject({ fallback: true, count: 2, memoryCount: 1 });
-    expect(storage.getItem(queueKey)).toBe(v1);
+    expect(storage.getItem(key)).toBe(v1);
     expect(await queue.flush()).toBe("synced");
     expect(send.mock.calls.map(([item]) => item.body.id)).toEqual(["legacy", "memory"]);
+    expect(storage.getItem(key)).toBeNull();
     expect(storage.getItem(queueKey)).toBeNull();
   });
 
@@ -636,13 +840,21 @@ describe("transactional sync queue", () => {
     expect(await open().flush()).toBe("synced");
   });
 
-  it("preserves the head on 401 and resumes after login", async () => {
-    const { queue, send } = setup();
+  it("requires login after a head returns 401 and sends the same unblocked change after sign-in", async () => {
+    const { queue, send, receipts, cancelMutation } = setup();
     await queue.enqueue(createEntry("auth"));
+    const [head] = queue.view().items;
     send.mockRejectedValueOnce(new RequestError("unauthorized", "重新登录", 401));
     expect(await queue.flush()).toBe("unauthorized");
-    expect(queue.view()).toMatchObject({ count: 1, blocked: null });
-    expect(await queue.flush()).toBe("synced");
+    expect(queue.view()).toMatchObject({ items: [head], count: 1, blocked: null });
+    expect(queue.hasReadyHead()).toBe(true);
+    expect(receipts.has(head.id)).toBe(false);
+    expect(cancelMutation).not.toHaveBeenCalled();
+    await queue.refresh();
+    expect(await queue.flush(undefined, () => true)).toBe("synced");
+    expect(send.mock.calls).toEqual([[head], [head]]);
+    expect(receipts.has(head.id)).toBe(true);
+    expect(queue.view()).toMatchObject({ count: 0, blocked: null });
   });
 });
 

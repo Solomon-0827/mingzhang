@@ -271,8 +271,12 @@ def sync_state(body: SyncStateRequest):
         # Read the ledger and receipts from the same SQLite snapshot.
         db.execute("BEGIN")
         result = ledger_state(db)
+        # A restored mutation can be covered by the snapshot without a current-epoch receipt.
         committed = [row[0] for row in db.execute(
-            "SELECT id FROM mutation_receipts WHERE id IN (SELECT value FROM json_each(?))",
+            """WITH requested(id) AS (SELECT value FROM json_each(?))
+               SELECT id FROM mutation_receipts WHERE id IN requested
+               UNION
+               SELECT id FROM restored_mutations WHERE cancelled = 0 AND id IN requested""",
             (json.dumps(body.mutation_ids),),
         )]
     return {"snapshot": result, "committed": committed, "revision": result["revision"],
