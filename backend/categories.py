@@ -48,7 +48,6 @@ class CategoryChange(BaseModel):
 
 def change_category(db, body):
     from backend.ledger import audit, fail
-    db.execute('BEGIN IMMEDIATE')
     value = catalog(db)
     if value['version'] != body.version:
         fail('分类已在另一端修改，请刷新后重试', 409)

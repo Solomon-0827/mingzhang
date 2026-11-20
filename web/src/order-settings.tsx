@@ -63,7 +63,8 @@ function FavoriteButtons({ items, disabled, onMove }: {
 const move = (items: string[], from: number, to: number) => {
   const result = [...items]; const [item] = result.splice(from, 1); result.splice(to, 0, item); return result;
 };
-export function OrderSettings({ state, defaults, onSave, onEditAccount, onCategoryChange, onPasswordChanged, onDeleteAccount, onAccountGroupChange, onRenameAccountGroup }: {
+export function OrderSettings({ state, defaults, initialSection = "categories", onSave, onEditAccount, onCategoryChange, onPasswordChanged, onDeleteAccount, onAccountGroupChange, onRenameAccountGroup }: {
+  initialSection?: "categories" | "accounts";
   onPasswordChanged: () => void;
   onRenameAccountGroup: (id: string, name: string, expectedName: string) => Promise<void>;
   onDeleteAccount: (account: Account) => Promise<void>;
@@ -75,7 +76,7 @@ export function OrderSettings({ state, defaults, onSave, onEditAccount, onCatego
   const [accountGroups,setAccountGroups]=useState(state.account_groups.map(g=>g.id));
   const [accounts, setAccounts] = useState(state.accounts.map(a => a.id));
   const [categories, setCategories] = useState(initialCategories);
-  const [section, setSection] = useState("categories");
+  const [section, setSection] = useState<string>(initialSection);
   const [favorites, setFavorites] = useState(state.ordering?.favorites ?? []);
   const groups = categoryGroups(categories);
   const [selected, setSelected] = useState(groups[0]?.name ?? "");

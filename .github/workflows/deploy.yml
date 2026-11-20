@@ -27,6 +27,7 @@ jobs:
       - run: uv run ruff check backend scripts tests deploy/publish-desktop.py
       - run: npm --prefix web ci
       - run: npm --prefix web run build
+      - run: npm --prefix web test
       - run: uv run pytest -q
       - run: npm --prefix desktop ci --ignore-scripts
       - run: npm --prefix desktop test

@@ -13,65 +13,6 @@ export type OfflineMutation = {
   createdAt: number;
 };
 
-const storageKey = "mingzhang.offline-mutations.v1";
-const stateKey = "mingzhang.local-state.v1";
-const legacyPrefix = "mingzhang.pending-entry.v1.";
-
-export function loadLocalState(): State | null {
-  try {
-    const value = JSON.parse(localStorage.getItem(stateKey) || "null");
-    const state = value?.state ?? value;
-    if (!state?.accounts || !state?.entries || !state?.account_groups) return null;
-    const applied = new Set<string>(Array.isArray(value?.applied) ? value.applied : []);
-    return loadMutations().filter(item => !applied.has(item.id)).reduce(applyMutation, state as State);
-  } catch {
-    return null;
-  }
-}
-
-export function storeLocalState(state: State) {
-  localStorage.setItem(stateKey, JSON.stringify({state, applied: loadMutations().map(item => item.id)}));
-}
-
-export function loadMutations(): OfflineMutation[] {
-  let queued: OfflineMutation[] = [];
-  try {
-    const value = JSON.parse(localStorage.getItem(storageKey) || "[]");
-    if (Array.isArray(value)) queued = value.filter(item => item?.id && item?.path && item?.type);
-  } catch {
-    queued = [];
-  }
-  const ids = new Set(queued.map(item => item.id));
-  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
-    const key = localStorage.key(index);
-    if (!key?.startsWith(legacyPrefix)) continue;
-    try {
-      const stored = JSON.parse(localStorage.getItem(key) || "null");
-      const entry = stored?.entry ?? stored;
-      if (entry?.id && !ids.has(entry.id)) {
-        queued.push({ id: entry.id, type: "entry.create", path: "/entries", method: "POST", body: entry,
-          createdAt: Number.isFinite(stored?.queued_at) ? stored.queued_at : Date.now() });
-      }
-    } catch {
-      // Keep a malformed legacy item isolated; it cannot hide the valid queue.
-    }
-    localStorage.removeItem(key);
-  }
-  queued.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-  localStorage.setItem(storageKey, JSON.stringify(queued));
-  return queued;
-}
-
-export function storeMutations(items: OfflineMutation[]) {
-  localStorage.setItem(storageKey, JSON.stringify(items));
-}
-
-export function enqueueMutation(item: Omit<OfflineMutation, "id" | "createdAt">): OfflineMutation {
-  const mutation = { ...item, id: crypto.randomUUID(), createdAt: Date.now() };
-  storeMutations([...loadMutations(), mutation]);
-  return mutation;
-}
-
 function entryDelta(entry: Entry, direction: number, changes: Map<string, number>) {
   if (entry.deleted) return;
   const sign = ["income", "refund", "borrow", "collect", "balance_in"].includes(entry.kind) ? 1 : -1;
@@ -167,7 +108,7 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
   if (mutation.type.startsWith("entry.")) {
     const entry = body as unknown as Entry;
     let entries = [...state.entries];
-    if (mutation.type === "entry.create") entries = [entry, ...entries];
+    if (mutation.type === "entry.create") entries = [entry, ...entries.filter(item => item.id !== entry.id)];
     if (mutation.type === "entry.update") entries = entries.map(item => item.id === entry.id ? { ...entry, version: entry.version + 1 } : item);
     if (mutation.type === "entry.delete" || mutation.type === "entry.restore") entries = entries.map(item => item.id === mutation.path.split("/")[2]
       ? { ...item, deleted: mutation.type === "entry.delete" ? 1 : 0, version: item.version + 1 } : item);
@@ -176,7 +117,7 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
   }
   if (mutation.type === "account.create") {
     const account = body as unknown as Account;
-    return rebuild({ ...state, accounts: [...state.accounts, account] });
+    return rebuild({ ...state, accounts: [...state.accounts.filter(item => item.id !== account.id), account] });
   }
   if (mutation.type === "account.update") {
     const account = body as unknown as Account & { target_balance_cents?: number; expected_balance_cents?: number };
@@ -189,7 +130,7 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
         const adjustment: Entry = { id: account.adjustment_id || `offline-balance-${mutation.id}`, date, kind: difference > 0 ? "balance_in" : "balance_out",
           amount_cents: Math.abs(difference), account_id: account.id, to_account_id: null, category: "", merchant: "", memo: "账户余额调整",
           counterparty: "", reference_id: null, version: 1, deleted: 0, remaining_cents: Math.abs(difference) };
-        next = rebuild({ ...next, entries: [adjustment, ...next.entries] });
+        next = rebuild({ ...next, entries: [adjustment, ...next.entries.filter(item => item.id !== adjustment.id)] });
       }
     }
     return next;
@@ -197,7 +138,7 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
   if (mutation.type === "account.delete")
     return rebuild({ ...state, accounts: state.accounts.filter(account => account.id !== mutation.path.split("/")[2]) });
   if (mutation.type === "account-group.create")
-    return { ...state, account_groups: [...state.account_groups, body as unknown as State["account_groups"][number]] };
+    return { ...state, account_groups: [...state.account_groups.filter(group => group.id !== body.id), body as unknown as State["account_groups"][number]] };
   if (mutation.type === "account-group.rename")
     return { ...state, account_groups: state.account_groups.map(group => group.id === mutation.path.split("/")[2] ? { ...group, name: String(body.name) } : group) };
   if (mutation.type === "account-group.delete")
@@ -219,6 +160,6 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
   return state;
 }
 
-export function replayMutations(state: State, mutations = loadMutations()) {
+export function replayMutations(state: State, mutations: OfflineMutation[]) {
   return mutations.reduce(applyMutation, state);
 }

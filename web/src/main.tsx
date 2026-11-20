@@ -1,4 +1,4 @@
-import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, BookOpen, ChartNoAxesCombined, Check, ChevronLeft, ChevronRight, CircleArrowUp, Copy, Database, Download, FileUp, Import, LayoutDashboard, LoaderCircle, LogIn, LogOut, PanelLeftClose, PanelLeftOpen, PencilLine, Plus, RefreshCw, RotateCcw, ScanEye, Search, Settings, Trash2, Undo2, Wallet, X } from "lucide-react";
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, BookOpen, ChartNoAxesCombined, Check, CircleAlert, ChevronLeft, ChevronRight, CircleArrowUp, Copy, Database, Download, FileUp, Import, LayoutDashboard, LoaderCircle, LogIn, LogOut, PanelLeftClose, PanelLeftOpen, PencilLine, Plus, RefreshCw, RotateCcw, ScanEye, Search, Settings, Trash2, Undo2, Wallet, X } from "lucide-react";
 import { DesktopDownloads } from "./desktop-downloads";
 import { motion, MotionConfig } from "motion/react";
 import React, {
@@ -34,6 +34,7 @@ import {
   accountLabels,
   api,
   cents,
+  isUnauthorized,
   labels,
   money,
   today,
@@ -44,7 +45,27 @@ import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import "./paper-theme.css";
 import { OrderSettings } from "./order-settings";
-import { applyMutation, enqueueMutation, loadLocalState, loadMutations, replayMutations, storeLocalState, storeMutations, type OfflineMutation } from "./offline-mutations";
+import type { OfflineMutation } from "./offline-mutations";
+import { createSyncQueue, type BlockedMutation, type LedgerEpoch, type QueueAction, type ReceiptStatus, type SyncSnapshot } from "./sync-queue";
+import { isQueueStorageKey, queueSignalKey } from "./mutation-store";
+import { BlockedSyncDetails, EntryRecoveryComparison, describeBlocked, entryRecoveryChange, prepareEntryRecovery, rebaseChange, recoverySettings } from "./blocked-sync";
+
+const queueChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("mingzhang.mutations") : null;
+const syncQueue = createSyncQueue({
+  storage: localStorage,
+  database: window.indexedDB,
+  locks: navigator.locks,
+  send: item => api<LedgerEpoch>(item.path, item.body, item.method, item.id),
+  fetchSnapshot: mutation_ids => api<SyncSnapshot>("/sync-state", { mutation_ids }),
+  fetchReceipt: id => api<ReceiptStatus>(`/mutation-receipts/${encodeURIComponent(id)}`),
+  cancelMutation: (id, ledger_epoch) => api<ReceiptStatus>(`/mutation-receipts/${encodeURIComponent(id)}/cancel`, { ledger_epoch }),
+  onStoredChange: snapshot => {
+    try {
+      if (queueChannel) queueChannel.postMessage(snapshot ?? null);
+      else localStorage.setItem(queueSignalKey, crypto.randomUUID());
+    } catch { /* Other tabs also read the queue on focus and refresh. */ }
+  },
+});
 
 type DesktopUpdateState = {
   status: "idle" | "available" | "downloading" | "installing";
@@ -179,11 +200,28 @@ function App() {
     [accountEditor, setAccountEditor] = useState<Account | null>(null);
   const [lastSync, setLastSync] = useState(""),
     [online, setOnline] = useState(navigator.onLine);
-  const [pendingCount, setPendingCount] = useState(() => loadMutations().length);
-  const mutationEpoch = useRef(0);
+  const [queueView, setQueueView] = useState(syncQueue.view);
+  const { count: pendingCount, blocked, snapshot: serverSnapshot, storageError, statusUnsaved, memoryCount, fallback } = queueView;
+  const [showBlocked, setShowBlocked] = useState(false);
+  const [blockedEditor, setBlockedEditor] = useState<{ target: BlockedMutation } & ReturnType<typeof prepareEntryRecovery> | null>(null);
+  const loginEpoch = useRef(0);
+  const [settingsRecovery, setSettingsRecovery] = useState<{ id: string; section: "accounts" | "categories" } | null>(null);
+  const latestSettings = settingsRecovery?.id === blocked?.id ? settingsRecovery : null;
+  const startupAttempted = useRef(false);
+  useEffect(() => { if (!pendingCount) setShowBlocked(false); }, [pendingCount]);
+  useEffect(() => {
+    if (!memoryCount) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = true;
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [memoryCount]);
   const backgroundRefresh = useRef<number | null>(null);
-  const pendingFlush = useRef(false);
+  const pendingFlush = useRef(0);
   const pendingRetry = useRef<number | null>(null);
+  const retryDelay = useRef(5000);
   const backHistory = useRef<NavigationSnapshot[]>([]);
   const forwardHistory = useRef<NavigationSnapshot[]>([]);
   const pendingScrollRestore = useRef<number | null>(null);
@@ -271,24 +309,41 @@ function App() {
           `${y}-${String(endMonth).padStart(2, "0")}-${new Date(y, endMonth, 0).getDate()}`,
         ];
   }, [anchor, period, customStart, customEnd]);
+  const readQueue = useCallback(() => {
+    const view = syncQueue.view();
+    setQueueView(view);
+    setState(view.state);
+  }, []);
+  useEffect(() => syncQueue.subscribe(readQueue), [readQueue]);
+  const closeSession = useCallback(() => {
+    loginEpoch.current += 1;
+    startupAttempted.current = false;
+    setBlockedEditor(null);
+    setShowBlocked(false);
+    setSettingsRecovery(null);
+    setAccountEditor(null);
+    setLogged(false);
+    setState(null);
+  }, []);
+  const requireLogin = useCallback(() => {
+    closeSession();
+    setError("请重新登录");
+  }, [closeSession, setError]);
   const refresh = useCallback(async () => {
-    const requestedAt = mutationEpoch.current;
-    let value = await api<State>("/state");
-    // A slower full refresh must never overwrite a newer entry that was saved
-    // while the request was in flight.
-    if (requestedAt !== mutationEpoch.current) return;
-    const local = replayMutations(value);
-    storeLocalState(local);
-    setState(local);
-    clearConnectionError();
-    setLogged(true);
-    setLastSync(
-      new Date().toLocaleTimeString("zh-CN", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-    );
-  }, [clearConnectionError]);
+    const epoch = loginEpoch.current;
+    try {
+      const snapshot = await syncQueue.refresh();
+      if (epoch === loginEpoch.current) {
+        clearConnectionError();
+        setLogged(true);
+        setLastSync(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+      }
+      return snapshot;
+    } catch (error) {
+      if (isUnauthorized(error) && epoch === loginEpoch.current) requireLogin();
+      throw error;
+    }
+  }, [requireLogin, clearConnectionError]);
   const scheduleRefresh = useCallback(() => {
     if (backgroundRefresh.current !== null)
       window.clearTimeout(backgroundRefresh.current);
@@ -304,40 +359,60 @@ function App() {
   useEffect(() => {
     refresh()
       .catch((e) => {
-        const cached = loadLocalState();
-        if (cached && e.message !== "请重新登录") {
-          setState(cached);
+        if (isUnauthorized(e)) {
+          setError("");
+          return;
+        }
+        if (syncQueue.view().state) {
+          readQueue();
           setLogged(true);
           setError("当前使用本机账本，恢复联网后会自动同步。");
         } else {
-          setLogged(false);
-          if (e.message !== "请重新登录") setError(e.message);
+          setError(e.message);
         }
       })
       .finally(() => setChecked(true));
-  }, [refresh]);
+  }, [refresh, readQueue, setError]);
   useEffect(() => {
     if (!logged) return;
-    const timer = setInterval(
-      () => refresh().catch((e) => setError(e.message)),
-      30000,
-    );
+    const timer = setInterval(() => refresh().catch((e) => setError(e.message)), 30000);
     const focus = () => refresh().catch((e) => setError(e.message));
     window.addEventListener("focus", focus);
     return () => {
       clearInterval(timer);
       window.removeEventListener("focus", focus);
     };
-  }, [logged, refresh]);
+  }, [logged, refresh, setError]);
   useEffect(() => {
-    const fn = () => setOnline(navigator.onLine);
-    window.addEventListener("online", fn);
-    window.addEventListener("offline", fn);
-    return () => {
-      window.removeEventListener("online", fn);
-      window.removeEventListener("offline", fn);
+    const load = (snapshot?: SyncSnapshot) => syncQueue.load(snapshot).catch(error => setError(error.message));
+    const storage = (event: StorageEvent) => {
+      if (event.storageArea === localStorage && isQueueStorageKey(event.key)) void load();
     };
-  }, []);
+    const receive = (event: MessageEvent<SyncSnapshot | null>) => { void load(event.data ?? undefined); };
+    const focus = () => { void load(); };
+    window.addEventListener("focus", focus);
+    window.addEventListener("storage", storage);
+    queueChannel?.addEventListener("message", receive);
+    return () => {
+      window.removeEventListener("focus", focus);
+      window.removeEventListener("storage", storage);
+      queueChannel?.removeEventListener("message", receive);
+    };
+  }, [setError]);
+  useEffect(() => {
+    const reconnect = () => {
+      readQueue();
+      setOnline(true);
+      refresh().catch(e => setError(e.message));
+    };
+    const disconnect = () => setOnline(false);
+    window.addEventListener("online", reconnect);
+    window.addEventListener("offline", disconnect);
+    return () => {
+      window.removeEventListener("online", reconnect);
+      window.removeEventListener("offline", disconnect);
+    };
+  }, [readQueue, refresh, setError]);
   useEffect(() => {
     const updater = window.mingzhangUpdate;
     if (!updater) return;
@@ -348,6 +423,7 @@ function App() {
   }, []);
   useEffect(() => {
     let current = true;
+    const epoch = loginEpoch.current;
     if (logged && state && ["overview", "reports"].includes(page) && (pendingCount || !online)) {
       setReport(localReport(state.entries, range[0], range[1]));
       return () => { current = false; };
@@ -358,12 +434,14 @@ function App() {
           if (current) setReport(value);
         })
         .catch((e) => {
-          if (current) setError(e.message);
+          if (!current || epoch !== loginEpoch.current) return;
+          if (isUnauthorized(e)) requireLogin();
+          else setError(e.message);
         });
     return () => {
       current = false;
     };
-  }, [logged, range, state, page, pendingCount, online, setError]);
+  }, [logged, range, state, page, pendingCount, online, setError, requireLogin]);
   const openNew = useCallback(() => {
     if (!state?.accounts.length) {
       navigate("accounts");
@@ -387,60 +465,112 @@ function App() {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [logged, openNew]);
-  const flushPendingMutations = useCallback(async () => {
-    if (pendingFlush.current) return;
-    pendingFlush.current = true;
-    let blocked = false;
-    try {
-      while (loadMutations().length) {
-        const mutation = loadMutations()[0];
-        try {
-          await api(mutation.path, mutation.body, mutation.method, mutation.id);
-          const remaining = loadMutations().filter(item => item.id !== mutation.id);
-          storeMutations(remaining);
-          setPendingCount(remaining.length);
-          clearConnectionError();
-        } catch (error) {
-          const message = (error as Error).message;
-          const retryable = message.includes("无法连接") || message.includes("请求超时") || message.includes("服务暂时不可用");
-          blocked = !retryable;
-          setError(retryable ? "修改已保存在本机，联网后会自动同步。" : `有一项本地修改等待处理：${message}`);
-          if (pendingRetry.current !== null) window.clearTimeout(pendingRetry.current);
-          if (retryable) pendingRetry.current = window.setTimeout(() => {
-            pendingRetry.current = null; flushPendingMutations();
-          }, 5000);
-          break;
-        }
-      }
-      if (!loadMutations().length) scheduleRefresh();
-    } finally {
-      pendingFlush.current = false;
-      if (!blocked && loadMutations().length && navigator.onLine && pendingRetry.current === null)
-        window.setTimeout(() => flushPendingMutations(), 0);
-    }
-  }, [clearConnectionError, scheduleRefresh, setError]);
-  useEffect(() => {
-    if (logged && online) flushPendingMutations();
-  }, [logged, online, flushPendingMutations]);
-  useEffect(() => () => {
+  const cancelPendingRetry = useCallback(() => {
     if (pendingRetry.current !== null) window.clearTimeout(pendingRetry.current);
+    pendingRetry.current = null;
   }, []);
-  function queueMutation(value: Omit<OfflineMutation, "id" | "createdAt">) {
-    const mutation = enqueueMutation(value);
-    mutationEpoch.current += 1;
-    setState(current => {
-      if (!current) return current;
-      const next = applyMutation(current, mutation);
-      storeLocalState(next);
-      return next;
-    });
-    setPendingCount(loadMutations().length);
+  const flushPendingMutations = useCallback(async function flush(action?: QueueAction, startup = false) {
+    if (!action && (pendingFlush.current || pendingRetry.current !== null)) return;
+    if (action) cancelPendingRetry();
+    pendingFlush.current += 1;
+    const epoch = loginEpoch.current;
+    let checkTail = false;
+    try {
+      const result = await syncQueue.flush(action, startup);
+      if (epoch !== loginEpoch.current) return;
+      checkTail = result === "idle" || result === "synced" || result === "changed" ||
+        result === "already-synced" || result === "discarded-elsewhere" || result === "cancelled";
+      if (result === "in-flight") throw new Error("另一窗口正在同步这条修改，请等本次同步结束。");
+      if (result === "no-snapshot") throw new Error("联网后才能放弃这条修改");
+      if (result === "receipt-unavailable") throw new Error("暂时无法核对同步状态，请刷新后重试。");
+      if (result === "already-synced") setNotice("这条修改已同步到服务器。");
+      if (result === "discarded-elsewhere") setNotice("这条修改已在其他窗口放弃。");
+      if (result === "changed" && action && !startup) throw new Error("这条修改已在其他窗口处理，请查看当前待处理内容。");
+      if (result === "retryable" || typeof result === "object") {
+        const needsManualRetry = Boolean(syncQueue.blocked());
+        const wait = typeof result === "object" ? result : null;
+        if (wait?.wait !== "sending")
+          setError(needsManualRetry ? "暂时无法同步，修改仍在本机，请稍后重试。" : "暂时无法同步，稍后会自动重试。");
+        if (!needsManualRetry) {
+          cancelPendingRetry();
+          const delay = wait ? Math.max(0, wait.until - Date.now()) : retryDelay.current;
+          pendingRetry.current = window.setTimeout(() => {
+            pendingRetry.current = null;
+            void flush().catch(e => setError(e.message));
+          }, Math.min(delay, 2_147_483_647));
+          if (!wait) retryDelay.current = Math.min(retryDelay.current * 2, 60000);
+        }
+      } else {
+        retryDelay.current = 5000;
+        if (result === "unauthorized") requireLogin();
+        if (result === "synced" || result === "discarded-elsewhere" || action?.kind === "discard") scheduleRefresh();
+        if (result === "synced") clearConnectionError();
+      }
+    } finally {
+      pendingFlush.current -= 1;
+      if (checkTail && navigator.onLine && syncQueue.hasReadyHead())
+        void flush().catch(e => setError(e.message));
+    }
+  }, [cancelPendingRetry, requireLogin, clearConnectionError, scheduleRefresh, setError, setNotice]);
+  useEffect(() => {
+    if (!logged || !online) return;
+    cancelPendingRetry();
+    const startup = !startupAttempted.current;
+    startupAttempted.current = true;
+    void flushPendingMutations(undefined, startup)
+      .catch(e => setError(e.message));
+  }, [logged, online, cancelPendingRetry, flushPendingMutations, setError]);
+  useEffect(() => {
+    if (!logged || !online || blocked || !pendingCount) return;
+    void flushPendingMutations().catch(e => setError(e.message));
+  }, [logged, online, blocked?.id, pendingCount, flushPendingMutations, setError]);
+  useEffect(() => {
+    if (!logged) cancelPendingRetry();
+    return cancelPendingRetry;
+  }, [logged, cancelPendingRetry]);
+
+  async function queueMutation(value: Omit<OfflineMutation, "id" | "createdAt">) {
+    await syncQueue.enqueue(value);
     setError("");
-    void flushPendingMutations();
+    void flushPendingMutations().catch(e => setError(e.message));
   }
   async function saveEntry(value: Entry, editing = false) {
-    queueMutation({ type: editing ? "entry.update" : "entry.create", path: editing ? `/entries/${value.id}` : "/entries",
+    await queueMutation({ type: editing ? "entry.update" : "entry.create", path: editing ? `/entries/${value.id}` : "/entries",
       method: editing ? "PUT" : "POST", body: value as unknown as Record<string, unknown> });
+  }
+  async function openBlockedEditor(target: BlockedMutation) {
+    const epoch = loginEpoch.current;
+    const snapshot = await refresh();
+    if (epoch === loginEpoch.current)
+      setBlockedEditor({ target, ...prepareEntryRecovery(target, snapshot, newEntry()) });
+  }
+  async function rebaseBlocked(target: BlockedMutation) {
+    const epoch = loginEpoch.current;
+    const snapshot = await refresh();
+    if (epoch === loginEpoch.current)
+      await flushPendingMutations({ kind: "edit", target, change: rebaseChange(target, snapshot) });
+  }
+  async function openLatestSettings(target: BlockedMutation) {
+    const section = recoverySettings(target);
+    if (!section) return;
+    const epoch = loginEpoch.current;
+    const snapshot = await refresh();
+    if (epoch !== loginEpoch.current || syncQueue.blocked()?.id !== target.id) return;
+    setSettingsRecovery({ id: target.id, section });
+    setShowBlocked(false);
+    navigate("settings");
+    if (target.type === "account.update") {
+      const account = snapshot.accounts.find(value => value.id === target.path.split("/")[2]);
+      if (account) setAccountEditor(account);
+    }
+  }
+  async function retryQueueStorage() {
+    try {
+      await syncQueue.retryStorage();
+      await flushPendingMutations();
+    } catch (error) {
+      setError((error as Error).message);
+    }
   }
   const entries =
     page === "entry" || page === "overview"
@@ -505,7 +635,29 @@ function App() {
       .filter(account => (account.group_id || account.kind) === group.id)
       .reduce((sum, account) => sum + account.balance_cents, 0),
   })).filter(group => (state?.accounts || []).some(account => (account.group_id || account.kind) === group.id)), [state?.account_groups, state?.accounts]);
-  if (!checked)
+  const queueNotice = blocked ? "有 1 项修改未能同步，点此处理" : `${pendingCount} 项等待同步，点此查看`;
+  const queueHead = blocked ?? queueView.items[0];
+  const storageNotice = (storageError || fallback) && <div className="queue-storage-notice" role={storageError ? "alert" : undefined}>
+    {storageError && <>
+      {memoryCount > 0 && <span>{memoryCount} 项修改只保留在此页面，请勿关闭或刷新。</span>}
+      {statusUnsaved && <span>本机空间不足，同步状态暂时只保留在此页面。</span>}
+      <button type="button" className="secondary" onClick={() => void retryQueueStorage()}>重试本机保存</button>
+    </>}
+    {fallback && <span>本机使用兼容存储，多窗口同步保护有限。</span>}
+  </div>;
+  const queuePanel = showBlocked && pendingCount > 0 && !blockedEditor && (
+    <Modal title={blocked ? "处理未同步的修改" : "等待同步的修改"} onClose={() => setShowBlocked(false)}>
+      <BlockedSyncDetails key={queueHead.id} item={queueHead} state={serverSnapshot} waiting={pendingCount - 1}
+        onRetry={() => flushPendingMutations({ kind: "retry", target: queueHead })}
+        onEdit={blocked ? () => openBlockedEditor(blocked) : undefined}
+        onRebase={blocked ? () => rebaseBlocked(blocked) : undefined}
+        onOpenSettings={blocked ? () => openLatestSettings(blocked) : undefined}
+        onDiscard={confirm => flushPendingMutations({ kind: "discard", target: queueHead, confirm })} />
+      {!blocked && pendingCount > 1 && <ol>{queueView.items.slice(1).map(item =>
+        <li key={item.id}>{describeBlocked(item, null).title}</li>)}</ol>}
+    </Modal>
+  );
+  if (!checked && !pendingCount)
     return (
       <div className="loading">
         <BookOpen size={32} />
@@ -543,6 +695,7 @@ function App() {
             setError("");
             try {
               await api("/login", { password });
+              loginEpoch.current += 1;
               await refresh();
               setPassword("");
             } catch (e) {
@@ -569,8 +722,11 @@ function App() {
           {toast}
           <button aria-label={busy ? "正在登录…" : "打开我的账本"} title={busy ? "正在登录…" : "打开我的账本"} className="primary" disabled={busy}><LogIn size={18} aria-hidden="true" /></button>
           <small>网页版、Mac 与 Windows 客户端使用同一个账本密码。</small>
+          {pendingCount > 0 && <button type="button" className="secondary sync-blocked" onClick={() => setShowBlocked(true)}>{queueNotice}</button>}
           <DesktopDownloads />
         </form>
+        {storageNotice}
+        {queuePanel}
       </div>
     );
   return (
@@ -646,22 +802,34 @@ function App() {
               <span className="nav-text">{desktopUpdate.status === "available" ? `更新到 ${desktopUpdate.release?.version}` : "正在更新…"}</span>
             </button>
           )}
-          <div className={"sync " + (!online ? "offline" : "")} title={online ? `最近同步 ${lastSync}` : "当前离线"}>
-            <i />
-            <span className="nav-text">{online ? (pendingCount ? `${pendingCount} 项等待同步` : `最近同步 ${lastSync}`) : "当前离线，修改会先保存到本机"}</span>
-          </div>
+          {pendingCount > 0 ? (
+            <button type="button" className="sync-blocked" aria-label={queueNotice}
+              title={queueNotice} onClick={() => setShowBlocked(true)}>
+              <CircleAlert size={18} aria-hidden="true" />
+              <span className="nav-text">{queueNotice}</span>
+              <span className="sync-blocked-short" aria-hidden="true">{blocked ? "待处理" : "待同步"}</span>
+            </button>
+          ) : (
+            <div className={"sync " + (!online ? "offline" : "")} title={online ? `最近同步 ${lastSync}` : "当前离线"}>
+              <i />
+              <span className="nav-text">{online ? `最近同步 ${lastSync}` : "当前离线，修改会先保存到本机"}</span>
+            </div>
+          )}
           <button aria-label="退出账本" title="退出账本"
             onClick={() => {
               api("/logout", {}).then(() => {
                 resetHistory();
-                setLogged(false);
-                setState(null);
+                closeSession();
               });
             }}
           ><LogOut size={18} aria-hidden="true" /></button>
           <small>明账 v0.1 · 让每一笔都有来处</small>
         </div>
       </aside>
+      {pendingCount > 0 && <button type="button" className="sync-blocked-mobile" onClick={() => setShowBlocked(true)}>
+        {queueNotice}
+      </button>}
+      {storageNotice}
       <motion.main key={page} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.22 }} className={page === "entry" ? "entry-workspace" : undefined}>
         {(page !== "entry" || !state?.accounts.length) && <header>
           <div>
@@ -1113,7 +1281,7 @@ function App() {
               setEditing(true);
             }}
             onDelete={(entry) => {
-              queueMutation({type:"entry.delete",path:`/entries/${entry.id}/delete`,method:"POST",body:{version:entry.version}});
+              void queueMutation({type:"entry.delete",path:`/entries/${entry.id}/delete`,method:"POST",body:{version:entry.version}}).catch(e => setError(e.message));
             }}
           />
         )}
@@ -1260,7 +1428,7 @@ function App() {
                               {page === "transactions" && trash ? (
                                 <button aria-label="恢复交易" title="恢复交易"
                                   onClick={() =>
-                                    queueMutation({type:"entry.restore",path:`/entries/${x.id}/restore`,method:"POST",body:{version:x.version}})
+                                    void queueMutation({type:"entry.restore",path:`/entries/${x.id}/restore`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
                                   }
                                 ><RotateCcw size={18} aria-hidden="true" /></button>
                               ) : (
@@ -1288,7 +1456,7 @@ function App() {
                                   <button
                                     aria-label="删除交易" title="删除交易"
                                     onClick={() =>
-                                      queueMutation({type:"entry.delete",path:`/entries/${x.id}/delete`,method:"POST",body:{version:x.version}})
+                                      void queueMutation({type:"entry.delete",path:`/entries/${x.id}/delete`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
                                     }
                                   >
                                     <Trash2 size={14} />
@@ -1370,30 +1538,54 @@ function App() {
             </section>
           </>
         )}
-        {page === "settings" && state && <OrderSettings state={state} defaults={categories}
-          onCategoryChange={async value => { queueMutation({type:"category.change",path:"/categories",method:"POST",body:value as unknown as Record<string,unknown>}); }}
-          onPasswordChanged={() => { resetHistory(); setLogged(false); setState(null); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
+        {page === "settings" && state && <OrderSettings
+          key={latestSettings?.id ?? "settings"} initialSection={latestSettings?.section}
+          state={(latestSettings && serverSnapshot) || state} defaults={categories}
+          onCategoryChange={async value => { await queueMutation({type:"category.change",path:"/categories",method:"POST",body:value as unknown as Record<string,unknown>}); }}
+          onPasswordChanged={() => { resetHistory(); closeSession(); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
           onEditAccount={setAccountEditor}
-          onRenameAccountGroup={async (id,name,expected_name) => {queueMutation({type:"account-group.rename",path:`/account-groups/${id}`,method:"PUT",body:{name,expected_name}});}}
+          onRenameAccountGroup={async (id,name,expected_name) => {await queueMutation({type:"account-group.rename",path:`/account-groups/${id}`,method:"PUT",body:{name,expected_name}});}}
           onAccountGroupChange={async (id, value) => {
-            if (id) queueMutation({type:"account-group.delete",path:`/account-groups/${id}/delete`,method:"POST",body:{}});
-            else { const group={...value!,id:crypto.randomUUID()}; queueMutation({type:"account-group.create",path:"/account-groups",method:"POST",body:group}); }
+            if (id) await queueMutation({type:"account-group.delete",path:`/account-groups/${id}/delete`,method:"POST",body:{}});
+            else { const group={...value!,id:crypto.randomUUID()}; await queueMutation({type:"account-group.create",path:"/account-groups",method:"POST",body:group}); }
           }}
-          onDeleteAccount={async account => { queueMutation({type:"account.delete",path:`/accounts/${account.id}/delete`,method:"POST",body:{version:account.version}}); }}
-          onSave={async value => { queueMutation({type:"order.update",path:"/display-order",method:"PUT",body:value as unknown as Record<string,unknown>}); }} />}
+          onDeleteAccount={async account => { await queueMutation({type:"account.delete",path:`/accounts/${account.id}/delete`,method:"POST",body:{version:account.version}}); }}
+          onSave={async value => { await queueMutation({type:"order.update",path:"/display-order",method:"PUT",body:value as unknown as Record<string,unknown>}); }} />}
         {page === "data" && state && (
           <DataPage
             state={state}
-            onRefresh={refresh}
+            onRefresh={async () => { await refresh(); }}
             onError={setError}
             onNotice={setNotice}
           />
         )}
         <footer>
-          个人账本 · Asia/Shanghai <span>{pendingCount ? `${pendingCount} 项已存本机，等待同步` : "本机与云端已同步"}</span>
+          个人账本 · Asia/Shanghai <span>{storageError ? "有修改等待保存到本机" : blocked ? "有修改未能同步" : pendingCount ? `${pendingCount} 项已存本机，等待同步` : "本机与云端已同步"}</span>
           <DesktopDownloads />
         </footer>
       </motion.main>
+      {queuePanel}
+      {blockedEditor && state && (
+        <EntryDialog
+          key={blockedEditor.target.id}
+          initial={blockedEditor.entry}
+          editing={Boolean(blockedEditor.current)}
+          recoveryQueued={blockedEditor.current ? blockedEditor.queued : undefined}
+          recovering
+          accounts={state.accounts}
+          accountGroups={state.account_groups}
+          entries={state.entries}
+          categoryOrder={state.ordering?.categories}
+          favorites={state.ordering?.favorites}
+          catalog={state.category_catalog}
+          onClose={() => setBlockedEditor(null)}
+          onSave={async value => {
+            const change = entryRecoveryChange(blockedEditor.entry, Boolean(blockedEditor.current), value);
+            await flushPendingMutations({ kind: "edit", target: blockedEditor.target, change });
+            setBlockedEditor(null);
+          }}
+        />
+      )}
       {editor && state && (
         <EntryDialog
           key={editor.id}
@@ -1415,7 +1607,7 @@ function App() {
       {accountEditor && (
         <AccountDialog
           initial={accountEditor}
-          groups={state?.account_groups ?? []}
+          groups={((latestSettings && serverSnapshot) || state)?.account_groups ?? []}
           onClose={() => setAccountEditor(null)}
           onSave={async (value) => {
             const creating = !value.id;
@@ -1424,7 +1616,7 @@ function App() {
               ...(value.target_balance_cents !== undefined && value.target_balance_cents !== value.expected_balance_cents
                 ? {adjustment_id: crypto.randomUUID()} : {}),
             };
-            queueMutation({type:creating?"account.create":"account.update",path:creating?"/accounts":`/accounts/${account.id}`,
+            await queueMutation({type:creating?"account.create":"account.update",path:creating?"/accounts":`/accounts/${account.id}`,
               method:creating?"POST":"PUT",body:account as unknown as Record<string,unknown>});
             setAccountEditor(null);
           }}
@@ -1542,6 +1734,8 @@ function Modal({
 }
 function EntryDialog({
   inline = false,
+  recovering = false,
+  recoveryQueued,
   onRefresh,
   initial,
   editing,
@@ -1555,6 +1749,8 @@ function EntryDialog({
   onSave,
 }: {
   inline?: boolean;
+  recovering?: boolean;
+  recoveryQueued?: Entry;
   onRefresh?: () => void;
   initial: Entry;
   editing: boolean;
@@ -1594,10 +1790,10 @@ function EntryDialog({
     ]),
   ).filter(Boolean), categoryOrder);
   useEffect(() => {
-    if (!editing && catalog && ["income", "expense"].includes(value.kind) && !categoryOptions.includes(value.category)) {
+    if (!editing && !recovering && catalog && ["income", "expense"].includes(value.kind) && !categoryOptions.includes(value.category)) {
       setValue(old => ({...old, category: categoryOptions[0] ?? ""}));
     }
-  }, [catalog, value.kind, value.category, editing]);
+  }, [catalog, value.kind, value.category, editing, recovering]);
   const amountField = (
       <label className="amount-input">
         金额（人民币）
@@ -1617,6 +1813,12 @@ function EntryDialog({
         </div>
       </label>
   );
+  let recoveryAmount = value.amount_cents;
+  if (recoveryQueued) {
+    try { recoveryAmount = cents(amount); }
+    catch { /* The form reports an invalid amount on submit. */ }
+  }
+  const saveLabel = recovering ? "保存并重新同步" : "记一笔";
   const form = (
     <form
       onSubmit={async (e) => {
@@ -1660,7 +1862,7 @@ function EntryDialog({
     >
       <div className="entry-kinds">
         {inline && <h1 className="entry-inline-title">记一笔</h1>}
-        {Object.entries(labels).filter(([k]) => !["refund", "balance_in", "balance_out"].includes(k) || (editing && k === initial.kind)).map(([k, v]) => (
+        {Object.entries(labels).filter(([k]) => !["refund", "balance_in", "balance_out"].includes(k) || ((editing || recovering) && k === initial.kind)).map(([k, v]) => (
           <button
             type="button"
             className={value.kind === k ? "selected" : ""}
@@ -1797,6 +1999,14 @@ function EntryDialog({
           ))}
         </div>
       )}
+      {recovering && <label>备注<input value={value.memo} onChange={event => set("memo", event.target.value)} /></label>}
+      {recovering && <label>商家<input value={value.merchant} onChange={event => set("merchant", event.target.value)} /></label>}
+      {recoveryQueued && <EntryRecoveryComparison current={initial} queued={recoveryQueued}
+        value={{ ...value, amount_cents: recoveryAmount }}
+        accounts={accounts} entries={entries} onChoose={(key, source) => {
+          if (key === "amount_cents") setAmount(String(source.amount_cents / 100));
+          else set(key, source[key]);
+        }} />}
       {error && (
         <p role="alert" className="error">
           {error}
@@ -1804,17 +2014,18 @@ function EntryDialog({
       )}
       <div className="modal-footer">
         <small>
-          {inline ? "Enter 保存 · 连续记账" : "保存失败时，输入内容会保留。"}
+          {recovering && editing ? "保存后将用当前填写的内容更新服务器上的这笔流水。"
+            : inline ? "Enter 保存 · 连续记账" : "保存失败时，输入内容会保留。"}
         </small>
         {inline && <button type="button" className="icon-button" aria-label="刷新账本" title="刷新账本" onClick={onRefresh}><RefreshCw size={18} /></button>}
-        <button aria-label={busy ? "正在保存…" : "记一笔"} title={busy ? "正在保存…" : "记一笔"} className="primary" disabled={busy}>{busy ? "正在保存…" : "记一笔"}</button>
+        <button aria-label={busy ? "正在保存…" : saveLabel} title={busy ? "正在保存…" : saveLabel} className="primary" disabled={busy}>{busy ? "正在保存…" : saveLabel}</button>
       </div>
     </form>
   );
   return inline ? (
     form
   ) : (
-    <Modal title={editing ? "编辑交易" : "记一笔"} onClose={onClose}>
+    <Modal title={recovering ? "修改后重新同步" : editing ? "编辑交易" : "记一笔"} onClose={onClose}>
       {form}
     </Modal>
   );

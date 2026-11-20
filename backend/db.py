@@ -49,8 +49,18 @@ def initialize():
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, action TEXT NOT NULL, payload TEXT NOT NULL,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS mutation_receipts(
-          id TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+          id TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, result TEXT);
+        CREATE TABLE IF NOT EXISTS cancelled_mutations(id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS restored_mutations(
+          id TEXT PRIMARY KEY, cancelled INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS ledger_revision(
+          id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL);
+        INSERT OR IGNORE INTO ledger_revision VALUES (1, 0);
         """)
+        db.execute("INSERT OR IGNORE INTO settings VALUES ('ledger_epoch', ?)", (str(uuid4()),))
+
+        if "result" not in {r[1] for r in db.execute("PRAGMA table_info(mutation_receipts)")}:
+            db.execute("ALTER TABLE mutation_receipts ADD COLUMN result TEXT")
 
         columns = {r[1] for r in db.execute("PRAGMA table_info(accounts)")}
         if "group_id" not in columns:
@@ -58,6 +68,35 @@ def initialize():
         for kind, name in [("bank", "银行卡"), ("wallet", "电子钱包"), ("cash", "现金"),
                            ("credit", "信用卡"), ("receivable", "债权"), ("liability", "负债")]:
             db.execute("INSERT OR IGNORE INTO account_groups(id,name,kind) VALUES (?,?,?)", (kind, name, kind))
+
+
+def advance_ledger_revision(db):
+    db.execute("UPDATE ledger_revision SET revision=revision+1 WHERE id=1")
+
+
+def ledger_epoch(db):
+    return db.execute("SELECT value FROM settings WHERE key='ledger_epoch'").fetchone()[0]
+
+
+def reset_restored_history(db, previous):
+    db.execute("INSERT OR REPLACE INTO settings VALUES ('ledger_epoch', ?)", (str(uuid4()),))
+    db.execute("DELETE FROM sessions")
+    db.execute("CREATE TABLE IF NOT EXISTS restored_mutations(id TEXT PRIMARY KEY, cancelled INTEGER NOT NULL)")
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "mutation_receipts" in tables:
+        db.execute("INSERT OR IGNORE INTO restored_mutations SELECT id, 0 FROM mutation_receipts")
+        db.execute("DELETE FROM mutation_receipts")
+    if "cancelled_mutations" in tables:
+        db.execute("INSERT OR REPLACE INTO restored_mutations SELECT id, 1 FROM cancelled_mutations")
+        db.execute("DELETE FROM cancelled_mutations")
+    if previous is not None:
+        # A discard made after the backup still bars a delayed replay of that ID.
+        db.execute("ATTACH DATABASE ? AS previous", (str(previous),))
+        tables = {row[0] for row in db.execute("SELECT name FROM previous.sqlite_master WHERE type='table'")}
+        if "cancelled_mutations" in tables:
+            db.execute("INSERT OR REPLACE INTO restored_mutations SELECT id, 1 FROM previous.cancelled_mutations")
+        if "restored_mutations" in tables:
+            db.execute("INSERT OR REPLACE INTO restored_mutations SELECT id, 1 FROM previous.restored_mutations WHERE cancelled")
 
 
 def backup(destination):

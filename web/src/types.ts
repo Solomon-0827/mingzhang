@@ -114,6 +114,36 @@ export function cents(value: string) {
   if (!Number.isSafeInteger(n)) throw new Error("金额超出范围");
   return negative ? -n : n;
 }
+export type RequestFailure = "network" | "timeout" | "unavailable" | "unauthorized" | "rejected" | "cancelled";
+
+export class RequestError extends Error {
+  constructor(readonly kind: RequestFailure, message: string, readonly status?: number, readonly retryAfterMs?: number,
+    readonly ledgerEpoch?: string) {
+    super(message);
+    this.name = "RequestError";
+  }
+}
+
+function retryAfter(header: string | null) {
+  if (!header?.trim()) return undefined;
+  const value = header.trim();
+  const delay = /^\d+$/.test(value) ? Number(value) * 1000 :
+    /[a-z]{3}/i.test(value) ? Date.parse(value) - Date.now() : NaN;
+  return Number.isFinite(delay) ? Math.max(0, delay) : undefined;
+}
+
+export function isUnauthorized(error: unknown) {
+  return error instanceof RequestError && error.kind === "unauthorized";
+}
+
+function connectionFailure(error: unknown) {
+  return error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)
+    ? new RequestError("timeout", "请求超时，请检查网络后重试；输入内容已保留。")
+    : new RequestError("network", "无法连接账本服务，请检查网络后重试。");
+}
+
+export const requestDeadlineMs = 45_000;
+
 export async function api<T>(
   path: string,
   body?: unknown,
@@ -123,7 +153,7 @@ export async function api<T>(
   const response = await fetch("/api" + path, {
     method: method || (body === undefined ? "GET" : "POST"),
     credentials: "same-origin",
-    signal: AbortSignal.timeout(45000),
+    signal: AbortSignal.timeout(requestDeadlineMs),
     headers: {
       ...(body instanceof FormData ? {} : { "Content-Type": "application/json" }),
       ...(mutationId ? { "X-Mingzhang-Mutation": mutationId } : {}),
@@ -134,24 +164,26 @@ export async function api<T>(
         : body instanceof FormData
           ? body
           : JSON.stringify(body),
-  }).catch((error: Error) => {
-    throw new Error(
-      error.name === "TimeoutError" || error.name === "AbortError"
-        ? "请求超时，请检查网络后重试；输入内容已保留。"
-        : "无法连接账本服务，请检查网络后重试。",
-    );
-  });
+  }).catch((error: unknown) => { throw connectionFailure(error); });
   if (!response.ok) {
-    const value = await response
-      .json()
-      .catch(() => ({ detail: "服务暂时不可用" }));
-    throw new Error(
-      response.status === 401
-        ? "请重新登录"
-        : typeof value.detail === "string"
-          ? value.detail
-          : "请检查必填项、金额和日期",
-    );
+    if (response.status === 401)
+      throw new RequestError("unauthorized", "请重新登录", response.status);
+    const failure = await response.json().catch(() => undefined);
+    const detail = failure?.detail;
+    const status = response.status;
+    const epoch = typeof failure?.ledger_epoch === "string" ? failure.ledger_epoch : undefined;
+    if (status === 409 && failure?.code === "mutation_cancelled")
+      throw new RequestError("cancelled", "这条修改已被放弃", status, undefined, epoch);
+    if (status === 408 || status === 429)
+      throw new RequestError(status === 408 ? "timeout" : "unavailable",
+        typeof detail === "string" ? detail : "服务暂时不可用", status, retryAfter(response.headers.get("Retry-After")));
+    if (status < 400 || status >= 500)
+      throw new RequestError("unavailable", typeof detail === "string" ? detail : "服务暂时不可用", status);
+    const message = typeof detail === "string" ? detail
+      : Array.isArray(detail) ? detail.map(item => [Array.isArray(item?.loc) ? item.loc.slice(1).join(".") : "", item?.msg]
+        .filter(Boolean).join("：")).filter(Boolean).join("；")
+      : "请检查必填项、金额和日期";
+    throw new RequestError("rejected", message || "请检查必填项、金额和日期", status, undefined, epoch);
   }
-  return response.json();
+  return response.json().catch((error: unknown) => { throw connectionFailure(error); });
 }

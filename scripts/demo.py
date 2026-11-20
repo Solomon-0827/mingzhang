@@ -6,7 +6,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 from backend.auth import hash_password
-from backend.db import connect, initialize
+from backend.db import advance_ledger_revision, connect, initialize
 from backend.ledger import Entry, save_entry, today
 
 if not os.environ.get("LEDGER_DB", "").endswith("/demo.sqlite3"):
@@ -73,4 +73,5 @@ with connect() as db:
         db,
         Entry(date=end, kind="transfer", amount_cents=200000, account_id=ids[0], to_account_id=ids[1], memo="演示数据"),
     )
+    advance_ledger_revision(db)
 print("Fictional demo ledger ready.")
