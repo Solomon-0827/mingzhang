@@ -21,7 +21,7 @@ from starlette.background import BackgroundTask
 
 from backend.auth import authenticated, hash_password, token_hash, verify_password
 from backend.categories import CategoryChange, catalog, change_category
-from backend.db import advance_ledger_revision, backup, connect, db_path, initialize
+from backend.db import advance_ledger_revision, backup, connect, db_path, initialize, ledger_epoch
 from backend.importing import commit_import, preview, read_file
 from backend.ledger import (
     KIND_LABELS,
@@ -103,17 +103,24 @@ def run_mutation(request: Request, apply):
     with connect() as db:
         # Replay, cancellation and commit all acquire the same SQLite write lock.
         db.execute("BEGIN IMMEDIATE")
+        epoch = ledger_epoch(db)
         if mutation_id:
             receipt = db.execute("SELECT result FROM mutation_receipts WHERE id=?", (mutation_id,)).fetchone()
             if receipt is not None:
-                return receipt_result(receipt)
+                return {**receipt_result(receipt), "ledger_epoch": epoch}
             if db.execute("SELECT 1 FROM cancelled_mutations WHERE id=?", (mutation_id,)).fetchone():
-                return JSONResponse({"code": "mutation_cancelled", "detail": "这条修改已被放弃"}, status_code=409)
+                return JSONResponse({"code": "mutation_cancelled", "detail": "这条修改已被放弃", "ledger_epoch": epoch},
+                                    status_code=409)
+            restored = db.execute("SELECT cancelled FROM restored_mutations WHERE id=?", (mutation_id,)).fetchone()
+            if restored is not None:
+                detail = ("恢复备份前已放弃这条修改，请核对后处理。" if restored[0]
+                          else "恢复的备份已包含这条修改，请核对后处理。")
+                return JSONResponse({"detail": detail, "ledger_epoch": epoch}, status_code=409)
         result = apply(db)
         advance_ledger_revision(db)
         if mutation_id:
             db.execute("INSERT INTO mutation_receipts(id,result) VALUES (?,?)", (mutation_id, json.dumps(result)))
-        return result
+        return {**result, "ledger_epoch": epoch} if mutation_id else result
 
 
 def validate_mutation_id(mutation_id):
@@ -125,6 +132,11 @@ def receipt_result(receipt):
     return json.loads(receipt["result"]) if receipt["result"] is not None else {"ok": True, "duplicate": True}
 
 
+def receipt_status(epoch, receipt):
+    return {"ledger_epoch": epoch, "committed": receipt is not None,
+            "result": receipt_result(receipt) if receipt is not None else None}
+
+
 @app.get("/api/mutation-receipts/{mutation_id}", dependencies=[Depends(authenticated)])
 def mutation_receipt(mutation_id: str):
     validate_mutation_id(mutation_id)
@@ -132,19 +144,26 @@ def mutation_receipt(mutation_id: str):
         # Check after any writer already committing this receipt has finished.
         db.execute("BEGIN IMMEDIATE")
         receipt = db.execute("SELECT result FROM mutation_receipts WHERE id=?", (mutation_id,)).fetchone()
-    return {"committed": receipt is not None, "result": receipt_result(receipt) if receipt is not None else None}
+        return receipt_status(ledger_epoch(db), receipt)
+
+
+class CancelMutation(BaseModel):
+    ledger_epoch: str | None = None
 
 
 @app.post("/api/mutation-receipts/{mutation_id}/cancel", dependencies=[Depends(authenticated)])
-def cancel_mutation(mutation_id: str):
+def cancel_mutation(mutation_id: str, body: CancelMutation | None = None):
     validate_mutation_id(mutation_id)
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
+        epoch = ledger_epoch(db)
+        if body and body.ledger_epoch is not None and body.ledger_epoch != epoch:
+            return JSONResponse({"code": "ledger_epoch_changed", "detail": "账本已恢复，请刷新后再处理这条修改。",
+                                 "ledger_epoch": epoch}, status_code=409)
         receipt = db.execute("SELECT result FROM mutation_receipts WHERE id=?", (mutation_id,)).fetchone()
-        if receipt is not None:
-            return {"committed": True, "result": receipt_result(receipt)}
-        db.execute("INSERT OR IGNORE INTO cancelled_mutations(id) VALUES (?)", (mutation_id,))
-    return {"committed": False, "result": None}
+        if receipt is None:
+            db.execute("INSERT OR IGNORE INTO cancelled_mutations(id) VALUES (?)", (mutation_id,))
+        return receipt_status(epoch, receipt)
 
 
 class Login(BaseModel):
@@ -228,11 +247,14 @@ def health():
 @app.get("/api/state", dependencies=[Depends(authenticated)])
 def state():
     with connect() as db:
+        db.execute("BEGIN")
         return ledger_state(db)
 
 
 def ledger_state(db):
     result = snapshot(db)
+    result["ledger_epoch"] = ledger_epoch(db)
+    result["revision"] = db.execute("SELECT revision FROM ledger_revision WHERE id=1").fetchone()[0]
     result["demo"] = bool(db.execute("SELECT 1 FROM settings WHERE key='demo'").fetchone())
     result["server_time"] = datetime.now().isoformat()
     result["backup_date"] = max((p.name for p in BACKUP_DIR.glob("ledger-*.sqlite3")), default=None)
@@ -248,13 +270,13 @@ def sync_state(body: SyncStateRequest):
     with connect() as db:
         # Read the ledger and receipts from the same SQLite snapshot.
         db.execute("BEGIN")
-        revision = db.execute("SELECT revision FROM ledger_revision WHERE id=1").fetchone()[0]
         result = ledger_state(db)
         committed = [row[0] for row in db.execute(
             "SELECT id FROM mutation_receipts WHERE id IN (SELECT value FROM json_each(?))",
             (json.dumps(body.mutation_ids),),
         )]
-    return {"snapshot": result, "committed": committed, "revision": revision}
+    return {"snapshot": result, "committed": committed, "revision": result["revision"],
+            "ledger_epoch": result["ledger_epoch"]}
 
 
 @app.post("/api/categories", dependencies=[Depends(authenticated)])

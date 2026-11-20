@@ -18,13 +18,14 @@ def test_cancel_and_commit_are_exclusive(client, first):
     path = f"/api/mutation-receipts/{mutation_id}/cancel"
     headers = {"X-Mingzhang-Mutation": mutation_id}
     body = {"id": str(uuid4()), "name": "取消验证", "kind": "cash", "opening_cents": 0}
+    epoch = client.get("/api/state").json()["ledger_epoch"]
     if first == "cancel":
-        assert client.post(path).json() == {"committed": False, "result": None}
+        assert client.post(path).json() == {"committed": False, "result": None, "ledger_epoch": epoch}
         refused = client.post("/api/accounts", json=body, headers=headers)
         assert refused.status_code == 409
         assert refused.json()["code"] == "mutation_cancelled"
         assert client.get("/api/state").json()["accounts"] == []
-        assert client.post(path).json() == {"committed": False, "result": None}
+        assert client.post(path).json() == {"committed": False, "result": None, "ledger_epoch": epoch}
         # A new payload version uses a different receipt ID.
         assert client.post("/api/accounts", json=body, headers={
             "X-Mingzhang-Mutation": str(uuid4()),
@@ -32,7 +33,7 @@ def test_cancel_and_commit_are_exclusive(client, first):
     else:
         committed = client.post("/api/accounts", json=body, headers=headers)
         assert committed.status_code == 200
-        assert client.post(path).json() == {"committed": True, "result": committed.json()}
+        assert client.post(path).json() == {"committed": True, "result": {"id": body["id"]}, "ledger_epoch": epoch}
         assert client.post("/api/accounts", json=body, headers=headers).json() == committed.json()
 
 
@@ -81,7 +82,8 @@ def test_concurrent_cancel_and_commit_serialize_on_two_connections(client, monke
         assert loser.json()["code"] == "mutation_cancelled"
     else:
         assert loser.status_code == 200
-        assert loser.json() == {"committed": True, "result": winner.json()}
+        assert loser.json() == {"committed": True, "result": {"id": body["id"]},
+                                "ledger_epoch": winner.json()["ledger_epoch"]}
 
 
 def test_client_ids_allow_offline_dependency_chain(client):
@@ -264,13 +266,14 @@ def test_recreated_group_keeps_new_client_id(client):
 def test_receipt_status_returns_the_original_committed_result(client):
     mutation_id = str(uuid4())
     path = f"/api/mutation-receipts/{mutation_id}"
-    assert client.get(path).json() == {"committed": False, "result": None}
+    epoch = client.get("/api/state").json()["ledger_epoch"]
+    assert client.get(path).json() == {"committed": False, "result": None, "ledger_epoch": epoch}
     headers = {"X-Mingzhang-Mutation": mutation_id}
     body = {"id": str(uuid4()), "name": "查回执", "kind": "cash", "opening_cents": 0}
 
     created = client.post("/api/accounts", json=body, headers=headers)
     assert created.status_code == 200
-    assert client.get(path).json() == {"committed": True, "result": created.json()}
+    assert client.get(path).json() == {"committed": True, "result": {"id": body["id"]}, "ledger_epoch": epoch}
     assert client.post("/api/accounts", json=body, headers=headers).json() == created.json()
     assert client.get(path).headers["cache-control"] == "no-store"
 
@@ -284,5 +287,6 @@ def test_receipt_status_handles_legacy_receipts_and_invalid_ids(client):
         db.execute("INSERT INTO mutation_receipts(id) VALUES (?)", (mutation_id,))
     assert client.get(f"/api/mutation-receipts/{mutation_id}").json() == {
         "committed": True, "result": {"ok": True, "duplicate": True},
+        "ledger_epoch": client.get("/api/state").json()["ledger_epoch"],
     }
     assert client.get("/api/mutation-receipts/invalid!").status_code == 400

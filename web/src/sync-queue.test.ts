@@ -47,7 +47,7 @@ function createEntry(id: string) {
   return { type: "entry.create", path: "/entries", method: "POST", body: entry(id) } as const;
 }
 
-function setup(initial = snapshot, database = new IDBFactory()) {
+function setup(initial = snapshot, database = new IDBFactory(), ledger_epoch = "original") {
   const storage = new MemoryStorage();
   let server = initial;
   const receipts = new Set<string>();
@@ -58,14 +58,15 @@ function setup(initial = snapshot, database = new IDBFactory()) {
     receipts.add(item.id);
   }
   const serverSnapshot = (ids: string[]): SyncSnapshot => ({
-    snapshot: server, committed: ids.filter(id => receipts.has(id)), revision: receipts.size,
+    snapshot: server, committed: ids.filter(id => receipts.has(id)), revision: receipts.size, ledger_epoch,
   });
   const fetchSnapshot = vi.fn(async (ids: string[]) => serverSnapshot(ids));
-  const fetchReceipt = vi.fn(async (id: string) => ({ committed: receipts.has(id), result: null }));
-  const cancelMutation = vi.fn(async (id: string) => ({ committed: receipts.has(id), result: null }));
+  const fetchReceipt = vi.fn(async (id: string) => ({ committed: receipts.has(id), result: null, ledger_epoch }));
+  const cancelMutation = vi.fn(async (id: string, _epoch: string) => ({ committed: receipts.has(id), result: null, ledger_epoch }));
   const open = (locks?: LockManager) => {
     const options = { storage, database, locks,
-      send: async (item: OfflineMutation) => { await send(item); commit(item); }, fetchSnapshot, fetchReceipt, cancelMutation };
+      send: async (item: OfflineMutation) => { await send(item); commit(item); return { ledger_epoch }; },
+      fetchSnapshot, fetchReceipt, cancelMutation };
     return createSyncQueue(options);
   };
   return { storage, database, send, fetchSnapshot, fetchReceipt, cancelMutation, commit, serverSnapshot, receipts, open, queue: open() };
@@ -78,7 +79,7 @@ const category = (path: string, version: number) => ({
   body: { action: "add", path, level: "parent", kind: "expense", version },
 }) as const;
 const withCatalog = { ...snapshot, category_catalog: { items: {}, hidden: [], version: 1 } };
-const discard = (target: BlockedMutation, confirm = vi.fn(() => true)) =>
+const discard = (target: OfflineMutation, confirm = vi.fn(() => true)) =>
   ({ kind: "discard", target, confirm } as const);
 
 afterEach(() => vi.restoreAllMocks());
@@ -109,7 +110,7 @@ describe("transactional sync queue", () => {
     expect(await queue.flush({ kind: "retry", target })).toBe("blocked");
     expect(queue.blocked()?.blocked.message).toBe("still rejected");
     expect(await queue.flush(discard(target))).toBe("synced");
-    expect(cancelMutation).toHaveBeenCalledWith(target.id);
+    expect(cancelMutation).toHaveBeenCalledWith(target.id, "original");
     expect(queue.view()).toMatchObject({ count: 0, storageError: false });
   });
 
@@ -128,7 +129,7 @@ describe("transactional sync queue", () => {
     expect(panel).toMatch(/discard-sync">放弃这条修改/);
     expect(await queue.flush({ kind: "retry", target })).toBe("retryable");
     expect(await queue.flush({ kind: "discard", target, confirm: () => true })).toBe("synced");
-    expect(cancelMutation).toHaveBeenCalledWith(target.id);
+    expect(cancelMutation).toHaveBeenCalledWith(target.id, "original");
     expect(queue.view().count).toBe(0);
   });
 
@@ -160,7 +161,7 @@ describe("transactional sync queue", () => {
     expect(queue.view().memoryCount).toBe(1);
     const [target] = queue.view().items;
     expect(await queue.flush({ kind: "discard", target, confirm: () => true })).toBe("synced");
-    expect(cancelMutation).toHaveBeenCalledWith(target.id);
+    expect(cancelMutation).toHaveBeenCalledWith(target.id, "original");
     expect(queue.view()).toMatchObject({ count: 0, storageError: false });
   });
 
@@ -172,7 +173,7 @@ describe("transactional sync queue", () => {
     const confirm = vi.fn(() => { commit(target); return true; });
     expect(await queue.flush({ kind: "discard", target, confirm })).toBe("already-synced");
     expect(confirm).toHaveBeenCalledOnce();
-    expect(cancelMutation).toHaveBeenCalledWith(target.id);
+    expect(cancelMutation).toHaveBeenCalledWith(target.id, "original");
     expect(queue.view().state?.entries.map(entry => entry.id)).toEqual(["commit-first"]);
     expect(queue.view().count).toBe(0);
   });
@@ -184,7 +185,7 @@ describe("transactional sync queue", () => {
     const [target] = queue.view().items;
     send.mockImplementationOnce(async () => {
       if (!stillPresent) await (await openMutationStore(database))!.changeHead(target.id, () => null);
-      throw new RequestError("cancelled", "已放弃", 409);
+      throw new RequestError("cancelled", "已放弃", 409, undefined, "original");
     });
     expect(await queue.flush()).toBe(stillPresent ? "discarded-elsewhere" : "synced");
     expect(queue.view().count).toBe(0);
@@ -203,6 +204,74 @@ describe("transactional sync queue", () => {
     expect(await queue.flush()).toBe("synced");
     expect(queue.view().state?.entries.map(entry => entry.id).sort()).toEqual(["committed", "newer"]);
     expect(queue.view().count).toBe(0);
+  });
+
+  it("uses the restored snapshot at a lower revision and replays the whole queue without old receipt coverage", async () => {
+    const { queue, open, fetchSnapshot, serverSnapshot, commit } = setup();
+    await queue.enqueue(createEntry("replay-after-restore"));
+    await queue.enqueue(createEntry("still-pending"));
+    const items = queue.view().items;
+    commit(items[0]);
+    commit(rawEntry("removed-by-restore"));
+    const before = { ...serverSnapshot([items[0].id]), ledger_epoch: "before" };
+    fetchSnapshot.mockResolvedValueOnce(before);
+    await queue.refresh();
+
+    const after = { snapshot: { ...snapshot, entries: [entry("in-backup")] }, committed: [], revision: 0, ledger_epoch: "restored" };
+    fetchSnapshot.mockResolvedValueOnce(after);
+    await queue.refresh();
+    await queue.load(before); // A delayed snapshot from another tab.
+    const reloaded = open();
+    await reloaded.load(before);
+    for (const tab of [queue, reloaded]) {
+      expect(tab.view().snapshot?.entries.map(entry => entry.id)).toEqual(["in-backup"]);
+      expect(tab.view().items).toEqual(items);
+      expect(tab.view().state?.entries.map(entry => entry.id).sort()).toEqual(["in-backup", "replay-after-restore", "still-pending"]);
+    }
+  });
+
+  it("keeps a queued change when a pre-restore receipt arrives after the restored snapshot", async () => {
+    const { queue, fetchSnapshot, fetchReceipt, serverSnapshot, commit } = setup(snapshot, new IDBFactory(), "before");
+    await queue.enqueue(createEntry("keep-queued"));
+    const [head] = queue.view().items;
+    commit(head);
+    const oldReceipt = { committed: true, result: null, ledger_epoch: "before" };
+    const before = { ...serverSnapshot([head.id]), ledger_epoch: "before" };
+    fetchSnapshot.mockResolvedValueOnce(before);
+    await queue.refresh();
+
+    const after = { snapshot, committed: [], revision: 0, ledger_epoch: "restored" };
+    fetchReceipt.mockImplementationOnce(async () => {
+      fetchSnapshot.mockResolvedValueOnce(after);
+      await queue.refresh();
+      return oldReceipt;
+    });
+    fetchSnapshot.mockResolvedValue(before);
+    const confirm = vi.fn(() => true);
+    expect(await queue.flush(discard(head, confirm))).toBe("receipt-unavailable");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(queue.view().items).toEqual([head]);
+  });
+
+  it.each([false, true])("keeps a queued change when an old send returns after restore (cancelled: %s)", async cancelled => {
+    const { queue, send, fetchSnapshot, serverSnapshot, commit } = setup(snapshot, new IDBFactory(), "before");
+    await queue.enqueue(createEntry("keep-queued"));
+    const [head] = queue.view().items;
+    commit(rawEntry("lost-in-restore"));
+    await queue.refresh();
+
+    const after = { snapshot, committed: [], revision: 0, ledger_epoch: "restored" };
+    send.mockImplementationOnce(async () => {
+      await queue.refresh();
+      // The old server returned this snapshot before the restore, but its reply arrives late.
+      fetchSnapshot.mockImplementationOnce(async () => serverSnapshot([head.id]));
+      if (cancelled) throw new RequestError("cancelled", "已放弃", 409, undefined, "before");
+    });
+    fetchSnapshot.mockResolvedValue(after);
+    expect(await queue.flush()).toBe("retryable");
+    expect(queue.view().items).toEqual([head]);
+    expect(queue.view().snapshot?.entries).toEqual([]);
+    expect(queue.view().state?.entries.map(entry => entry.id)).toEqual(["keep-queued"]);
   });
 
   it.each([408, 429])("attempts a blocked head once on startup after HTTP %i with Retry-After", async status => {
@@ -399,7 +468,7 @@ describe("transactional sync queue", () => {
     let entered!: () => void;
     const checking = new Promise<void>(resolve => { entered = resolve; });
     fetchReceipt.mockImplementationOnce(() => new Promise(resolve => {
-      reply = () => resolve({ committed: false, result: null });
+      reply = () => resolve({ committed: false, result: null, ledger_epoch: "original" });
       entered();
     }));
 

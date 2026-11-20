@@ -15,8 +15,9 @@ export type QueueAction =
   | { kind: "retry"; target: OfflineMutation }
   | { kind: "discard"; target: OfflineMutation; confirm: (snapshot: State) => boolean }
   | { kind: "edit"; target: BlockedMutation; change: NewMutation };
-export type SyncSnapshot = { snapshot: State; committed: string[]; revision: number };
-export type ReceiptStatus = { committed: boolean; result: unknown };
+export type LedgerEpoch = { ledger_epoch: string };
+export type SyncSnapshot = LedgerEpoch & { snapshot: State; committed: string[]; revision: number };
+export type ReceiptStatus = LedgerEpoch & { committed: boolean; result: unknown };
 type FlushResult = "idle" | "synced" | "blocked" | "retryable" | "unauthorized" | "changed" | "in-flight" |
   "already-synced" | "discarded-elsewhere" | "cancelled" | "no-snapshot" | "receipt-unavailable" | "storage-full" |
   { wait: "retry" | "sending"; until: number };
@@ -32,10 +33,10 @@ export function createSyncQueue({
   storage: Storage;
   database?: IDBFactory;
   locks?: LockManager;
-  send: (item: OfflineMutation) => Promise<unknown>;
+  send: (item: OfflineMutation) => Promise<LedgerEpoch>;
   fetchSnapshot: (ids: string[]) => Promise<SyncSnapshot>;
   fetchReceipt: (id: string) => Promise<ReceiptStatus>;
-  cancelMutation: (id: string) => Promise<ReceiptStatus>;
+  cancelMutation: (id: string, epoch: string) => Promise<ReceiptStatus>;
   onStoredChange?: (uncachedSnapshot?: SyncSnapshot) => void;
 }) {
   let fallback = false;
@@ -48,6 +49,7 @@ export function createSyncQueue({
   let memory: QueueRecord[] = [];
   let sendingMemory = false;
   let cache: SyncSnapshot | null = null;
+  const retiredEpochs = new Set<string>();
   let cachedRaw: string | null = null;
   let revision = 0;
   let memoryWrites = Promise.resolve();
@@ -60,11 +62,17 @@ export function createSyncQueue({
   }
 
   function takeSnapshot(saved: SyncSnapshot) {
-    if (!cache || !Number.isSafeInteger(cache.revision)) {
+    if (!saved.ledger_epoch) {
+      // A cache from before epochs is useful offline, but its receipts have no history identity.
+      if (!cache) cache = { ...saved, committed: [] };
+      return;
+    }
+    if (!Number.isSafeInteger(saved.revision) || retiredEpochs.has(saved.ledger_epoch)) return;
+    if (saved.ledger_epoch !== cache?.ledger_epoch) {
+      if (cache?.ledger_epoch) retiredEpochs.add(cache.ledger_epoch);
       cache = saved;
       return;
     }
-    if (!Number.isSafeInteger(saved.revision)) return;
     // A receipt observed at an earlier revision is still reflected at every later revision.
     const latest = saved.revision >= cache.revision ? saved : cache;
     const committed = new Set([...cache.committed, ...saved.committed]);
@@ -80,7 +88,6 @@ export function createSyncQueue({
   }
 
   function writeCache(saved: SyncSnapshot, covered: Set<string>) {
-    readCache();
     takeSnapshot(saved);
     cache = { ...cache!, committed: cache!.committed.filter(id => covered.has(id)) };
     try {
@@ -127,7 +134,10 @@ export function createSyncQueue({
 
   async function load(uncachedSnapshot?: SyncSnapshot) {
     const number = ++loadNumber;
-    if (uncachedSnapshot) takeSnapshot(uncachedSnapshot);
+    readCache();
+    // A delayed quota fallback broadcast must not replace a persisted epoch.
+    if (uncachedSnapshot && (!cachedRaw || uncachedSnapshot.ledger_epoch === cache?.ledger_epoch))
+      takeSnapshot(uncachedSnapshot);
     while (number === loadNumber) {
       readCache();
       const snapshot = cache;
@@ -204,10 +214,12 @@ export function createSyncQueue({
 
   // The server reads receipts and the ledger together. A change that appeared while
   // the request was running may already be in that snapshot, especially from a v1 tab.
-  async function fetchCoveredSnapshot(claim?: { id: string; attempt?: string }) {
+  async function fetchAndCacheSnapshot(claim?: { id: string; attempt?: string }) {
     for (let request = 0; request < 2; request += 1) {
       const ids = new Set((await readRecords()).map(record => record.item.id));
       const requested = claim ? new Set([...ids, claim.id]) : ids;
+      readCache();
+      const startedIn = cache?.ledger_epoch;
       const saved = await fetchSnapshot([...requested]);
       const current = await readRecords();
       const unchanged = current.filter(record => ids.has(record.item.id)).length === ids.size;
@@ -216,8 +228,14 @@ export function createSyncQueue({
       const holdingHead = claim && current[0]?.item.id === claim.id &&
         (claim.attempt === undefined || current[0]?.attempt === claim.attempt);
       const covered = current.every(record => ids.has(record.item.id) || (holdingHead && !record.legacy));
-      if (Number.isSafeInteger(saved.revision) && unchanged && covered && (!claim || saved.committed.includes(claim.id)))
-        return { saved, requested };
+      readCache();
+      const currentEpoch = cache?.ledger_epoch;
+      // Retry if another refresh changed the history while this request was in flight.
+      if (!saved.ledger_epoch || !Number.isSafeInteger(saved.revision) || retiredEpochs.has(saved.ledger_epoch) ||
+        (currentEpoch !== startedIn && currentEpoch !== saved.ledger_epoch) || !unchanged || !covered) continue;
+      const uncached = writeCache(saved, requested);
+      if (uncached) onStoredChange(uncached);
+      return cache!;
     }
     throw new RequestError("unavailable", "同步期间账本仍在变化，请稍后重试。");
   }
@@ -225,9 +243,7 @@ export function createSyncQueue({
   async function refresh() {
     await importLegacy();
     await load();
-    const { saved, requested } = await fetchCoveredSnapshot();
-    const uncached = writeCache(saved, requested);
-    if (uncached) onStoredChange(uncached);
+    await fetchAndCacheSnapshot();
     await load();
     return cache!.snapshot;
   }
@@ -319,13 +335,24 @@ export function createSyncQueue({
       };
       try {
         if (recovery) {
-          const receipt = await fetchReceipt(id);
-          accepted = receipt.committed;
-          if (!accepted && recovery.kind === "discard") {
-            if (!recovery.confirm(cache!.snapshot)) return "cancelled";
-            accepted = (await cancelMutation(id)).committed;
+          const expectedEpoch = cache?.ledger_epoch;
+          let receipt = await fetchReceipt(id);
+          readCache();
+          if (!expectedEpoch || receipt.ledger_epoch !== expectedEpoch || cache?.ledger_epoch !== expectedEpoch) {
+            const confirmed = await fetchAndCacheSnapshot({ id, attempt });
+            if (expectedEpoch || confirmed.ledger_epoch !== receipt.ledger_epoch) return "receipt-unavailable";
           }
-          if (!accepted) {
+          const epoch = receipt.ledger_epoch;
+          if (!receipt.committed && recovery.kind === "discard") {
+            if (!recovery.confirm(cache!.snapshot)) return "cancelled";
+            receipt = await cancelMutation(id, epoch);
+          }
+          if (receipt.committed || recovery.kind === "discard") {
+            const confirmed = await fetchAndCacheSnapshot({ id, attempt });
+            if (receipt.ledger_epoch !== epoch || confirmed.ledger_epoch !== epoch ||
+              (receipt.committed && !confirmed.committed.includes(id))) return "receipt-unavailable";
+          }
+          if (!receipt.committed) {
             const changed = await finish(current => {
               if (recovery.kind === "discard") return null;
               if (attempt && Date.now() >= now + inFlightTimeout) return undefined;
@@ -340,15 +367,28 @@ export function createSyncQueue({
             continue;
           }
         } else {
-          await send(head.item);
+          let sent: { ledger_epoch?: string; cancelled?: true };
+          try { sent = await send(head.item); }
+          catch (error) {
+            if (!(error instanceof RequestError) || error.kind !== "cancelled") throw error;
+            sent = { ledger_epoch: error.ledgerEpoch, cancelled: true };
+          }
           accepted = true;
+          const confirmed = await fetchAndCacheSnapshot({ id, attempt });
+          if (confirmed.ledger_epoch !== sent.ledger_epoch) return "retryable";
+          if (sent.cancelled) {
+            const removed = await finish(() => null);
+            released = true;
+            if (removed) onStoredChange();
+            await saveMemory();
+            return removed ? "discarded-elsewhere" : "synced";
+          }
+          if (!confirmed.committed.includes(id)) return "retryable";
         }
-        const { saved, requested } = await fetchCoveredSnapshot({ id, attempt });
         // Publish the confirmed server snapshot before removing the matching local change.
-        const uncached = writeCache(saved, requested);
         const acknowledged = await finish(() => null);
         released = true;
-        onStoredChange(uncached);
+        onStoredChange();
         if (!acknowledged) return recovery ? "already-synced" : "changed";
         await saveMemory();
         synced = true;
@@ -358,15 +398,14 @@ export function createSyncQueue({
         if (isQuota(error) && recovery) throw new Error("本机空间不足，原修改仍在待同步列表，请释放空间后重试。");
         if (!(error instanceof RequestError)) throw error;
         if (error.kind === "unauthorized") return "unauthorized";
-        if (accepted && recovery) return "already-synced";
-        if (recovery) return "receipt-unavailable";
-        if (error.kind === "cancelled" && !accepted) {
-          const removed = await finish(() => null);
-          released = true;
-          if (removed) onStoredChange();
-          await saveMemory();
-          return removed ? "discarded-elsewhere" : "synced";
+        if (recovery && error.ledgerEpoch && error.ledgerEpoch !== cache?.ledger_epoch) {
+          try { await fetchAndCacheSnapshot({ id, attempt }); }
+          catch (refreshError) {
+            if (refreshError instanceof RequestError && refreshError.kind === "unauthorized") return "unauthorized";
+            if (!(refreshError instanceof RequestError)) throw refreshError;
+          }
         }
+        if (recovery) return "receipt-unavailable";
         if (error.kind === "rejected" && !accepted) {
           const blocked = { status: error.status!, message: error.message, at: Date.now() };
           if (await finish(current => ready(current, blocked))) onStoredChange();

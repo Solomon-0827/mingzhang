@@ -2,12 +2,13 @@ import argparse
 import fcntl
 import getpass
 import os
-import shutil
 import sqlite3
+import tempfile
+from contextlib import closing
 from pathlib import Path
 
 from backend.auth import hash_password, verify_password
-from backend.db import backup, connect, db_path, initialize
+from backend.db import backup, connect, db_path, initialize, reset_restored_history
 
 parser = argparse.ArgumentParser()
 parser.add_argument("command", choices=["init", "password", "backup", "restore"])
@@ -65,17 +66,20 @@ else:
     target = db_path().resolve()
     if source == target:
         raise SystemExit("源文件不能等于当前数据库")
-    with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as db:
-        assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        for table in ["settings", "accounts", "entries", "imports", "audit", "sessions"]:
-            db.execute(f"SELECT 1 FROM {table} LIMIT 1")
-    if target.exists():
-        backup(str(target) + ".before-restore")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
-    for suffix in ["-wal", "-shm"]:
-        Path(str(target) + suffix).unlink(missing_ok=True)
-    with sqlite3.connect(target) as db:
-        db.execute("DELETE FROM sessions")
-    os.chmod(target, 0o600)
+    with tempfile.TemporaryDirectory(dir=target.parent) as directory:
+        staged = Path(directory) / target.name
+        with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as db, closing(sqlite3.connect(staged)) as out:
+            db.backup(out)
+        with closing(sqlite3.connect(staged)) as db:
+            db.execute("PRAGMA journal_mode=DELETE")
+            assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            for table in ["settings", "accounts", "entries", "imports", "audit", "sessions"]:
+                db.execute(f"SELECT 1 FROM {table} LIMIT 1")
+            previous = backup(str(target) + ".before-restore") if target.exists() else None
+            with db:
+                reset_restored_history(db, previous)
+        os.chmod(staged, 0o600)
+        for suffix in ["-wal", "-shm"]:
+            Path(str(target) + suffix).unlink(missing_ok=True)
+        staged.replace(target)
     print("恢复完成，旧账本保存在 .before-restore 文件；请重新登录。")

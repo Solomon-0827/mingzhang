@@ -46,7 +46,7 @@ import "./style.css";
 import "./paper-theme.css";
 import { OrderSettings } from "./order-settings";
 import type { OfflineMutation } from "./offline-mutations";
-import { createSyncQueue, type BlockedMutation, type QueueAction, type ReceiptStatus, type SyncSnapshot } from "./sync-queue";
+import { createSyncQueue, type BlockedMutation, type LedgerEpoch, type QueueAction, type ReceiptStatus, type SyncSnapshot } from "./sync-queue";
 import { isQueueStorageKey, queueSignalKey } from "./mutation-store";
 import { BlockedSyncDetails, EntryRecoveryComparison, describeBlocked, entryRecoveryChange, prepareEntryRecovery, rebaseChange, recoverySettings } from "./blocked-sync";
 
@@ -55,10 +55,10 @@ const syncQueue = createSyncQueue({
   storage: localStorage,
   database: window.indexedDB,
   locks: navigator.locks,
-  send: item => api(item.path, item.body, item.method, item.id),
+  send: item => api<LedgerEpoch>(item.path, item.body, item.method, item.id),
   fetchSnapshot: mutation_ids => api<SyncSnapshot>("/sync-state", { mutation_ids }),
   fetchReceipt: id => api<ReceiptStatus>(`/mutation-receipts/${encodeURIComponent(id)}`),
-  cancelMutation: id => api<ReceiptStatus>(`/mutation-receipts/${encodeURIComponent(id)}/cancel`, {}),
+  cancelMutation: (id, ledger_epoch) => api<ReceiptStatus>(`/mutation-receipts/${encodeURIComponent(id)}/cancel`, { ledger_epoch }),
   onStoredChange: snapshot => {
     try {
       if (queueChannel) queueChannel.postMessage(snapshot ?? null);
@@ -481,8 +481,8 @@ function App() {
       checkTail = result === "idle" || result === "synced" || result === "changed" ||
         result === "already-synced" || result === "discarded-elsewhere" || result === "cancelled";
       if (result === "in-flight") throw new Error("另一窗口正在同步这条修改，请等本次同步结束。");
-      if (result === "no-snapshot" || result === "receipt-unavailable") throw new Error(
-        action?.kind === "discard" ? "联网后才能放弃这条修改" : "暂时无法核对同步状态，请联网后重试。");
+      if (result === "no-snapshot") throw new Error("联网后才能放弃这条修改");
+      if (result === "receipt-unavailable") throw new Error("暂时无法核对同步状态，请刷新后重试。");
       if (result === "already-synced") setNotice("这条修改已同步到服务器。");
       if (result === "discarded-elsewhere") setNotice("这条修改已在其他窗口放弃。");
       if (result === "changed" && action && !startup) throw new Error("这条修改已在其他窗口处理，请查看当前待处理内容。");

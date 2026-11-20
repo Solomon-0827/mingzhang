@@ -117,7 +117,8 @@ export function cents(value: string) {
 export type RequestFailure = "network" | "timeout" | "unavailable" | "unauthorized" | "rejected" | "cancelled";
 
 export class RequestError extends Error {
-  constructor(readonly kind: RequestFailure, message: string, readonly status?: number, readonly retryAfterMs?: number) {
+  constructor(readonly kind: RequestFailure, message: string, readonly status?: number, readonly retryAfterMs?: number,
+    readonly ledgerEpoch?: string) {
     super(message);
     this.name = "RequestError";
   }
@@ -170,8 +171,9 @@ export async function api<T>(
     const failure = await response.json().catch(() => undefined);
     const detail = failure?.detail;
     const status = response.status;
+    const epoch = typeof failure?.ledger_epoch === "string" ? failure.ledger_epoch : undefined;
     if (status === 409 && failure?.code === "mutation_cancelled")
-      throw new RequestError("cancelled", "这条修改已被放弃", status);
+      throw new RequestError("cancelled", "这条修改已被放弃", status, undefined, epoch);
     if (status === 408 || status === 429)
       throw new RequestError(status === 408 ? "timeout" : "unavailable",
         typeof detail === "string" ? detail : "服务暂时不可用", status, retryAfter(response.headers.get("Retry-After")));
@@ -181,7 +183,7 @@ export async function api<T>(
       : Array.isArray(detail) ? detail.map(item => [Array.isArray(item?.loc) ? item.loc.slice(1).join(".") : "", item?.msg]
         .filter(Boolean).join("：")).filter(Boolean).join("；")
       : "请检查必填项、金额和日期";
-    throw new RequestError("rejected", message || "请检查必填项、金额和日期", status);
+    throw new RequestError("rejected", message || "请检查必填项、金额和日期", status, undefined, epoch);
   }
   return response.json().catch((error: unknown) => { throw connectionFailure(error); });
 }
