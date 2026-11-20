@@ -73,7 +73,7 @@ def test_restore_starts_a_new_epoch_and_revalidates_queued_changes(tmp_path, mon
     included, later, cancelled, cancelled_later = [str(uuid4()) for _ in range(4)]
 
     def sync(client):
-        return client.post("/api/sync-state", json={"mutation_ids": [included, later]}).json()
+        return client.post("/api/sync-state", json={"mutation_ids": [included, later, cancelled, cancelled_later]}).json()
 
     def cancel(client, mutation_id):
         return client.post(f"/api/mutation-receipts/{mutation_id}/cancel").json()
@@ -102,7 +102,7 @@ def test_restore_starts_a_new_epoch_and_revalidates_queued_changes(tmp_path, mon
         assert old["ledger_epoch"] == before["ledger_epoch"] == included_result.json()["ledger_epoch"]
         assert after["ledger_epoch"] != before["ledger_epoch"]
         assert client.get("/api/state").json()["ledger_epoch"] == after["ledger_epoch"]
-        assert after["committed"] == []
+        assert after["committed"] == [included]
         assert [row["id"] for row in after["snapshot"]["accounts"]] == [included]
         for historical_id in [included, cancelled, cancelled_later]:
             receipt = client.get(f"/api/mutation-receipts/{historical_id}").json()
@@ -114,7 +114,7 @@ def test_restore_starts_a_new_epoch_and_revalidates_queued_changes(tmp_path, mon
         assert stale_cancel.status_code == 409
         assert stale_cancel.json()["ledger_epoch"] == after["ledger_epoch"]
         assert save(client, "After backup", later).status_code == 200
-        assert sync(client)["committed"] == [later]
+        assert set(sync(client)["committed"]) == {included, later}
         assert cancel(client, included)["ledger_epoch"] == after["ledger_epoch"]
         assert save(client, "Needs review", included).json()["code"] == "mutation_cancelled"
 

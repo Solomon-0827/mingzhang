@@ -201,13 +201,12 @@ function App() {
   const [lastSync, setLastSync] = useState(""),
     [online, setOnline] = useState(navigator.onLine);
   const [queueView, setQueueView] = useState(syncQueue.view);
-  const { count: pendingCount, blocked, snapshot: serverSnapshot, storageError, statusUnsaved, memoryCount, fallback } = queueView;
+  const { count: pendingCount, blocked, snapshot: serverSnapshot, storageError, statusUnsaved, memoryCount, fallback, headSending } = queueView;
   const [showBlocked, setShowBlocked] = useState(false);
   const [blockedEditor, setBlockedEditor] = useState<{ target: BlockedMutation } & ReturnType<typeof prepareEntryRecovery> | null>(null);
   const loginEpoch = useRef(0);
   const [settingsRecovery, setSettingsRecovery] = useState<{ id: string; section: "accounts" | "categories" } | null>(null);
   const latestSettings = settingsRecovery?.id === blocked?.id ? settingsRecovery : null;
-  const startupAttempted = useRef(false);
   useEffect(() => { if (!pendingCount) setShowBlocked(false); }, [pendingCount]);
   useEffect(() => {
     if (!memoryCount) return;
@@ -317,7 +316,6 @@ function App() {
   useEffect(() => syncQueue.subscribe(readQueue), [readQueue]);
   const closeSession = useCallback(() => {
     loginEpoch.current += 1;
-    startupAttempted.current = false;
     setBlockedEditor(null);
     setShowBlocked(false);
     setSettingsRecovery(null);
@@ -469,34 +467,34 @@ function App() {
     if (pendingRetry.current !== null) window.clearTimeout(pendingRetry.current);
     pendingRetry.current = null;
   }, []);
-  const flushPendingMutations = useCallback(async function flush(action?: QueueAction, startup = false) {
-    if (!action && (pendingFlush.current || pendingRetry.current !== null)) return;
+  const flushPendingMutations = useCallback(async function flush(action?: QueueAction) {
+    if (!action && (!logged || !navigator.onLine || pendingFlush.current || pendingRetry.current !== null)) return;
     if (action) cancelPendingRetry();
     pendingFlush.current += 1;
     const epoch = loginEpoch.current;
     let checkTail = false;
     try {
-      const result = await syncQueue.flush(action, startup);
+      const result = await syncQueue.flush(action, () => navigator.onLine && epoch === loginEpoch.current);
       if (epoch !== loginEpoch.current) return;
       checkTail = result === "idle" || result === "synced" || result === "changed" ||
         result === "already-synced" || result === "discarded-elsewhere" || result === "cancelled";
-      if (result === "in-flight") throw new Error("另一窗口正在同步这条修改，请等本次同步结束。");
+      if (result === "in-flight") throw new Error("这条修改正在同步，请等本次同步结束。");
       if (result === "no-snapshot") throw new Error("联网后才能放弃这条修改");
       if (result === "receipt-unavailable") throw new Error("暂时无法核对同步状态，请刷新后重试。");
       if (result === "already-synced") setNotice("这条修改已同步到服务器。");
       if (result === "discarded-elsewhere") setNotice("这条修改已在其他窗口放弃。");
-      if (result === "changed" && action && !startup) throw new Error("这条修改已在其他窗口处理，请查看当前待处理内容。");
+      if (result === "changed" && action) throw new Error("这条修改已在其他窗口处理，请查看当前待处理内容。");
       if (result === "retryable" || typeof result === "object") {
         const needsManualRetry = Boolean(syncQueue.blocked());
         const wait = typeof result === "object" ? result : null;
         if (wait?.wait !== "sending")
           setError(needsManualRetry ? "暂时无法同步，修改仍在本机，请稍后重试。" : "暂时无法同步，稍后会自动重试。");
-        if (!needsManualRetry) {
+        if (!needsManualRetry || (!action && wait?.wait === "sending")) {
           cancelPendingRetry();
           const delay = wait ? Math.max(0, wait.until - Date.now()) : retryDelay.current;
           pendingRetry.current = window.setTimeout(() => {
             pendingRetry.current = null;
-            void flush().catch(e => setError(e.message));
+            if (epoch === loginEpoch.current) void flush().catch(e => setError(e.message));
           }, Math.min(delay, 2_147_483_647));
           if (!wait) retryDelay.current = Math.min(retryDelay.current * 2, 60000);
         }
@@ -511,19 +509,17 @@ function App() {
       if (checkTail && navigator.onLine && syncQueue.hasReadyHead())
         void flush().catch(e => setError(e.message));
     }
-  }, [cancelPendingRetry, requireLogin, clearConnectionError, scheduleRefresh, setError, setNotice]);
+  }, [logged, cancelPendingRetry, requireLogin, clearConnectionError, scheduleRefresh, setError, setNotice]);
   useEffect(() => {
     if (!logged || !online) return;
     cancelPendingRetry();
-    const startup = !startupAttempted.current;
-    startupAttempted.current = true;
-    void flushPendingMutations(undefined, startup)
-      .catch(e => setError(e.message));
+    void flushPendingMutations().catch(e => setError(e.message));
   }, [logged, online, cancelPendingRetry, flushPendingMutations, setError]);
   useEffect(() => {
-    if (!logged || !online || blocked || !pendingCount) return;
+    if (!logged || !online || !pendingCount || !syncQueue.hasReadyHead()) return;
+    if (blocked && !headSending) cancelPendingRetry();
     void flushPendingMutations().catch(e => setError(e.message));
-  }, [logged, online, blocked?.id, pendingCount, flushPendingMutations, setError]);
+  }, [logged, online, blocked?.id, headSending, pendingCount, cancelPendingRetry, flushPendingMutations, setError]);
   useEffect(() => {
     if (!logged) cancelPendingRetry();
     return cancelPendingRetry;

@@ -87,7 +87,13 @@ function writeV1(storage: Storage, items: OfflineMutation[]) {
 
 export function evictCaches(storage: Storage) {
   storage.removeItem(snapshotKey);
+  evictLegacySnapshot(storage);
+}
+
+export function evictLegacySnapshot(storage: Storage) {
+  if (storage.getItem(legacyStateKey) === null) return false;
   storage.removeItem(legacyStateKey);
+  return true;
 }
 
 export function removeImported(storage: Storage, ids: Set<string>) {

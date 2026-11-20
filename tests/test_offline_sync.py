@@ -9,7 +9,8 @@ import pytest
 
 from backend import main
 from backend.categories import CategoryChange, change_category
-from backend.db import connect
+from backend.db import connect, reset_restored_history
+from tests.conftest import PASSWORD
 
 
 @pytest.mark.parametrize("first", ["cancel", "commit"])
@@ -220,6 +221,26 @@ def test_sync_snapshot_reads_only_receipts_already_reflected_in_its_ledger(clien
     assert "observed_at" not in result
     client.post("/api/logout")
     assert client.post("/api/sync-state", json=request).status_code == 401
+
+
+def test_sync_snapshot_covers_mutations_already_in_the_restored_ledger(client):
+    included, cancelled, missing = [str(uuid4()) for _ in range(3)]
+    body = {"id": str(uuid4()), "name": "备份中的账户", "kind": "cash", "opening_cents": 100}
+    headers = {"X-Mingzhang-Mutation": included}
+    saved = client.post("/api/accounts", json=body, headers=headers)
+    assert saved.status_code == 200
+    assert client.post(f"/api/mutation-receipts/{cancelled}/cancel").status_code == 200
+    with connect() as db:
+        reset_restored_history(db, None)
+    assert client.post("/api/login", json={"password": PASSWORD}).status_code == 200
+
+    response = client.post("/api/sync-state", json={"mutation_ids": [included, cancelled, included, missing]})
+    assert response.status_code == 200
+    result = response.json()
+    assert result["ledger_epoch"] != saved.json()["ledger_epoch"]
+    assert result["committed"] == [included]
+    assert [account["id"] for account in result["snapshot"]["accounts"]] == [body["id"]]
+    assert client.post("/api/accounts", json=body, headers=headers).status_code == 409
 
 
 def test_balance_adjustment_uses_client_entry_id(client):
