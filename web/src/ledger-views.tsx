@@ -7,11 +7,12 @@ import {
   accountLabels,
   labels,
   money,
+  ordered,
   today,
   cents,
 } from "./types";
 import { EntryField } from "./entry-field";
-import { StyledSelect, StyledDate, CategoryMultiSelect } from "./controls";
+import { AccountSelect, CategorySelect, StyledSelect, StyledDate, CategoryMultiSelect } from "./controls";
 import { categoryAllowsKind } from "./category-groups";
 
 function totals(entries: Entry[]) {
@@ -448,13 +449,19 @@ function BulkEntryDialog({entries,state,onClose,onSave}:{entries:Entry[];state:S
   const [busy,setBusy]=useState(false), [error,setError]=useState("");
   const catalog = state.category_catalog;
   const kinds = [...new Set(entries.map(entry => entry.kind).filter(kind => kind === "income" || kind === "expense"))];
-  const categoryOptions = Array.from(new Set([
+  const categoryOptions = ordered(Array.from(new Set([
     ...Object.keys(catalog?.items || {}),
     ...state.entries.map(entry => entry.category),
   ])).filter(path => path.trim() && (!catalog || (
     !catalog.hidden.includes(path) && !catalog.retired?.includes(path)
     && kinds.every(kind => categoryAllowsKind(catalog, path, kind))
-  )));
+  ))), state.ordering?.categories);
+  const accountOptions=ordered(state.accounts.map(value=>value.id),state.ordering?.accounts)
+    .map(id=>state.accounts.find(value=>value.id===id)!)
+    .filter(Boolean);
+  const accountGroupOptions=ordered(state.account_groups.map(value=>value.id),state.ordering?.account_groups)
+    .map(id=>state.account_groups.find(value=>value.id===id)!)
+    .filter(Boolean);
   const enabled=fields.category || fields.amount || fields.account || fields.date;
   const submit=async()=>{
     if(!enabled)return;
@@ -481,18 +488,14 @@ function BulkEntryDialog({entries,state,onClose,onSave}:{entries:Entry[];state:S
       <div className="modal-head"><div><h2>批量修改账目</h2><small>已选择 {entries.length} 笔，只修改勾选的字段</small></div>
         <button className="icon-button" aria-label="关闭批量修改" onClick={onClose} disabled={busy}><X size={20}/></button></div>
       <form onSubmit={event=>{event.preventDefault();void submit();}}>
-        <label className="bulk-field"><input type="checkbox" checked={fields.category} onChange={event=>setFields({...fields,category:event.target.checked})}/><span>分类</span>
-          <StyledSelect aria-label="批量修改分类" value={category} disabled={!fields.category||busy} onChange={event=>setCategory(event.target.value)}>
-            <option value="">请选择分类</option>{categoryOptions.map(value=><option key={value} value={value}>{value}</option>)}
-          </StyledSelect></label>
-        <label className="bulk-field"><input type="checkbox" checked={fields.amount} onChange={event=>setFields({...fields,amount:event.target.checked})}/><span>金额</span>
-          <input aria-label="批量修改金额" inputMode="decimal" placeholder="元" value={amount} disabled={!fields.amount||busy} onChange={event=>setAmount(event.target.value)}/></label>
-        <label className="bulk-field"><input type="checkbox" checked={fields.account} onChange={event=>setFields({...fields,account:event.target.checked})}/><span>账户</span>
-          <StyledSelect aria-label="批量修改账户" value={account} disabled={!fields.account||busy} onChange={event=>setAccount(event.target.value)}>
-            <option value="">请选择账户</option>{state.accounts.map(value=><option key={value.id} value={value.id}>{value.name}</option>)}
-          </StyledSelect></label>
-        <label className="bulk-field"><input type="checkbox" checked={fields.date} onChange={event=>setFields({...fields,date:event.target.checked})}/><span>日期</span>
-          <StyledDate aria-label="批量修改日期" type="date" value={date} max={today()} disabled={!fields.date||busy} onChange={event=>setDate(event.target.value)}/></label>
+        <div className="bulk-field" role="group" aria-label="批量修改分类"><input type="checkbox" aria-label="启用分类修改" checked={fields.category} onChange={event=>setFields({...fields,category:event.target.checked})}/><span>分类</span>
+          <CategorySelect aria-label="批量修改分类" options={categoryOptions} value={category} disabled={!fields.category||busy} onChange={event=>setCategory(event.target.value)}/></div>
+        <div className="bulk-field" role="group" aria-label="批量修改金额"><input type="checkbox" aria-label="启用金额修改" checked={fields.amount} onChange={event=>setFields({...fields,amount:event.target.checked})}/><span>金额</span>
+          <input aria-label="批量修改金额" inputMode="decimal" placeholder="元" value={amount} disabled={!fields.amount||busy} onChange={event=>setAmount(event.target.value)}/></div>
+        <div className="bulk-field" role="group" aria-label="批量修改账户"><input type="checkbox" aria-label="启用账户修改" checked={fields.account} onChange={event=>setFields({...fields,account:event.target.checked})}/><span>账户</span>
+          <AccountSelect aria-label="批量修改账户" accounts={accountOptions} groups={accountGroupOptions} value={account} disabled={!fields.account||busy} onChange={event=>setAccount(event.target.value)}/></div>
+        <div className="bulk-field" role="group" aria-label="批量修改日期"><input type="checkbox" aria-label="启用日期修改" checked={fields.date} onChange={event=>setFields({...fields,date:event.target.checked})}/><span>日期</span>
+          <StyledDate aria-label="批量修改日期" type="date" value={date} max={today()} disabled={!fields.date||busy} onChange={event=>setDate(event.target.value)}/></div>
         {error&&<p className="error" role="alert">{error}</p>}
         <div className="modal-footer"><small>保存后会先写入本机，再在后台同步</small><button className="primary" disabled={!enabled||busy}>{busy?"正在保存…":"应用修改"}</button></div>
       </form>

@@ -530,6 +530,11 @@ function App() {
     setError("");
     void flushPendingMutations().catch(e => setError(e.message));
   }
+  async function queueMutations(values: Omit<OfflineMutation, "id" | "createdAt">[]) {
+    await syncQueue.enqueueMany(values);
+    setError("");
+    void flushPendingMutations().catch(e => setError(e.message));
+  }
   async function saveEntry(value: Entry, editing = false) {
     await queueMutation({ type: editing ? "entry.update" : "entry.create", path: editing ? `/entries/${value.id}` : "/entries",
       method: editing ? "PUT" : "POST", body: value as unknown as Record<string, unknown> });
@@ -1270,7 +1275,12 @@ function App() {
               await saveEntry(entry, true);
             }}
             onBulkSave={async entries => {
-              for (const entry of entries) await saveEntry(entry, true);
+              await queueMutations(entries.map(entry => ({
+                type: "entry.update" as const,
+                path: `/entries/${entry.id}`,
+                method: "PUT" as const,
+                body: entry as unknown as Record<string, unknown>,
+              })));
             }}
             onEdit={(entry) => {
               setEditor({ ...entry });
