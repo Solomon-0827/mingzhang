@@ -455,6 +455,15 @@ export function createSyncQueue({
     return locks.request(syncLock, () => runFlush(undefined, canRunAutomatically));
   }
 
+  async function enqueueMany(items: NewMutation[]) {
+    const createdAt = Date.now();
+    memory = [...memory, ...items.map((item, index) => ({
+      item: { ...item, id: crypto.randomUUID(), createdAt: createdAt + index },
+      status: "pending" as const,
+    }))];
+    await saveMemory();
+  }
+
   return {
     view, load, refresh, flush, blocked,
     subscribe: (listener: () => void) => {
@@ -462,10 +471,8 @@ export function createSyncQueue({
       return () => { listeners.delete(listener); };
     },
     hasReadyHead: () => Boolean((records[0] ?? memory[0]) && (startupPending || !blocked())),
-    enqueue: async (item: NewMutation) => {
-      memory = [...memory, { item: { ...item, id: crypto.randomUUID(), createdAt: Date.now() }, status: "pending" }];
-      await saveMemory();
-    },
+    enqueue: async (item: NewMutation) => enqueueMany([item]),
+    enqueueMany,
     retryStorage: async () => {
       const store = await opened;
       const head = await store.head();

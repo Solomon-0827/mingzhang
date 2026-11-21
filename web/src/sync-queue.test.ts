@@ -86,6 +86,20 @@ const discard = (target: OfflineMutation, confirm = vi.fn(() => true)) =>
 afterEach(() => vi.restoreAllMocks());
 
 describe("transactional sync queue", () => {
+  it("queues a batch together and derives all local entry updates before syncing", async () => {
+    const initial = { ...snapshot, entries: [entry("first"), entry("second")] };
+    const { queue, send } = setup(initial);
+    await queue.refresh();
+    await queue.enqueueMany([
+      { type: "entry.update", path: "/entries/first", method: "PUT", body: entry("first", 200) },
+      { type: "entry.update", path: "/entries/second", method: "PUT", body: entry("second", 300) },
+    ]);
+    expect(send).not.toHaveBeenCalled();
+    expect(queue.view().count).toBe(2);
+    expect(queue.view().state?.entries.map(item => [item.id, item.amount_cents, item.version]))
+      .toEqual([["first", 200, 2], ["second", 300, 2]]);
+  });
+
   it("sends through claim quota errors and keeps the rejection actionable through status quota errors", async () => {
     const { queue, send, cancelMutation } = setup();
     await queue.refresh();

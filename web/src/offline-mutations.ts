@@ -160,6 +160,23 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
   return state;
 }
 
-export function replayMutations(state: State, mutations: OfflineMutation[]) {
+export function applyMutations(state: State, mutations: OfflineMutation[]): State {
+  if (!mutations.length) return state;
+  if (mutations.every(mutation => mutation.type === "entry.update")) {
+    const updates = new Map(mutations.map(mutation => {
+      const entry = mutation.body as unknown as Entry;
+      return [entry.id, entry] as const;
+    }));
+    const entries = state.entries.map(item => {
+      const entry = updates.get(item.id);
+      return entry ? { ...entry, version: entry.version + 1 } : item;
+    });
+    entries.sort((a, b) => b.date.localeCompare(a.date));
+    return rebuild({ ...state, entries });
+  }
   return mutations.reduce(applyMutation, state);
+}
+
+export function replayMutations(state: State, mutations: OfflineMutation[]) {
+  return applyMutations(state, mutations);
 }
