@@ -5,10 +5,55 @@ on:
   push:
     branches: [feat/first-release]
   workflow_dispatch:
+    inputs:
+      package_desktop:
+        description: Build and publish the Mac and Windows clients
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      desktop: ${{ steps.desktop.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect desktop release changes
+        id: desktop
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FORCE_PACKAGE: ${{ inputs.package_desktop }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            changed="$FORCE_PACKAGE"
+          else
+            base="$BASE_SHA"
+            if [[ "$EVENT_NAME" == push ]]; then
+              base="$BEFORE_SHA"
+            fi
+            if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+              changed=true
+            elif git diff --quiet "$base" HEAD -- \
+              desktop/main.cjs desktop/preload.cjs desktop/updater.cjs \
+              desktop/update-mac.sh desktop/update-windows.ps1 desktop/package.mjs \
+              desktop/setup.html desktop/setup.js desktop/package.json \
+              desktop/package-lock.json desktop/icon.icns desktop/icon.ico \
+              scripts/sign-mac.py web/public/icon.png; then
+              changed=false
+            else
+              changed=true
+            fi
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "Desktop package required: $changed"
   verify:
+    needs: [changes]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +81,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if ! git diff --quiet "$BASE_SHA" HEAD -- desktop/main.cjs desktop/preload.cjs desktop/updater.cjs desktop/update-mac.sh desktop/update-windows.ps1 desktop/package.mjs desktop/setup.html desktop/setup.js desktop/package.json desktop/package-lock.json desktop/icon.icns desktop/icon.ico web/public/icon.png; then
+          if ! git diff --quiet "$BASE_SHA" HEAD -- desktop/main.cjs desktop/preload.cjs desktop/updater.cjs desktop/update-mac.sh desktop/update-windows.ps1 desktop/package.mjs desktop/setup.html desktop/setup.js desktop/package.json desktop/package-lock.json desktop/icon.icns desktop/icon.ico scripts/sign-mac.py web/public/icon.png; then
             old=$(git show "$BASE_SHA:desktop/package.json" | node -e "let s='';process.stdin.on('data',x=>s+=x).on('end',()=>console.log(JSON.parse(s).version))")
             new=$(node -p "require('./desktop/package.json').version")
             node -e "const p=v=>v.split('.').map(Number); const a=p(process.argv[1]),b=p(process.argv[2]); if (!a.some((x,i)=>x!==b[i]&&x>b[i]&&a.slice(0,i).every((y,j)=>y===b[j]))) process.exit(1)" "$new" "$old"
@@ -54,8 +99,8 @@ jobs:
           path: mingzhang.tar.gz
           retention-days: 1
   package-mac:
-    needs: [verify]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release'
+    needs: [changes, verify]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release' && needs.changes.outputs.desktop == 'true'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -72,8 +117,8 @@ jobs:
           path: desktop/out/downloads/mingzhang-mac-arm64.zip*
           retention-days: 1
   package-windows:
-    needs: [verify]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release'
+    needs: [changes, verify]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release' && needs.changes.outputs.desktop == 'true'
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
@@ -90,8 +135,16 @@ jobs:
           path: desktop/out/downloads/mingzhang-windows11-x64.zip*
           retention-days: 1
   deploy:
-    needs: [verify, package-mac, package-windows]
-    if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/first-release' && needs.verify.result == 'success' && needs.package-mac.result == 'success' && needs.package-windows.result == 'success'
+    needs: [changes, verify, package-mac, package-windows]
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/feat/first-release' &&
+      needs.verify.result == 'success' &&
+      (
+        needs.changes.outputs.desktop != 'true' ||
+        (needs.package-mac.result == 'success' && needs.package-windows.result == 'success')
+      )
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -106,6 +159,7 @@ jobs:
         with:
           name: mingzhang-${{ github.sha }}
       - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.desktop == 'true'
         with:
           pattern: mingzhang-*-${{ github.sha }}
           path: desktop-artifacts
@@ -139,6 +193,7 @@ jobs:
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes mingzhang.tar.gz "$target:mingzhang-$REVISION.tar.gz"
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "set -eu; mkdir -p releases/$REVISION; tar -xzf mingzhang-$REVISION.tar.gz -C releases/$REVISION; cd releases/$REVISION; sudo -n bash deploy/upgrade.sh $REVISION; cd; rm -f -- mingzhang-$REVISION.tar.gz; rm -rf -- releases/$REVISION"
       - name: Publish desktop clients
+        if: needs.changes.outputs.desktop == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
