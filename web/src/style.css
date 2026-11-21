@@ -1980,7 +1980,8 @@ footer {
   gap: 10px;
   margin: 12px 0;
 }
-.bulk-field > input { width: 16px; height: 16px; margin: 0; accent-color: #4d7668; }
+.bulk-field > input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #4d7668; }
+.bulk-field > input:not([type="checkbox"]) { width: 100%; min-width: 0; }
 .bulk-field .ledger-select, .bulk-field .ledger-date { width: 100%; }
 .book-search-input {
   display: flex;
