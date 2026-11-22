@@ -24,8 +24,6 @@ import {
 } from "recharts";
 import {
   Account,
-  AccountGroup,
-  CategoryCatalog,
   Entry,
   Report,
   State,
@@ -38,7 +36,7 @@ import {
 } from "./types";
 import { AccountSelect, ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
 import { categoryLeaf } from "./category-groups";
-import { allKindOptions, categoryOptions, changeEntryKind, defaultCategories, entryAccounts, entryError,
+import { allKindOptions, categoryOptions, changeEntryKind, defaultCategories, entryAccountOptions, entryError,
   entryRoles, initializeEntryDraft, kindLabel, kindOptions, referenceOptions } from "./entry-kinds";
 import { balanceTotal, emptyReport, entryMovement, outstandingEntries, periodTotals, projectReport } from "./ledger-projection";
 import { BookList, AccountWorkspace } from "./ledger-views";
@@ -401,7 +399,7 @@ function App() {
       document.getElementById("home-amount")?.focus();
       return;
     }
-    setEditor(newEntry(state.accounts[0].id));
+    setEditor(newEntry());
     setEditorMode("new");
   }, [state, page, navigate, setNotice]);
   useEffect(() => {
@@ -814,14 +812,9 @@ function App() {
               <EntryDialog
                 inline
                 onRefresh={() => refresh().then(() => setNotice("已同步最新账本")).catch((e) => setError(e.message))}
-                initial={newEntry(state.accounts[0].id)}
+                initial={newEntry()}
                 editing={false}
-                accounts={state.accounts}
-                accountGroups={state.account_groups}
-                entries={state.entries}
-                categoryOrder={state.ordering?.categories}
-                favorites={state.ordering?.favorites}
-                catalog={state.category_catalog}
+                state={state}
                 onClose={() => {}}
                 onSave={async (value) => {
                   await saveEntry(value);
@@ -1491,12 +1484,7 @@ function App() {
           recoveryQueued={blockedEditor.current ? blockedEditor.queued : undefined}
           recovering
           validationState={serverSnapshot ?? undefined}
-          accounts={state.accounts}
-          accountGroups={state.account_groups}
-          entries={state.entries}
-          categoryOrder={state.ordering?.categories}
-          favorites={state.ordering?.favorites}
-          catalog={state.category_catalog}
+          state={state}
           onClose={() => setBlockedEditor(null)}
           onSave={async value => {
             const change = entryRecoveryChange(blockedEditor.entry, Boolean(blockedEditor.current), value);
@@ -1511,12 +1499,7 @@ function App() {
           initial={editor}
           editing={editorMode === "edit"}
           copying={editorMode === "copy"}
-          accounts={state.accounts}
-          accountGroups={state.account_groups}
-          entries={state.entries}
-                categoryOrder={state.ordering?.categories}
-                favorites={state.ordering?.favorites}
-                catalog={state.category_catalog}
+          state={state}
           onClose={() => setEditor(null)}
           onSave={async (value) => {
             await saveEntry(value, editorMode === "edit");
@@ -1661,12 +1644,7 @@ function EntryDialog({
   onRefresh,
   initial,
   editing,
-  accounts,
-  accountGroups,
-  categoryOrder = [],
-  favorites = [],
-  catalog,
-  entries,
+  state,
   onClose,
   onSave,
 }: {
@@ -1678,18 +1656,14 @@ function EntryDialog({
   onRefresh?: () => void;
   initial: Entry;
   editing: boolean;
-  accounts: Account[];
-  accountGroups: AccountGroup[];
-  categoryOrder?: string[];
-  favorites?: string[];
-  catalog?: CategoryCatalog;
-  entries: Entry[];
+  state: State;
   onClose: () => void;
   onSave: (entry: Entry) => Promise<void>;
 }) {
-  const context = { accounts, entries, category_catalog: catalog, ordering: { categories: categoryOrder } };
+  const { accounts, entries, category_catalog: catalog } = state;
+  const favorites = state.ordering?.favorites ?? [];
   const newDraft = !editing && !recovering && !copying;
-  const [value, setValue] = useState(() => initializeEntryDraft(initial, context,
+  const [value, setValue] = useState(() => initializeEntryDraft(initial, state,
     copying ? "copy" : newDraft ? "new" : "edit")),
     [amount, setAmount] = useState(
       initial.amount_cents ? String(initial.amount_cents / 100) : "",
@@ -1702,7 +1676,8 @@ function EntryDialog({
   const set = <K extends keyof Entry>(key: K, v: Entry[K]) =>
     setValue((old) => ({ ...old, [key]: v }));
   const roles = entryRoles(value);
-  const options = categoryOptions(context, value);
+  const options = categoryOptions(state, value);
+  const sourceOptions = entryAccountOptions(state, value);
   useEffect(() => {
     if (!editing && !recovering && catalog && roles.category && !options.includes(value.category)) {
       setValue(old => ({ ...old, category: options[0] ?? "" }));
@@ -1740,7 +1715,7 @@ function EntryDialog({
         setError("");
         setBusy(true);
         try {
-          const current = validationState ?? context;
+          const current = validationState ?? state;
           const draft = copying ? initializeEntryDraft(value, current, "copy") : value;
           const next = { ...draft, amount_cents: cents(amount) };
           const error = entryError(next, current);
@@ -1770,7 +1745,7 @@ function EntryDialog({
             type="button"
             className={value.kind === k ? "selected" : ""}
             key={k}
-            onClick={() => setValue(changeEntryKind(value, k, context))}
+            onClick={() => setValue(changeEntryKind(value, k, state))}
           >
             {value.kind === k && <motion.span className="kind-selection" layoutId={`entry-kind-${kindMotionId}`} transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }} />}
             <span className="kind-label">{v}</span>
@@ -1809,8 +1784,8 @@ function EntryDialog({
           </span>
           <AccountSelect
             aria-label={roles.account}
-            accounts={entryAccounts(value, accounts, "account_id")}
-            groups={accountGroups}
+            accounts={sourceOptions.accounts}
+            groups={sourceOptions.accountGroups}
             value={value.account_id}
             onChange={(e) => set("account_id", e.target.value)}
           />
@@ -1819,8 +1794,8 @@ function EntryDialog({
           <label className="full">
             {roles.target.label}
             <AccountSelect required aria-label={roles.target.label}
-              accounts={entryAccounts(value, accounts, "to_account_id")}
-              groups={accountGroups}
+              accounts={entryAccountOptions(state, value, "to_account_id").accounts}
+              groups={sourceOptions.accountGroups}
               value={value.to_account_id || ""} onChange={e => set("to_account_id", e.target.value)}
               placeholder={`请选择${roles.target.label}`} />
             <small>{roles.target.hint}</small>

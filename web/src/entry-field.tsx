@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Popover } from "antd";
 import { Entry, State, cents, money, today } from "./types";
 import { AccountSelect, StyledDate, StyledSelect, CategorySelect } from "./controls";
-import { categoryOptions, changeEntryKind, entryAccounts, entryError, entryRoles, kindOptions,
+import { categoryOptions, changeEntryKind, entryAccountOptions, entryError, entryRoles, kindOptions,
   referenceOptions, type Kind } from "./entry-kinds";
 
 type Field =
@@ -77,17 +77,19 @@ export function EntryField({
     <CategorySelect options={categoryOptions(state, draft, "field")} aria-label="修改分类" value={draft.category} disabled={busy}
       onChange={e => selectField("category", e.target.value)} />
   );
-  const chooseAccount = (target: "account_id" | "to_account_id") => (
-    <AccountSelect
+  const chooseAccount = (target: "account_id" | "to_account_id") => {
+    if (!open) return null;
+    const { accounts, accountGroups } = entryAccountOptions(state, draft, target);
+    return <AccountSelect
       aria-label={`修改${accountLabel(target)}`}
-      accounts={entryAccounts(draft, state.accounts, target)}
-      groups={state.account_groups}
+      accounts={accounts}
+      groups={accountGroups}
       value={draft[target] || ""}
       disabled={busy}
       onChange={(e) => selectField(target, e.target.value)}
       placeholder={`请选择${accountLabel(target)}`}
-    />
-  );
+    />;
+  };
   return (
     <span
       className="entry-field"

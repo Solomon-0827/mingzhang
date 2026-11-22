@@ -1,4 +1,4 @@
-import { ordered, today, type Account, type CategoryCatalog, type Entry } from "./types";
+import { ordered, orderedAccountOptions, today, type Account, type CategoryCatalog, type Entry, type State } from "./types";
 import { hasLoneSurrogate, textLength, trimLedgerText } from "./validation";
 
 type Target = { label: string; kind?: string; hint: string };
@@ -51,6 +51,7 @@ type EntryContext = {
   category_catalog?: CategoryCatalog;
   ordering?: { categories: string[] };
 };
+type EntryAccountContext = Pick<State, "accounts" | "account_groups" | "ordering">;
 
 export function categoryOptions(context: EntryContext, entry: Pick<Entry, "kind" | "category">, editor: "dialog" | "field" = "dialog") {
   const { kind, category } = entry;
@@ -81,7 +82,7 @@ export function bulkCategoryOptions(context: EntryContext, selected: readonly En
   ))), context.ordering?.categories);
 }
 
-export function initializeEntryDraft(initial: Entry, context: EntryContext, mode: "new" | "copy" | "edit") {
+export function initializeEntryDraft(initial: Entry, context: EntryContext & EntryAccountContext, mode: "new" | "copy" | "edit") {
   if (mode === "edit") return initial;
   const { kind, category } = initial;
   const catalog = context.category_catalog;
@@ -93,8 +94,11 @@ export function initializeEntryDraft(initial: Entry, context: EntryContext, mode
         (!required || (trimLedgerText(category) && options.includes(category)))) return initial;
     return { ...initial, category: required ? options[0] ?? "" : "" };
   }
-  if (required && catalog && !options.includes(category)) return { ...initial, category: options[0] ?? "" };
-  return initial;
+  return {
+    ...initial,
+    account_id: initial.account_id || (entryAccountOptions(context, initial).accounts[0]?.id ?? ""),
+    category: required && catalog && !options.includes(category) ? options[0] ?? "" : category,
+  };
 }
 
 export function entryRoles(entry: Entry) {
@@ -111,19 +115,22 @@ export function entryRoles(entry: Entry) {
 
 const fundingAccount = (account: Account) => account.kind !== "receivable" && account.kind !== "liability";
 
-export function entryAccounts(entry: Entry, accounts: readonly Account[], field: "account_id" | "to_account_id") {
+export function entryAccountOptions(context: EntryAccountContext, entry?: Entry, field: "account_id" | "to_account_id" = "account_id") {
+  const { accounts, accountGroups } = orderedAccountOptions(context);
+  if (!entry) return { accounts, accountGroups };
   const { target, legacySettlement } = entryRoles(entry);
-  return accounts.filter(account => field === "account_id"
+  const eligible = accounts.filter(account => field === "account_id"
     ? (!(target?.kind || legacySettlement) || fundingAccount(account))
     : target && account.id !== entry.account_id && (!target.kind || account.kind === target.kind));
+  return { accounts: eligible, accountGroups };
 }
 
-export function changeEntryKind(entry: Entry, kind: Kind, context: EntryContext): Entry {
+export function changeEntryKind(entry: Entry, kind: Kind, context: EntryContext & EntryAccountContext): Entry {
   if (kind === entry.kind) return entry;
   const next = { ...entry, kind, to_account_id: null, reference_id: null,
     category: context.category_catalog && kindRule(kind).category
       ? categoryOptions(context, { kind, category: "" })[0] ?? "" : "" };
-  const accounts = entryAccounts(next, context.accounts, "account_id");
+  const { accounts } = entryAccountOptions(context, next);
   return accounts.some(account => account.id === next.account_id)
     ? next : { ...next, account_id: accounts[0]?.id ?? "" };
 }

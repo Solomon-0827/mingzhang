@@ -13,7 +13,7 @@ import {
 import { EntryField } from "./entry-field";
 import { AccountSelect, CategorySelect, StyledSelect, StyledDate, CategoryMultiSelect } from "./controls";
 import { accountFlows, balanceTotal, entryMovement, periodTotals } from "./ledger-projection";
-import { bulkCategoryOptions, kindLabel, kindRule, validateEntries } from "./entry-kinds";
+import { bulkCategoryOptions, entryAccountOptions, kindLabel, kindRule, validateEntries } from "./entry-kinds";
 
 function Sum({ entries }: { entries: Entry[] }) {
   const total = periodTotals(entries);
@@ -436,11 +436,7 @@ function BulkEntryDialog({entries,state,onClose,onSave}:{entries:Entry[];state:S
   const [date,setDate]=useState(today());
   const [busy,setBusy]=useState(false), [error,setError]=useState("");
   const categories = bulkCategoryOptions(state, entries);
-  const accountOptions = ordered(state.accounts.map(account => account.id), state.ordering?.accounts)
-    .map(id => state.accounts.find(account => account.id === id)!);
-  const accountGroupOptions=ordered(state.account_groups.map(value=>value.id),state.ordering?.account_groups)
-    .map(id=>state.account_groups.find(value=>value.id===id)!)
-    .filter(Boolean);
+  const { accounts: accountOptions, accountGroups: accountGroupOptions } = entryAccountOptions(state);
   const enabled=fields.category || fields.amount || fields.account || fields.date;
   const submit=async()=>{
     if(!enabled)return;
