@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import reportRanges from "../../tests/fixtures/report-date-ranges.json";
+import reportTotals from "../../tests/fixtures/report-totals.json";
 import historical from "../../tests/fixtures/ledger-projection/historical-over-settlement.json";
 import monthClose from "../../tests/fixtures/ledger-projection/month-close.json";
 import { accountFlows, accountPostings, entryMovement, outstandingEntries, periodTotals, projectLedger, projectReport } from "./ledger-projection";
@@ -50,7 +51,13 @@ it.each(reportRanges)("report range: $name", ({ start, end, status, first_day })
   else expect(() => projectReport([], start, end)).toThrow("日期范围无效");
 });
 
-it("projects refunds under the original category and fills the settlement counterparty during replay", () => {
+it.each(reportTotals)("matches the server report for $name", ({ entries: rows, day, expected }) => {
+  const entries = rows.flatMap(({ count, ...row }) => Array<Entry>(count).fill({ ...row, date: day } as Entry));
+  expect(projectReport(entries, day, day)).toEqual(expected);
+  expect(periodTotals(entries)).toEqual({ income: expected.income, expense: expected.expense, net: expected.net });
+});
+
+it("projects refunds under the original category and preserves settlement counterparties during replay", () => {
   const { accounts, entries } = load(monthClose);
   const state = { accounts, entries: entries.filter(e => e.id === "meal") } as State;
   const changes = entries.filter(e => ["refund", "account-collection"].includes(e.id)).map(entry => ({
@@ -59,6 +66,10 @@ it("projects refunds under the original category and fills the settlement counte
   } satisfies OfflineMutation));
   const replay = applyMutations(state, changes);
   expect(replay.entries.find(e => e.id === "refund")?.category).toBe("餐饮");
-  expect(replay.entries.find(e => e.id === "account-collection")?.counterparty).toBe("asset");
+  expect(replay.entries.find(e => e.id === "account-collection")?.counterparty).toBe("");
   expect(projectReport(replay.entries, "2026-02-01", "2026-02-01").categories).toEqual([["餐饮", -200]]);
+  const collection = replay.entries.find(e => e.id === "account-collection")!;
+  const edited = applyMutations(replay, [{ ...changes[0], type: "entry.update", method: "PUT",
+    body: { ...collection, counterparty: "Original counterparty" } }]);
+  expect(edited.entries.find(e => e.id === collection.id)?.counterparty).toBe("Original counterparty");
 });

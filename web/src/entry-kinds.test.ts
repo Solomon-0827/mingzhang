@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fixture from "../../tests/fixtures/entry-rules/editors.json";
-import { bulkCategoryOptions, categoryOptions, changeEntryKind, entryError, entryRoles,
+import { bulkCategoryOptions, categoryOptions, changeEntryKind, entryAccounts, entryError, entryRoles,
   initializeEntryDraft, kindOptions, validateEntries } from "./entry-kinds";
 import type { Account, Entry } from "./types";
 
@@ -55,6 +55,21 @@ it("resets links and selects an eligible funding account on a kind change", () =
   const changed = changeEntryKind(previous, "collect", state);
   expect(changed).toMatchObject({ kind: "collect", account_id: "cash", to_account_id: null, reference_id: null, category: "" });
   expect(entryRoles(changed)).toMatchObject({ account: "收款账户", target: { label: "债权账户" } });
+});
+
+it("lets a transfer select its current destination as the new source before swapping", () => {
+  const accounts = state.accounts.slice(0, 2);
+  const transfer = draft({ kind: "transfer", to_account_id: "bank" });
+  expect(entryAccounts(transfer, accounts, "account_id").map(account => account.id)).toEqual(["cash", "bank"]);
+  const halfway = { ...transfer, account_id: "bank" };
+  expect(entryError(halfway, state)).toBe("转账需要两个不同的账户");
+  expect(entryAccounts(halfway, accounts, "to_account_id").map(account => account.id)).toEqual(["cash"]);
+  expect(entryError({ ...halfway, to_account_id: "cash" }, state)).toBeUndefined();
+});
+
+it.each([["repay", "borrowed"], ["collect", "lent"]])("limits legacy %s funding accounts", (kind, reference_id) => {
+  const entry = draft({ kind, reference_id });
+  expect(entryAccounts(entry, state.accounts, "account_id").map(account => account.id)).toEqual(["cash", "bank"]);
 });
 
 it.each(["transfer", "balance_in", "balance_out"])("preserves the imported category when copying or editing %s", kind => {

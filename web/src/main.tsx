@@ -27,6 +27,7 @@ import {
   AccountGroup,
   CategoryCatalog,
   Entry,
+  Report,
   State,
   accountLabels,
   api,
@@ -132,7 +133,8 @@ function App() {
       today().slice(0, 4) + "-01-01",
     ),
     [customEnd, setCustomEnd] = useState(today());
-  const [curve, setCurve] = useState("daily");
+  const [serverReport, setServerReport] = useState<Report>(emptyReport),
+    [curve, setCurve] = useState("daily");
   const [visibleCurves, setVisibleCurves] = useState({income:true, expense:true, cumulative:true});
   const [query, setQuery] = useState(""),
     [type, setType] = useState(""),
@@ -250,12 +252,13 @@ function App() {
   }, [anchor, period, customStart, customEnd]);
   const { report, reportError } = useMemo(() => {
     if (page !== "reports" || !state) return { report: emptyReport };
+    if (online && !pendingCount) return { report: serverReport };
     try {
       return { report: projectReport(state.entries, range[0], range[1]) };
     } catch (error) {
       return { report: emptyReport, reportError: (error as Error).message };
     }
-  }, [page, state?.entries, range]);
+  }, [page, state?.entries, range, pendingCount, online, serverReport]);
   useEffect(() => { if (reportError) setError(reportError); }, [reportError, setError]);
   useEffect(() => {
     if (pendingScrollRestore.current === null) return;
@@ -297,13 +300,20 @@ function App() {
     }
   }, [requireLogin, clearConnectionError]);
   useEffect(() => {
-    if (page !== "reports" || !logged || !online) return;
+    if (page !== "reports" || !logged || !online || pendingCount) return;
     let active = true;
-    void refresh().catch(error => {
-      if (active && !isUnauthorized(error)) setError(error.message);
-    });
+    const epoch = loginEpoch.current;
+    api<Report>(`/report?start=${range[0]}&end=${range[1]}`)
+      .then(value => {
+        if (active && epoch === loginEpoch.current) setServerReport(value);
+      })
+      .catch(error => {
+        if (!active || epoch !== loginEpoch.current) return;
+        if (isUnauthorized(error)) requireLogin();
+        else setError(error.message);
+      });
     return () => { active = false; };
-  }, [page, range, logged, online, refresh, setError]);
+  }, [page, range, logged, online, pendingCount, state, requireLogin, setError]);
   const scheduleRefresh = useCallback(() => {
     if (backgroundRefresh.current !== null)
       window.clearTimeout(backgroundRefresh.current);
@@ -479,6 +489,15 @@ function App() {
   async function saveEntry(value: Entry, editing = false) {
     await queueMutation({ type: editing ? "entry.update" : "entry.create", path: editing ? `/entries/${value.id}` : "/entries",
       method: editing ? "PUT" : "POST", body: value as unknown as Record<string, unknown> });
+  }
+  async function restoreEntry(entry: Entry) {
+    if (!state) return;
+    if (entry.kind === "refund") {
+      const error = entryError(entry, state);
+      if (error) throw new Error(error);
+    }
+    await queueMutation({ type: "entry.restore", path: `/entries/${entry.id}/restore`,
+      method: "POST", body: { version: entry.version } });
   }
   async function openBlockedEditor(target: BlockedMutation) {
     const epoch = loginEpoch.current;
@@ -1346,9 +1365,7 @@ function App() {
                               <div className="row-actions">
                                 {page === "transactions" && trash ? (
                                   <button aria-label="恢复交易" title="恢复交易"
-                                    onClick={() =>
-                                      void queueMutation({type:"entry.restore",path:`/entries/${x.id}/restore`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
-                                    }
+                                    onClick={() => void restoreEntry(x).catch(e => setError(e.message))}
                                   ><RotateCcw size={18} aria-hidden="true" /></button>
                                 ) : (
                                   <>
@@ -1694,10 +1711,10 @@ function EntryDialog({
   const roles = entryRoles(value);
   const options = categoryOptions(context, value);
   useEffect(() => {
-    if (newDraft && catalog && roles.category && !options.includes(value.category)) {
+    if (!editing && !recovering && catalog && roles.category && !options.includes(value.category)) {
       setValue(old => ({ ...old, category: options[0] ?? "" }));
     }
-  }, [catalog, value.kind, value.category, newDraft]);
+  }, [catalog, value.kind, value.category, editing, recovering]);
   const amountField = (
       <label className="amount-input">
         金额（人民币）
@@ -1730,8 +1747,10 @@ function EntryDialog({
         setError("");
         setBusy(true);
         try {
-          const next = { ...value, amount_cents: cents(amount) };
-          const error = entryError(next, validationState ?? context);
+          const current = validationState ?? context;
+          const draft = copying ? initializeEntryDraft(value, current, "copy") : value;
+          const next = { ...draft, amount_cents: cents(amount) };
+          const error = entryError(next, current);
           if (error) throw new Error(error);
           await onSave(next);
           if (inline) {

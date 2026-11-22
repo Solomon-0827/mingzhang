@@ -27,6 +27,18 @@ def test_projection(path):
 
 
 REPORT_RANGES = json.loads(Path(__file__).with_name("fixtures").joinpath("report-date-ranges.json").read_text())
+REPORT_TOTALS = json.loads(Path(__file__).with_name("fixtures").joinpath("report-totals.json").read_text())
+
+
+@pytest.mark.parametrize("case", REPORT_TOTALS, ids=lambda case: case["name"])
+def test_report_totals(case):
+    day = date.fromisoformat(case["day"])
+    entries = [
+        dict(date=case["day"], deleted=0, **{key: value for key, value in row.items() if key != "count"})
+        for row in case["entries"]
+        for _ in range(row["count"])
+    ]
+    assert json.loads(json.dumps(report(entries, day, day))) == case["expected"]
 
 
 @pytest.mark.parametrize("case", REPORT_RANGES, ids=lambda case: case["name"])

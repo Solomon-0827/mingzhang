@@ -75,23 +75,26 @@ export function balanceTotal(accounts: readonly Account[]) {
   return accounts.reduce((total, account) => total + account.balance_cents, 0);
 }
 
-export function entryPeriodAmounts(entry: Entry) {
+function entryPeriodAmounts(entry: Entry) {
   const rule = kindRule(entry.kind);
   return {
-    income: rule?.income ? entry.amount_cents : 0,
-    expense: rule?.expenseSign ? rule.expenseSign * entry.amount_cents : 0,
+    income: rule?.income ? BigInt(entry.amount_cents) : 0n,
+    expense: rule?.expenseSign ? BigInt(rule.expenseSign * entry.amount_cents) : 0n,
   };
 }
 
+type FlowTotals = ReturnType<typeof entryPeriodAmounts>;
+const numericFlow = ({ income, expense }: FlowTotals) => ({ income: Number(income), expense: Number(expense) });
+
 export function periodTotals(entries: readonly Entry[]) {
-  let income = 0, expense = 0;
+  let income = 0n, expense = 0n;
   for (const entry of entries) {
     if (entry.deleted) continue;
     const amounts = entryPeriodAmounts(entry);
     income += amounts.income;
     expense += amounts.expense;
   }
-  return { income, expense, net: income - expense };
+  return { ...numericFlow({ income, expense }), net: Number(income - expense) };
 }
 
 export const emptyReport: Report = { income: 0, expense: 0, net: 0, daily: [], months: [], categories: [] };
@@ -103,12 +106,12 @@ export function projectReport(entries: readonly Entry[], start: string, end: str
   const length = (endTime - startTime) / dayMs;
   if (!Number.isFinite(length) || length < 0 || length > 3660)
     throw new Error("日期范围无效，请选择十年以内的范围");
-  const daily = new Map<string, Report["daily"][number]>();
+  const daily = new Map<string, FlowTotals>();
   for (let time = startTime; time <= endTime; time += dayMs) {
     const date = new Date(time).toISOString().slice(0, 10);
-    daily.set(date, { date, income: 0, expense: 0, cumulative: 0 });
+    daily.set(date, { income: 0n, expense: 0n });
   }
-  const categories = new Map<string, number>();
+  const categories = new Map<string, bigint>();
   for (const entry of entries) {
     const item = entry.deleted ? undefined : daily.get(entry.date);
     if (!item) continue;
@@ -116,22 +119,26 @@ export function projectReport(entries: readonly Entry[], start: string, end: str
     item.income += amounts.income;
     item.expense += amounts.expense;
     if (amounts.expense)
-      categories.set(entry.category, (categories.get(entry.category) ?? 0) + amounts.expense);
+      categories.set(entry.category, (categories.get(entry.category) ?? 0n) + amounts.expense);
   }
-  let income = 0, expense = 0;
-  const months = new Map<string, Report["months"][number]>();
-  for (const item of daily.values()) {
+  let income = 0n, expense = 0n;
+  const months = new Map<string, FlowTotals>();
+  const days = [...daily].map(([date, item]) => {
     income += item.income;
     expense += item.expense;
-    item.cumulative = income - expense;
-    const month = item.date.slice(0, 7);
-    const total = months.get(month) ?? { month, income: 0, expense: 0 };
+    const month = date.slice(0, 7);
+    const total = months.get(month) ?? { income: 0n, expense: 0n };
     total.income += item.income;
     total.expense += item.expense;
     months.set(month, total);
-  }
-  return { income, expense, net: income - expense, daily: [...daily.values()], months: [...months.values()],
-    categories: [...categories].sort(([a, amountA], [b, amountB]) => amountB - amountA || (a < b ? -1 : a > b ? 1 : 0)) };
+    return { date, ...numericFlow(item), cumulative: Number(income - expense) };
+  });
+  return {
+    ...numericFlow({ income, expense }), net: Number(income - expense), daily: days,
+    months: [...months].map(([month, total]) => ({ month, ...numericFlow(total) })),
+    categories: [...categories].sort(([, a], [, b]) => a === b ? 0 : a > b ? -1 : 1)
+      .map(([category, amount]) => [category, Number(amount)]),
+  };
 }
 
 function calendarDay(value: string) {

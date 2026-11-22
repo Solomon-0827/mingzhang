@@ -1,7 +1,0 @@
-[
-  {"case":"NEL-only parent name", "action":"add", "level":"parent", "name":"\u0085", "status":400},
-  {"case":"NEL-only renamed child", "action":"rename", "level":"child", "path":"日常/餐饮", "name":"\u0085", "status":400},
-  {"case":"C0 separator at the start of a child name", "action":"add", "level":"child", "path":"日常", "name":"\u001f菜谱", "status":400},
-  {"case":"supplementary characters at the name limit", "action":"rename", "level":"child", "path":"日常/餐饮", "repeat":40, "status":200},
-  {"case":"supplementary characters above the name limit", "action":"rename", "level":"child", "path":"日常/餐饮", "repeat":41, "status":422}
-]

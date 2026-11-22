@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from backend.db import connect, initialize
-from backend.ledger import Entry, validate_entry
+from backend.ledger import Entry, set_deleted, validate_entry
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures/entry-rules/editors.json").read_text())
 
@@ -37,7 +37,10 @@ def test_entry_rules(case, tmp_path, monkeypatch):
             if repeat := case.get("repeat"):
                 fields = fields | {repeat["field"]: "🐱" * repeat["count"]}
             model = entry_model(fields)
-            validate_entry(db, model.model_dump(mode="json"), str(model.id) if "id" in case["entry"] else None)
+            if case.get("restore"):
+                set_deleted(db, str(model.id), model.version, False)
+            else:
+                validate_entry(db, model.model_dump(mode="json"), str(model.id) if "id" in case["entry"] else None)
         except (HTTPException, ValidationError) as error:
             assert not case["valid"]
             if "reason" in case:

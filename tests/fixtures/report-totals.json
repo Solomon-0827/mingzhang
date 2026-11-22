@@ -1,0 +1,31 @@
+[
+  {
+    "name": "equal category totals keep first encounter order",
+    "day": "2026-02-03",
+    "entries": [
+      {"kind":"expense","category":"TieZ","amount_cents":100,"count":1},
+      {"kind":"expense","category":"TieA","amount_cents":100,"count":1}
+    ],
+    "expected": {
+      "income":0,"expense":200,"net":-200,
+      "daily":[{"date":"2026-02-03","income":0,"expense":200,"cumulative":-200}],
+      "months":[{"month":"2026-02","income":0,"expense":200}],
+      "categories":[["TieZ",100],["TieA",100]]
+    }
+  },
+  {
+    "name": "one cent left after large offsetting totals",
+    "day": "2026-02-03",
+    "entries": [
+      {"kind":"expense","category":"expense","amount_cents":1000000000000,"count":9008},
+      {"kind":"income","category":"income","amount_cents":1000000000000,"count":9008},
+      {"kind":"income","category":"income","amount_cents":1,"count":1}
+    ],
+    "expected": {
+      "income":9008000000000001,"expense":9008000000000000,"net":1,
+      "daily":[{"date":"2026-02-03","income":9008000000000001,"expense":9008000000000000,"cumulative":1}],
+      "months":[{"month":"2026-02","income":9008000000000001,"expense":9008000000000000}],
+      "categories":[["expense",9008000000000000]]
+    }
+  }
+]

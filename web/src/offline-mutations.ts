@@ -80,9 +80,9 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
     const entry = body as unknown as Entry;
     let entries = [...state.entries];
     if (mutation.type === "entry.create") {
-      const target = state.accounts.find(account => account.id === entry.to_account_id);
-      const original = entries.find(item => item.id === entry.reference_id);
-      entries = [{ ...entry, ...entryDetails(entry, target, original) }, ...entries.filter(item => item.id !== entry.id)];
+      const original = entry.kind === "refund" ? entries.find(item => item.id === entry.reference_id) : undefined;
+      const { category } = entryDetails(entry, undefined, original);
+      entries = [{ ...entry, category }, ...entries.filter(item => item.id !== entry.id)];
     }
     if (mutation.type === "entry.delete" || mutation.type === "entry.restore") entries = entries.map(item => item.id === mutation.path.split("/")[2]
       ? { ...item, deleted: mutation.type === "entry.delete" ? 1 : 0, version: item.version + 1 } : item);
@@ -137,14 +137,13 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
 export function applyMutations(state: State, mutations: OfflineMutation[]): State {
   if (!mutations.length) return state;
   if (mutations.every(mutation => mutation.type === "entry.update")) {
-    const accounts = new Map(state.accounts.map(account => [account.id, account]));
     const byId = new Map(state.entries.map(entry => [entry.id, entry]));
     for (const mutation of mutations) {
       const entry = mutation.body as unknown as Entry;
       if (!byId.has(entry.id)) continue;
-      const target = entry.to_account_id ? accounts.get(entry.to_account_id) : undefined;
-      const original = entry.reference_id ? byId.get(entry.reference_id) : undefined;
-      byId.set(entry.id, { ...entry, ...entryDetails(entry, target, original), version: entry.version + 1 });
+      const original = entry.kind === "refund" && entry.reference_id ? byId.get(entry.reference_id) : undefined;
+      const { category } = entryDetails(entry, undefined, original);
+      byId.set(entry.id, { ...entry, category, version: entry.version + 1 });
     }
     const entries = [...byId.values()];
     entries.sort((a, b) => b.date.localeCompare(a.date));

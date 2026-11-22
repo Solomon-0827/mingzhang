@@ -276,6 +276,5 @@ def report(entries, start, end):
         net=income - expense,
         daily=list(daily.values()),
         months=list(months.values()),
-        # UTF-16 order gives ties the same stable order as the browser.
-        categories=sorted(categories.items(), key=lambda x: (-x[1], x[0].encode("utf-16-be"))),
+        categories=sorted(categories.items(), key=lambda x: x[1], reverse=True),
     )

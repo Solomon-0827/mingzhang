@@ -112,9 +112,9 @@ export function entryRoles(entry: Entry) {
 const fundingAccount = (account: Account) => account.kind !== "receivable" && account.kind !== "liability";
 
 export function entryAccounts(entry: Entry, accounts: readonly Account[], field: "account_id" | "to_account_id") {
-  const { target } = entryRoles(entry);
+  const { target, legacySettlement } = entryRoles(entry);
   return accounts.filter(account => field === "account_id"
-    ? (!target?.kind || fundingAccount(account)) && account.id !== entry.to_account_id
+    ? (!(target?.kind || legacySettlement) || fundingAccount(account))
     : target && account.id !== entry.account_id && (!target.kind || account.kind === target.kind));
 }
 

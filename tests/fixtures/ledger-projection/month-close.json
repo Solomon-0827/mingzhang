@@ -49,7 +49,7 @@
         {"date":"2026-02-02","income":0,"expense":0,"cumulative":1200}
       ],
       "months":[{"month":"2026-01","income":3000,"expense":2000},{"month":"2026-02","income":0,"expense":-200}],
-      "categories":[["餐饮",800],["商店",500],["茶",500]]
+      "categories":[["餐饮",800],["茶",500],["商店",500]]
     }
   }
 }

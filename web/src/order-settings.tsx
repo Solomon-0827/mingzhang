@@ -5,7 +5,6 @@ import { useState, useRef, useEffect, type ReactNode } from "react";
 import { Account, CategoryChange, DisplayOrder, State, ordered, accountLabels, money } from "./types";
 import { StyledSelect } from "./controls";
 import { categoryGroups, categoryLeaf } from "./category-groups";
-import { categoryNameError } from "./validation";
 
 function SortList({ items, scope, disabled, onMove, render }: {
   items: string[]; scope: string; disabled: boolean;
@@ -118,13 +117,9 @@ export function OrderSettings({ state, defaults, initialSection = "categories", 
     if (!change) return;
     setBusy(true);setError("");
     try {
-      const label = name.trim();
-      const path = change.action === "add" ? (change.level === "parent" ? label : change.path + "/" + label) : change.path;
-      if (change.action === "add" || change.action === "rename") {
-        const issue = categoryNameError(label, change.action === "add" ? path : undefined);
-        if (issue) throw new Error(issue);
-      }
-      await onCategoryChange({...change,path,name:label,version:state.category_catalog?.version ?? 0});
+      const path = change.action === "add" ? (change.level === "parent" ? name.trim() : change.path + "/" + name.trim()) : change.path;
+      if (["add", "rename"].includes(change.action) && (!name.trim() || name.includes("/"))) throw new Error("名称不能为空或包含斜杠");
+      await onCategoryChange({...change,path,name:name.trim(),version:state.category_catalog?.version ?? 0});
       if (change.action === "add" || change.action === "restore") setSelected(path.split("/")[0]);
       if (change.action === "rename" && change.level === "parent") setSelected(name.trim());
       setChange(null);
@@ -132,7 +127,7 @@ export function OrderSettings({ state, defaults, initialSection = "categories", 
   };
   const inlineEditor = () => change && <form className="category-inline-editor" onSubmit={e => {e.preventDefault();void submitChange();}} onKeyDown={e => {if(e.key === "Escape" && !busy){e.preventDefault();setChange(null);setError("");}}}>
     {["add", "rename"].includes(change.action) ? <>
-      <input autoFocus aria-label="分类名称" value={name} onChange={e=>setName(e.target.value)} placeholder={change.level === "parent" ? "一级分类名称" : "二级分类名称"} disabled={busy}/>
+      <input autoFocus aria-label="分类名称" value={name} maxLength={40} onChange={e=>setName(e.target.value)} placeholder={change.level === "parent" ? "一级分类名称" : "二级分类名称"} disabled={busy}/>
       {change.action === "add" && change.level === "parent" && <StyledSelect aria-label="分类收支类型" value={change.kind} onChange={e=>setChange({...change,kind:e.target.value})}><option value="expense">支出</option><option value="income">收入</option></StyledSelect>}
     </> : <span className="inline-delete-copy">{change.action === "delete" ? "删除此分类？历史账目保留，可恢复。" : change.level === "parent" && (state.category_catalog?.hidden.filter(p => p.startsWith(change.path + "/")).length ?? 0) > 0 ? "恢复这一组全部已删除分类？" : "恢复此分类？"}</span>}
     <button className="category-tool confirm" title="确认（Enter）" aria-label="确认分类修改" disabled={busy}><Check size={17} strokeWidth={1.6}/></button>
