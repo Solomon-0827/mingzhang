@@ -34,6 +34,7 @@ import {
   accountLabels,
   api,
   cents,
+  orderedAccountOptions,
   isUnauthorized,
   labels,
   money,
@@ -226,6 +227,7 @@ function App() {
   const pendingScrollRestore = useRef<number | null>(null);
   const [, setHistoryRevision] = useState(0);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState | null>(null);
+  const entryAccounts = useMemo(() => state ? orderedAccountOptions(state) : {accounts: [], accountGroups: []}, [state]);
   const captureNavigation = useCallback((): NavigationSnapshot => ({
     page, period, anchor, customStart, customEnd, bookMonth, curve, visibleCurves,
     query, type, accountFilter, categoryFilter, day, trash, scrollY: window.scrollY,
@@ -450,9 +452,9 @@ function App() {
       document.getElementById("home-amount")?.focus();
       return;
     }
-    setEditor(newEntry(state.accounts[0].id));
+    setEditor(newEntry(entryAccounts.accounts[0].id));
     setEditing(false);
-  }, [state, page, navigate, setNotice]);
+  }, [state, page, navigate, setNotice, entryAccounts]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
@@ -874,10 +876,10 @@ function App() {
               <EntryDialog
                 inline
                 onRefresh={() => refresh().then(() => setNotice("已同步最新账本")).catch((e) => setError(e.message))}
-                initial={newEntry(state.accounts[0].id)}
+                initial={newEntry(entryAccounts.accounts[0].id)}
                 editing={false}
-                accounts={state.accounts}
-                accountGroups={state.account_groups}
+                accounts={entryAccounts.accounts}
+                accountGroups={entryAccounts.accountGroups}
                 entries={state.entries}
                 categoryOrder={state.ordering?.categories}
                 favorites={state.ordering?.favorites}
@@ -1578,8 +1580,8 @@ function App() {
           editing={Boolean(blockedEditor.current)}
           recoveryQueued={blockedEditor.current ? blockedEditor.queued : undefined}
           recovering
-          accounts={state.accounts}
-          accountGroups={state.account_groups}
+          accounts={entryAccounts.accounts}
+          accountGroups={entryAccounts.accountGroups}
           entries={state.entries}
           categoryOrder={state.ordering?.categories}
           favorites={state.ordering?.favorites}
@@ -1597,8 +1599,8 @@ function App() {
           key={editor.id}
           initial={editor}
           editing={editing}
-          accounts={state.accounts}
-          accountGroups={state.account_groups}
+          accounts={entryAccounts.accounts}
+          accountGroups={entryAccounts.accountGroups}
           entries={state.entries}
                 categoryOrder={state.ordering?.categories}
                 favorites={state.ordering?.favorites}

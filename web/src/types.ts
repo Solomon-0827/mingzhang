@@ -42,6 +42,18 @@ export function ordered(values: string[], order: string[] = []) {
   const ranks = new Map(order.map((v, i) => [v, i]));
   return [...values].sort((a, b) => (ranks.get(a) ?? order.length) - (ranks.get(b) ?? order.length));
 }
+export function orderedAccountOptions(state: Pick<State, "accounts" | "account_groups" | "ordering">) {
+  const accounts = new Map(state.accounts.map(account => [account.id, account]));
+  const accountGroups = new Map(state.account_groups.map(group => [group.id, group]));
+  const groups = ordered([...accountGroups.keys()], state.ordering?.account_groups).map(id => accountGroups.get(id)!);
+  const accountOrder = ordered([...accounts.keys()], state.ordering?.accounts).map(id => accounts.get(id)!);
+  const groupedAccounts = groups.flatMap(group => accountOrder.filter(account => (account.group_id || account.kind) === group.id));
+  const groupedIds = new Set(groupedAccounts.map(account => account.id));
+  return {
+    accounts: [...groupedAccounts, ...accountOrder.filter(account => !groupedIds.has(account.id))],
+    accountGroups: groups,
+  };
+}
 export type CategoryCatalog = { items: Record<string, string[]>; hidden: string[]; retired?: string[]; removed_kinds?: Record<string, string[]>; version: number };
 export type CategoryChange = { action: "add" | "rename" | "delete" | "restore"; level: "parent" | "child"; path: string; name?: string; kind?: string; version: number };
 export type AccountGroup = { id: string; name: string; kind: string; deleted?: number };
