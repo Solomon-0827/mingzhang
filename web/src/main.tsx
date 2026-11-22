@@ -24,24 +24,21 @@ import {
 } from "recharts";
 import {
   Account,
-  AccountGroup,
-  CategoryCatalog,
-  ordered,
   Entry,
-  Kind,
   Report,
   State,
   accountLabels,
   api,
   cents,
-  orderedAccountOptions,
   isUnauthorized,
-  labels,
   money,
   today,
 } from "./types";
 import { AccountSelect, ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
-import { categoriesForKind, categoryLeaf, defaultCategoryForKind } from "./category-groups";
+import { categoryLeaf } from "./category-groups";
+import { allKindOptions, categoryOptions, changeEntryKind, defaultCategories, entryAccountOptions, entryError,
+  entryRoles, initializeEntryDraft, kindLabel, kindOptions, referenceOptions } from "./entry-kinds";
+import { balanceTotal, emptyReport, entryMovement, outstandingEntries, periodTotals, projectReport } from "./ledger-projection";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import "./paper-theme.css";
@@ -102,59 +99,6 @@ declare global {
   }
 }
 
-const categories = [
-  "日常/餐饮",
-  "日常/购物",
-  "日常/交通",
-  "居住/房租",
-  "居住/水电",
-  "生活/娱乐",
-  "生活/旅行",
-  "健康/医疗",
-  "学习/书籍",
-  "收入/工资",
-  "收入/其他",
-  "未分类",
-];
-const emptyReport: Report = {
-  income: 0,
-  expense: 0,
-  net: 0,
-  daily: [],
-  months: [],
-  categories: [],
-};
-function localReport(entries: Entry[], start: string, end: string): Report {
-  const daily: Report["daily"] = [];
-  const byDate = new Map<string, Report["daily"][number]>();
-  for (let time = Date.parse(start + "T00:00:00Z"); time <= Date.parse(end + "T00:00:00Z"); time += 86400000) {
-    const date = new Date(time).toISOString().slice(0, 10);
-    const item = {date, income: 0, expense: 0, cumulative: 0};
-    daily.push(item); byDate.set(date, item);
-  }
-  const categories = new Map<string, number>();
-  for (const entry of entries) {
-    const item = !entry.deleted ? byDate.get(entry.date) : undefined;
-    if (!item) continue;
-    if (entry.kind === "income") item.income += entry.amount_cents;
-    if (["expense", "refund"].includes(entry.kind)) {
-      const amount = entry.amount_cents * (entry.kind === "refund" ? -1 : 1);
-      item.expense += amount;
-      categories.set(entry.category, (categories.get(entry.category) || 0) + amount);
-    }
-  }
-  let cumulative = 0;
-  const months = new Map<string, Report["months"][number]>();
-  for (const item of daily) {
-    cumulative += item.income - item.expense; item.cumulative = cumulative;
-    const month = item.date.slice(0, 7), value = months.get(month) || {month, income: 0, expense: 0};
-    value.income += item.income; value.expense += item.expense; months.set(month, value);
-  }
-  const income = daily.reduce((sum, item) => sum + item.income, 0);
-  const expense = daily.reduce((sum, item) => sum + item.expense, 0);
-  return {income, expense, net: income - expense, daily, months: [...months.values()],
-    categories: [...categories.entries()].sort((a, b) => b[1] - a[1])};
-}
 const newEntry = (account = ""): Entry => ({
   id: crypto.randomUUID(),
   date: today(),
@@ -162,7 +106,7 @@ const newEntry = (account = ""): Entry => ({
   amount_cents: 0,
   account_id: account,
   to_account_id: null,
-  category: "日常/餐饮",
+  category: defaultCategories[0],
   merchant: "",
   memo: "",
   counterparty: "",
@@ -197,7 +141,7 @@ function App() {
     [day, setDay] = useState(""),
     [trash, setTrash] = useState(false);
   const [editor, setEditor] = useState<Entry | null>(null),
-    [editing, setEditing] = useState(false),
+    [editorMode, setEditorMode] = useState<"new" | "copy" | "edit">("new"),
     [accountEditor, setAccountEditor] = useState<Account | null>(null);
   const [lastSync, setLastSync] = useState(""),
     [online, setOnline] = useState(navigator.onLine);
@@ -227,7 +171,6 @@ function App() {
   const pendingScrollRestore = useRef<number | null>(null);
   const [, setHistoryRevision] = useState(0);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState | null>(null);
-  const entryAccounts = useMemo(() => state ? orderedAccountOptions(state) : {accounts: [], accountGroups: []}, [state]);
   const captureNavigation = useCallback((): NavigationSnapshot => ({
     page, period, anchor, customStart, customEnd, bookMonth, curve, visibleCurves,
     query, type, accountFilter, categoryFilter, day, trash, scrollY: window.scrollY,
@@ -280,11 +223,6 @@ function App() {
     return () => window.removeEventListener("keydown", historyKey);
   }, [travelHistory]);
   useEffect(() => {
-    if (pendingScrollRestore.current === null) return;
-    const top = pendingScrollRestore.current;
-    window.requestAnimationFrame(() => window.scrollTo({top,behavior:"auto"}));
-  }, [page, report]);
-  useEffect(() => {
     const cancelRestore = () => { pendingScrollRestore.current = null; };
     window.addEventListener("wheel", cancelRestore, {passive:true});
     window.addEventListener("touchmove", cancelRestore, {passive:true});
@@ -310,6 +248,11 @@ function App() {
           `${y}-${String(endMonth).padStart(2, "0")}-${new Date(y, endMonth, 0).getDate()}`,
         ];
   }, [anchor, period, customStart, customEnd]);
+  useEffect(() => {
+    if (pendingScrollRestore.current === null) return;
+    const top = pendingScrollRestore.current;
+    window.requestAnimationFrame(() => window.scrollTo({top,behavior:"auto"}));
+  }, [page, report]);
   const readQueue = useCallback(() => {
     const view = syncQueue.view();
     setQueueView(view);
@@ -422,25 +365,29 @@ function App() {
     return unsubscribe;
   }, []);
   useEffect(() => {
+    if (!logged || !["overview", "reports"].includes(page)) return;
+    if (state && (pendingCount || !online)) {
+      try {
+        setReport(projectReport(state.entries, range[0], range[1]));
+      } catch (error) {
+        setReport(emptyReport);
+        // Only the reports page lets the user pick the range, so only it reports an invalid one.
+        if (page === "reports") setError((error as Error).message);
+      }
+      return;
+    }
     let current = true;
     const epoch = loginEpoch.current;
-    if (logged && state && ["overview", "reports"].includes(page) && (pendingCount || !online)) {
-      setReport(localReport(state.entries, range[0], range[1]));
-      return () => { current = false; };
-    }
-    if (logged && ["overview", "reports"].includes(page))
-      api<Report>(`/report?start=${range[0]}&end=${range[1]}`)
-        .then((value) => {
-          if (current) setReport(value);
-        })
-        .catch((e) => {
-          if (!current || epoch !== loginEpoch.current) return;
-          if (isUnauthorized(e)) requireLogin();
-          else setError(e.message);
-        });
-    return () => {
-      current = false;
-    };
+    api<Report>(`/report?start=${range[0]}&end=${range[1]}`)
+      .then(value => {
+        if (current && epoch === loginEpoch.current) setReport(value);
+      })
+      .catch(error => {
+        if (!current || epoch !== loginEpoch.current) return;
+        if (isUnauthorized(error)) requireLogin();
+        else setError(error.message);
+      });
+    return () => { current = false; };
   }, [logged, range, state, page, pendingCount, online, setError, requireLogin]);
   const openNew = useCallback(() => {
     if (!state?.accounts.length) {
@@ -452,9 +399,9 @@ function App() {
       document.getElementById("home-amount")?.focus();
       return;
     }
-    setEditor(newEntry(entryAccounts.accounts[0].id));
-    setEditing(false);
-  }, [state, page, navigate, setNotice, entryAccounts]);
+    setEditor(newEntry());
+    setEditorMode("new");
+  }, [state, page, navigate, setNotice]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
@@ -620,23 +567,12 @@ function App() {
           ? "自定义时间"
           : `${anchor.slice(0, 4)} 年 ${Number(anchor.slice(5))} 月`;
   const overviewMonth = today().slice(0, 7);
-  const overviewFlow = useMemo(() => {
-    let income = 0;
-    let expense = 0;
-    for (const entry of state?.entries || []) {
-      if (entry.deleted || !entry.date.startsWith(overviewMonth)) continue;
-      if (entry.kind === "income") income += entry.amount_cents;
-      if (entry.kind === "expense") expense += entry.amount_cents;
-      if (entry.kind === "refund") expense -= entry.amount_cents;
-    }
-    return { income, expense, net: income - expense };
-  }, [state?.entries, overviewMonth]);
+  const overviewFlow = useMemo(() => periodTotals((state?.entries ?? []).filter(entry =>
+    entry.date.startsWith(overviewMonth))), [state?.entries, overviewMonth]);
   const overviewAccounts = useMemo(() => (state?.account_groups || []).map(group => ({
     id: group.id,
     name: group.name,
-    balance: (state?.accounts || [])
-      .filter(account => (account.group_id || account.kind) === group.id)
-      .reduce((sum, account) => sum + account.balance_cents, 0),
+    balance: balanceTotal((state?.accounts ?? []).filter(account => (account.group_id || account.kind) === group.id)),
   })).filter(group => (state?.accounts || []).some(account => (account.group_id || account.kind) === group.id)), [state?.account_groups, state?.accounts]);
   const queueNotice = blocked ? "有 1 项修改未能同步，点此处理" : `${pendingCount} 项等待同步，点此查看`;
   const queueHead = blocked ?? queueView.items[0];
@@ -876,14 +812,9 @@ function App() {
               <EntryDialog
                 inline
                 onRefresh={() => refresh().then(() => setNotice("已同步最新账本")).catch((e) => setError(e.message))}
-                initial={newEntry(entryAccounts.accounts[0].id)}
+                initial={newEntry()}
                 editing={false}
-                accounts={entryAccounts.accounts}
-                accountGroups={entryAccounts.accountGroups}
-                entries={state.entries}
-                categoryOrder={state.ordering?.categories}
-                favorites={state.ordering?.favorites}
-                catalog={state.category_catalog}
+                state={state}
                 onClose={() => {}}
                 onSave={async (value) => {
                   await saveEntry(value);
@@ -1286,14 +1217,14 @@ function App() {
             }}
             onEdit={(entry) => {
               setEditor({ ...entry });
-              setEditing(true);
+              setEditorMode("edit");
             }}
             onDelete={(entry) => {
               void queueMutation({type:"entry.delete",path:`/entries/${entry.id}/delete`,method:"POST",body:{version:entry.version}}).catch(e => setError(e.message));
             }}
           />
         )}
-        {["overview", "transactions"].includes(page) && (
+        {(page === "overview" || page === "transactions") && (
           <section className="panel">
             <div className="panel-head">
               <h2>
@@ -1328,7 +1259,7 @@ function App() {
                   onChange={(e) => setType(e.target.value)}
                 >
                   <option value="">全部类型</option>
-                  {Object.entries(labels).map(([k, v]) => (
+                  {allKindOptions.map(([k, v]) => (
                     <option key={k} value={k}>
                       {v}
                     </option>
@@ -1374,107 +1305,91 @@ function App() {
                   </thead>
                   <tbody>
                     {entries
-                      .slice(
-                        0,
-                        page === "overview" ? 6 : page === "entry" ? 20 : 500,
-                      )
-                      .map((x) => (
-                        <tr key={x.id}>
-                          <td className="muted">
-                            {x.date.slice(5)}
-                            <small>{x.date.slice(0, 4)}</small>
-                          </td>
-                          <td>
-                            <div className="transaction-title">
-                              <span className={"transaction-icon " + x.kind}>
-                                {[
-                                  "income",
-                                  "refund",
-                                  "collect",
-                                  "borrow",
-                                ].includes(x.kind) ? (
-                                  <ArrowDownLeft size={17} />
-                                ) : x.kind === "transfer" ? (
-                                  <ArrowLeftRight size={17} />
-                                ) : (
-                                  <ArrowUpRight size={17} />
-                                )}
-                              </span>
-                              <div>
-                                <strong>{x.category || labels[x.kind]}</strong>
-                                <small>
-                                  {labels[x.kind]}
-                                  {x.merchant ? " · " + x.merchant : ""}
-                                  {x.counterparty ? " · " + x.counterparty : ""}
-                                </small>
+                      .slice(0, page === "overview" ? 6 : 500)
+                      .map((x) => {
+                        const movement = entryMovement(x.kind);
+                        return (
+                          <tr key={x.id}>
+                            <td className="muted">
+                              {x.date.slice(5)}
+                              <small>{x.date.slice(0, 4)}</small>
+                            </td>
+                            <td>
+                              <div className="transaction-title">
+                                <span className={"transaction-icon " + x.kind}>
+                                  {movement.direction === "in" ? (
+                                    <ArrowDownLeft size={17} />
+                                  ) : movement.direction === "transfer" ? (
+                                    <ArrowLeftRight size={17} />
+                                  ) : (
+                                    <ArrowUpRight size={17} />
+                                  )}
+                                </span>
+                                <div>
+                                  <strong>{x.category || kindLabel(x.kind)}</strong>
+                                  <small>
+                                    {kindLabel(x.kind)}
+                                    {x.merchant ? " · " + x.merchant : ""}
+                                    {x.counterparty ? " · " + x.counterparty : ""}
+                                  </small>
+                                </div>
                               </div>
-                            </div>
-                          </td>
-                          <td>
-                            {accountName(x.account_id)}
-                            {x.to_account_id && (
-                              <small>{x.kind === "collect" ? "←" : "→"} {accountName(x.to_account_id)}</small>
-                            )}
-                          </td>
-                          <td
-                            className={
-                              "numeric " +
-                              (["income", "refund"].includes(x.kind)
-                                ? "income-text"
-                                : x.kind === "expense" ? "book-out" : "")
-                            }
-                          >
-                            {["income", "refund"].includes(x.kind)
-                              ? "+"
-                              : x.kind === "expense"
-                                ? "−"
-                                : ""}
-                            {money(x.amount_cents)}
-                          </td>
-                          <td>
-                            <div className="row-actions">
-                              {page === "transactions" && trash ? (
-                                <button aria-label="恢复交易" title="恢复交易"
-                                  onClick={() =>
-                                    void queueMutation({type:"entry.restore",path:`/entries/${x.id}/restore`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
-                                  }
-                                ><RotateCcw size={18} aria-hidden="true" /></button>
-                              ) : (
-                                <>
-                                  <button aria-label="编辑" title="编辑"
-                                    onClick={() => {
-                                      setEditor({ ...x });
-                                      setEditing(true);
-                                    }}
-                                  ><PencilLine size={18} aria-hidden="true" /></button>
-                                  <button
-                                    aria-label="复制交易" title="复制交易"
-                                    onClick={() => {
-                                      setEditor({
-                                        ...x,
-                                        id: crypto.randomUUID(),
-                                        date: today(),
-                                        version: 1,
-                                      });
-                                      setEditing(false);
-                                    }}
-                                  >
-                                    <Copy size={14} />
-                                  </button>
-                                  <button
-                                    aria-label="删除交易" title="删除交易"
-                                    onClick={() =>
-                                      void queueMutation({type:"entry.delete",path:`/entries/${x.id}/delete`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
-                                    }
-                                  >
-                                    <Trash2 size={14} />
-                                  </button>
-                                </>
+                            </td>
+                            <td>
+                              {accountName(x.account_id)}
+                              {x.to_account_id && (
+                                <small>{movement.targetSign < 0 ? "←" : "→"} {accountName(x.to_account_id)}</small>
                               )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                            </td>
+                            <td className={`numeric ${movement.tone}`}>
+                              {movement.sign}
+                              {money(x.amount_cents)}
+                            </td>
+                            <td>
+                              <div className="row-actions">
+                                {page === "transactions" && trash ? (
+                                  <button aria-label="恢复交易" title="恢复交易"
+                                    onClick={() =>
+                                      void queueMutation({type:"entry.restore",path:`/entries/${x.id}/restore`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
+                                    }
+                                  ><RotateCcw size={18} aria-hidden="true" /></button>
+                                ) : (
+                                  <>
+                                    <button aria-label="编辑" title="编辑"
+                                      onClick={() => {
+                                        setEditor({ ...x });
+                                        setEditorMode("edit");
+                                      }}
+                                    ><PencilLine size={18} aria-hidden="true" /></button>
+                                    <button
+                                      aria-label="复制交易" title="复制交易"
+                                      onClick={() => {
+                                        setEditor({
+                                          ...x,
+                                          id: crypto.randomUUID(),
+                                          date: today(),
+                                          version: 1,
+                                        });
+                                        setEditorMode("copy");
+                                      }}
+                                    >
+                                      <Copy size={14} />
+                                    </button>
+                                    <button
+                                      aria-label="删除交易" title="删除交易"
+                                      onClick={() =>
+                                        void queueMutation({type:"entry.delete",path:`/entries/${x.id}/delete`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
+                                      }
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                   </tbody>
                 </table>
                 {page === "transactions" && entries.length > 500 && (
@@ -1485,14 +1400,8 @@ function App() {
               </div>
             ) : (
               <Empty
-                text={
-                  page === "entry"
-                    ? "还没有记录，在上方记下第一笔吧。"
-                    : trash
-                      ? "回收站是空的"
-                      : "这段时间还没有匹配的流水"
-                }
-                action={page === "entry" || trash ? undefined : openNew}
+                text={trash ? "回收站是空的" : "这段时间还没有匹配的流水"}
+                action={trash ? undefined : openNew}
               />
             )}
           </section>
@@ -1508,26 +1417,20 @@ function App() {
                   {money(state.payable)}
                 </span>
               </div>
-              {state.entries
-                .filter(
-                  (x) =>
-                    !x.deleted &&
-                    ["lend", "borrow"].includes(x.kind) &&
-                    x.remaining_cents > 0,
-                )
+              {outstandingEntries(state.entries)
                 .map((x) => (
                   <div className="loan-row" key={x.id}>
                     <div>
                       <strong>{x.counterparty}</strong>
                       <small>
-                        {x.date} · {labels[x.kind]} ¥ {money(x.amount_cents)}
+                        {x.date} · {kindLabel(x.kind)} ¥ {money(x.amount_cents)}
                       </small>
                     </div>
                     <span>
-                      待{x.kind === "lend" ? "收" : "还"} ¥{" "}
-                      {money(x.remaining_cents)}
+                      {x.remaining_cents < 0 ? "多" : "待"}{x.kind === "lend" ? "收" : "还"} ¥{" "}
+                      {money(Math.abs(x.remaining_cents))}
                     </span>
-                    <button aria-label={x.kind === "lend" ? "记录回款" : "记录还款"} title={x.kind === "lend" ? "记录回款" : "记录还款"}
+                    {x.remaining_cents > 0 && <button aria-label={x.kind === "lend" ? "记录回款" : "记录还款"} title={x.kind === "lend" ? "记录回款" : "记录还款"}
                       className="text-button"
                       onClick={() => {
                         setEditor({
@@ -1538,9 +1441,9 @@ function App() {
                           counterparty: x.counterparty,
                           category: "",
                         });
-                        setEditing(false);
+                        setEditorMode("new");
                       }}
-                    ><ArrowLeftRight size={18} aria-hidden="true" /></button>
+                    ><ArrowLeftRight size={18} aria-hidden="true" /></button>}
                   </div>
                 ))}
             </section>
@@ -1548,7 +1451,7 @@ function App() {
         )}
         {page === "settings" && state && <OrderSettings
           key={latestSettings?.id ?? "settings"} initialSection={latestSettings?.section}
-          state={(latestSettings && serverSnapshot) || state} defaults={categories}
+          state={(latestSettings && serverSnapshot) || state} defaults={defaultCategories}
           onCategoryChange={async value => { await queueMutation({type:"category.change",path:"/categories",method:"POST",body:value as unknown as Record<string,unknown>}); }}
           onPasswordChanged={() => { resetHistory(); closeSession(); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
           onEditAccount={setAccountEditor}
@@ -1580,12 +1483,8 @@ function App() {
           editing={Boolean(blockedEditor.current)}
           recoveryQueued={blockedEditor.current ? blockedEditor.queued : undefined}
           recovering
-          accounts={entryAccounts.accounts}
-          accountGroups={entryAccounts.accountGroups}
-          entries={state.entries}
-          categoryOrder={state.ordering?.categories}
-          favorites={state.ordering?.favorites}
-          catalog={state.category_catalog}
+          validationState={serverSnapshot ?? undefined}
+          state={state}
           onClose={() => setBlockedEditor(null)}
           onSave={async value => {
             const change = entryRecoveryChange(blockedEditor.entry, Boolean(blockedEditor.current), value);
@@ -1598,16 +1497,12 @@ function App() {
         <EntryDialog
           key={editor.id}
           initial={editor}
-          editing={editing}
-          accounts={entryAccounts.accounts}
-          accountGroups={entryAccounts.accountGroups}
-          entries={state.entries}
-                categoryOrder={state.ordering?.categories}
-                favorites={state.ordering?.favorites}
-                catalog={state.category_catalog}
+          editing={editorMode === "edit"}
+          copying={editorMode === "copy"}
+          state={state}
           onClose={() => setEditor(null)}
           onSave={async (value) => {
-            await saveEntry(value, editing);
+            await saveEntry(value, editorMode === "edit");
             setEditor(null);
           }}
         />
@@ -1743,35 +1638,33 @@ function Modal({
 function EntryDialog({
   inline = false,
   recovering = false,
+  copying = false,
   recoveryQueued,
+  validationState,
   onRefresh,
   initial,
   editing,
-  accounts,
-  accountGroups,
-  categoryOrder = [],
-  favorites = [],
-  catalog,
-  entries,
+  state,
   onClose,
   onSave,
 }: {
   inline?: boolean;
   recovering?: boolean;
+  copying?: boolean;
   recoveryQueued?: Entry;
+  validationState?: State;
   onRefresh?: () => void;
   initial: Entry;
   editing: boolean;
-  accounts: Account[];
-  accountGroups: AccountGroup[];
-  categoryOrder?: string[];
-  favorites?: string[];
-  catalog?: CategoryCatalog;
-  entries: Entry[];
+  state: State;
   onClose: () => void;
   onSave: (entry: Entry) => Promise<void>;
 }) {
-  const [value, setValue] = useState(initial),
+  const { accounts, entries, category_catalog: catalog } = state;
+  const favorites = state.ordering?.favorites ?? [];
+  const newDraft = !editing && !recovering && !copying;
+  const [value, setValue] = useState(() => initializeEntryDraft(initial, state,
+    copying ? "copy" : newDraft ? "new" : "edit")),
     [amount, setAmount] = useState(
       initial.amount_cents ? String(initial.amount_cents / 100) : "",
     ),
@@ -1782,24 +1675,12 @@ function EntryDialog({
   const amountRef = useRef<HTMLInputElement>(null);
   const set = <K extends keyof Entry>(key: K, v: Entry[K]) =>
     setValue((old) => ({ ...old, [key]: v }));
-  const legacySettlement = Boolean(value.reference_id && ["repay", "collect"].includes(value.kind) && !value.to_account_id);
-  const refKind = value.kind === "refund" ? "expense" : undefined;
-  const categoryOptions = ordered(catalog ? categoriesForKind(catalog, value.kind) : Array.from(
-    new Set([
-      ...categories.filter((category) =>
-        value.kind === "income"
-          ? category.startsWith("收入/") || category === "未分类"
-          : !category.startsWith("收入/"),
-      ),
-      ...entries
-        .filter((entry) => !entry.deleted && entry.kind === value.kind)
-        .map((entry) => entry.category),
-      value.category,
-    ]),
-  ).filter(Boolean), categoryOrder);
+  const roles = entryRoles(value);
+  const options = categoryOptions(state, value);
+  const sourceOptions = entryAccountOptions(state, value);
   useEffect(() => {
-    if (!editing && !recovering && catalog && ["income", "expense"].includes(value.kind) && !categoryOptions.includes(value.category)) {
-      setValue(old => ({...old, category: categoryOptions[0] ?? ""}));
+    if (!editing && !recovering && catalog && roles.category && !options.includes(value.category)) {
+      setValue(old => ({ ...old, category: options[0] ?? "" }));
     }
   }, [catalog, value.kind, value.category, editing, recovering]);
   const amountField = (
@@ -1832,25 +1713,14 @@ function EntryDialog({
       onSubmit={async (e) => {
         e.preventDefault();
         setError("");
-        if (!value.account_id) {
-          setError("请选择账户");
-          return;
-        }
-        if ((value.kind === "transfer" || (["repay", "collect"].includes(value.kind) && !legacySettlement)) && !value.to_account_id) {
-          setError(value.kind === "transfer" ? "请选择转入账户" : `请选择${value.kind === "repay" ? "负债" : "债权"}账户`);
-          return;
-        }
-        if (value.kind === "transfer" && value.to_account_id === value.account_id) {
-          setError("转入账户不能与转出账户相同");
-          return;
-        }
-        if ((value.kind === "income" || value.kind === "expense") && !value.category) {
-          setError("请选择分类");
-          return;
-        }
         setBusy(true);
         try {
-          await onSave({ ...value, amount_cents: cents(amount) });
+          const current = validationState ?? state;
+          const draft = copying ? initializeEntryDraft(value, current, "copy") : value;
+          const next = { ...draft, amount_cents: cents(amount) };
+          const error = entryError(next, current);
+          if (error) throw new Error(error);
+          await onSave(next);
           if (inline) {
             setValue({
               ...newEntry(value.account_id),
@@ -1870,23 +1740,12 @@ function EntryDialog({
     >
       <div className="entry-kinds">
         {inline && <h1 className="entry-inline-title">记一笔</h1>}
-        {Object.entries(labels).filter(([k]) => !["refund", "balance_in", "balance_out"].includes(k) || ((editing || recovering) && k === initial.kind)).map(([k, v]) => (
+        {kindOptions(newDraft ? undefined : initial.kind).map(([k, v]) => (
           <button
             type="button"
             className={value.kind === k ? "selected" : ""}
             key={k}
-            onClick={() => {
-              if (k === value.kind) return;
-              setValue({
-                ...value,
-                kind: k as Kind,
-                account_id: ["repay", "collect"].includes(k) && ["receivable", "liability"].includes(selectedAccount?.kind || "")
-                  ? accounts.find(a => !["receivable", "liability"].includes(a.kind))?.id || "" : value.account_id,
-                to_account_id: null,
-                reference_id: null,
-                category: defaultCategoryForKind(catalog, k as Kind, categoryOrder),
-              });
-            }}
+            onClick={() => setValue(changeEntryKind(value, k, state))}
           >
             {value.kind === k && <motion.span className="kind-selection" layoutId={`entry-kind-${kindMotionId}`} transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }} />}
             <span className="kind-label">{v}</span>
@@ -1894,10 +1753,10 @@ function EntryDialog({
         ))}
       </div>
       {!inline && amountField}
-        {["income", "expense"].includes(value.kind) && (
+        {roles.category && (
           <label className="entry-category">
             分类
-            <CategorySelect options={categoryOptions} value={value.category}
+            <CategorySelect options={options} value={value.category}
               onChange={e => set("category", e.target.value)} />
           </label>
         )}
@@ -1915,7 +1774,7 @@ function EntryDialog({
         </label>
         <label>
           <span className="entry-account-heading">
-            <span>{value.kind === "transfer" ? "转出账户" : value.kind === "repay" ? "付款账户" : value.kind === "collect" ? "收款账户" : "账户"}</span>
+            <span>{roles.account}</span>
             {selectedAccount && <span className="entry-account-balance" role="status" aria-live="polite"
               title={`${selectedAccount.name}当前余额`}>
               余额 <motion.strong key={`${selectedAccount.id}-${selectedAccount.balance_cents}`} initial={{ opacity: 0.35 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }} className={selectedAccount.balance_cents < 0 ? "negative-balance" : undefined}>
@@ -1924,39 +1783,26 @@ function EntryDialog({
             </span>}
           </span>
           <AccountSelect
-            accounts={accounts.filter(a => !["repay", "collect"].includes(value.kind) || !["receivable", "liability"].includes(a.kind))}
-            groups={accountGroups}
+            aria-label={roles.account}
+            accounts={sourceOptions.accounts}
+            groups={sourceOptions.accountGroups}
             value={value.account_id}
             onChange={(e) => set("account_id", e.target.value)}
           />
         </label>
-        {value.kind === "transfer" && (
+        {roles.target && (
           <label className="full">
-            转入账户
-            <AccountSelect
-              accounts={accounts.filter((a) => a.id !== value.account_id)}
-              groups={accountGroups}
-              required
-              value={value.to_account_id || ""}
-              onChange={(e) => set("to_account_id", e.target.value)}
-              placeholder="请选择转入账户"
-            />
-            <small>信用卡还本金也使用账户间转账。</small>
-          </label>
-        )}
-        {["repay", "collect"].includes(value.kind) && !legacySettlement && (
-          <label className="full">
-            {value.kind === "repay" ? "负债账户" : "债权账户"}
-            <AccountSelect required aria-label={value.kind === "repay" ? "负债账户" : "债权账户"}
-              accounts={accounts.filter(a => a.kind === (value.kind === "repay" ? "liability" : "receivable") && a.id !== value.account_id)}
-              groups={accountGroups}
+            {roles.target.label}
+            <AccountSelect required aria-label={roles.target.label}
+              accounts={entryAccountOptions(state, value, "to_account_id").accounts}
+              groups={sourceOptions.accountGroups}
               value={value.to_account_id || ""} onChange={e => set("to_account_id", e.target.value)}
-              placeholder={`请选择${value.kind === "repay" ? "负债" : "债权"}账户`} />
-            <small>{value.kind === "repay" ? "付款账户余额减少，同时减少对应负债。" : "收款账户余额增加，同时减少对应债权。"}本金不计入收支。</small>
+              placeholder={`请选择${roles.target.label}`} />
+            <small>{roles.target.hint}</small>
           </label>
         )}
-        {legacySettlement && <small>此历史记录保留原借款关联，避免重复调整余额。</small>}
-        {refKind && (
+        {roles.legacySettlement && <small>此历史记录保留原借款关联，避免重复调整余额。</small>}
+        {roles.reference && (
           <label className="full">
             关联原交易
             <StyledSelect
@@ -1964,14 +1810,8 @@ function EntryDialog({
               value={value.reference_id || ""}
               onChange={(e) => set("reference_id", e.target.value)}
             >
-              <option value="">选择原始{labels[refKind as Kind]}记录</option>
-              {entries
-                .filter(
-                  (x) =>
-                    !x.deleted &&
-                    x.kind === refKind &&
-                    (x.remaining_cents > 0 || x.id === initial.reference_id),
-                )
+              <option value="">选择原始{kindLabel(roles.reference)}记录</option>
+              {referenceOptions({ ...value, reference_id: initial.reference_id }, entries)
                 .map((x) => (
                   <option key={x.id} value={x.id}>
                     {x.date} · {x.counterparty || x.category} · ¥{" "}
@@ -1982,7 +1822,7 @@ function EntryDialog({
             <small>退款在实际退款日抵扣原分类支出。</small>
           </label>
         )}
-        {["lend", "borrow"].includes(value.kind) && (
+        {roles.counterparty && (
           <label className="full">
             往来对象
             <input
@@ -1995,10 +1835,10 @@ function EntryDialog({
         )}
       </div>
       {inline && amountField}
-      {inline && ["income", "expense"].includes(value.kind) && favorites.some(p => categoryOptions.includes(p)) && (
+      {inline && roles.category && favorites.some(p => options.includes(p)) && (
         <div className="favorite-shortcuts" role="group" aria-label="常用分类">
           <span className="favorite-caption">常用分类</span>
-          {favorites.filter(p => categoryOptions.includes(p)).slice(0, 9).map(path => (
+          {favorites.filter(p => options.includes(p)).slice(0, 9).map(path => (
             <button type="button" key={path} title={path} aria-pressed={value.category === path}
               className={value.category === path ? "selected" : ""}
               onClick={() => {set("category", path); amountRef.current?.focus();}}>

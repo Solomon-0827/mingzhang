@@ -1,8 +1,8 @@
 import csv
 import io
-from typing import get_args
 
 from backend import ledger
+from backend.entry_kinds import ENTRY_KINDS
 from tests.test_ledger import account, entry, report
 
 
@@ -43,7 +43,7 @@ def test_csv_export_labels_balance_adjustments(client):
     assert response.status_code == 200
     rows = csv.DictReader(io.StringIO(response.content.decode("utf-8-sig")))
     assert {row["类型"]: row["金额"] for row in rows} == {"余额调增": "500.00", "余额调减": "700.00"}
-    assert set(ledger.KIND_LABELS) == set(get_args(ledger.Entry.model_fields["kind"].annotation))
+    assert set(ENTRY_KINDS) == {kind.value for kind in ledger.Entry.model_fields["kind"].annotation}
 
 
 def test_stale_balance_and_duplicate_submit_rejected(client):

@@ -22,9 +22,9 @@ from starlette.background import BackgroundTask
 from backend.auth import authenticated, hash_password, token_hash, verify_password
 from backend.categories import CategoryChange, catalog, change_category
 from backend.db import advance_ledger_revision, backup, connect, db_path, initialize, ledger_epoch
+from backend.entry_kinds import ENTRY_KINDS
 from backend.importing import commit_import, preview, read_file
 from backend.ledger import (
-    KIND_LABELS,
     Account,
     AccountUpdate,
     Entry,
@@ -615,7 +615,7 @@ def export_csv():
             writer.writerow(
                 [
                     x["date"],
-                    KIND_LABELS[x["kind"]],
+                    ENTRY_KINDS[x["kind"]].label,
                     f"{x['amount_cents'] / 100:.2f}",
                     safe(accounts[x["account_id"]]),
                     safe(accounts.get(x["to_account_id"], "")),

@@ -8,19 +8,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from backend.categories import catalog
-
-KIND_LABELS = {
-    "income": "收入",
-    "expense": "支出",
-    "transfer": "转账",
-    "refund": "退款",
-    "lend": "借出",
-    "borrow": "借入",
-    "repay": "还款",
-    "collect": "回款",
-    "balance_in": "余额调增",
-    "balance_out": "余额调减",
-}
+from backend.entry_kinds import ENTRY_KINDS, EntryKind
 
 
 def today():
@@ -52,7 +40,7 @@ class AccountUpdate(Account):
 class Entry(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     date: date
-    kind: Literal["income", "expense", "transfer", "refund", "lend", "borrow", "repay", "collect", "balance_in", "balance_out"]
+    kind: EntryKind
     amount_cents: int = Field(gt=0, le=10**12, strict=True)
     account_id: str
     to_account_id: str | None = None
@@ -89,16 +77,16 @@ def validate_entry(db, data, exclude=None):
         if not previous or previous[0] != data["category"]:
             fail("分类已删除或更名，请重新选择")
     kind = data["kind"]
-    if kind == "transfer":
+    rule = ENTRY_KINDS[kind]
+    if rule.target == "any":
         if not data["to_account_id"] or data["to_account_id"] == data["account_id"]:
             fail("转账需要两个不同的账户")
-    elif kind in ["repay", "collect"] and data["to_account_id"]:
+    elif rule.target and data["to_account_id"]:
         if data["reference_id"]:
             fail("不能同时关联账户和原交易")
         source = db.execute("SELECT kind FROM accounts WHERE id=?", (data["account_id"],)).fetchone()
         target = db.execute("SELECT * FROM accounts WHERE id=?", (data["to_account_id"],)).fetchone()
-        expected_kind = "liability" if kind == "repay" else "receivable"
-        if source["kind"] in ["receivable", "liability"] or target["kind"] != expected_kind:
+        if source["kind"] in ["receivable", "liability"] or target["kind"] != rule.target:
             fail("还款请选择付款资金账户和负债账户；回款请选择收款资金账户和债权账户")
         if data["account_id"] == data["to_account_id"]:
             fail("资金账户与往来账户不能相同")
@@ -106,12 +94,11 @@ def validate_entry(db, data, exclude=None):
         data["category"] = ""
     elif data["to_account_id"]:
         fail("只有转账、还款和回款可以关联另一账户")
-    references = {"refund": "expense", "collect": "lend", "repay": "borrow"}
-    if kind in ["repay", "collect"] and not data["to_account_id"] and not data["reference_id"]:
+    if rule.target and rule.reference and not data["to_account_id"] and not data["reference_id"]:
         fail("请选择负债账户" if kind == "repay" else "请选择债权账户")
-    if kind in references and not data["to_account_id"]:
+    if rule.reference and not data["to_account_id"]:
         original = db.execute("SELECT * FROM entries WHERE id=? AND deleted=0", (data["reference_id"],)).fetchone()
-        if not original or original["kind"] != references[kind] or original["id"] == exclude:
+        if not original or original["kind"] != rule.reference or original["id"] == exclude:
             fail("请选择有效的原始交易")
         if data["date"] < original["date"]:
             fail("退款或还款日期不能早于原始交易")
@@ -121,13 +108,13 @@ def validate_entry(db, data, exclude=None):
         ).fetchone()[0]
         if used + data["amount_cents"] > original["amount_cents"]:
             fail("金额超过原交易尚未退款或结清的金额")
-        data["category"] = original["category"] if kind == "refund" else ""
+        data["category"] = original["category"] if not rule.target else ""
         data["counterparty"] = original["counterparty"]
     elif data["reference_id"]:
         fail("该交易类型不应关联原交易")
-    if kind in ["lend", "borrow"] and not data["counterparty"].strip():
+    if rule.counterparty_required and not data["counterparty"].strip():
         fail("借贷需要填写往来对象")
-    if kind in ["income", "expense"] and not data["category"].strip():
+    if rule.category_required and not data["category"].strip():
         fail("请选择或填写分类")
     if exclude:
         linked = list(db.execute("SELECT * FROM entries WHERE reference_id=? AND deleted=0", (exclude,)))
@@ -192,22 +179,21 @@ def display_order(db):
     return json.loads(setting[0]) if setting else dict(accounts=[], categories=[], version=0)
 
 
-def snapshot(db):
-    accounts = [dict(x) for x in db.execute("SELECT * FROM accounts ORDER BY rowid")]
-    ordering = display_order(db)
-    category_state = catalog(db)
-    if "favorites" in ordering:
-        ordering["favorites"] = [p for p in ordering["favorites"] if p in category_state["items"]]
-    ranks = {aid: i for i, aid in enumerate(ordering["accounts"])}
-    accounts.sort(key=lambda a: ranks.get(a["id"], len(ranks)))
-    entries = [dict(x) for x in db.execute("SELECT * FROM entries ORDER BY date DESC,created_at DESC,rowid DESC")]
+def account_postings(entry):
+    rule = ENTRY_KINDS.get(entry["kind"])
+    yield entry["account_id"], entry["amount_cents"] if rule and rule.inflow else -entry["amount_cents"]
+    if entry["to_account_id"] and rule and rule.target_sign:
+        yield entry["to_account_id"], rule.target_sign * entry["amount_cents"]
+
+
+def project_ledger(accounts, entries):
+    accounts = [dict(account) for account in accounts]
+    entries = [dict(entry) for entry in entries]
     balances = {a["id"]: a["opening_cents"] for a in accounts}
     active = [x for x in entries if not x["deleted"]]
     for x in active:
-        sign = 1 if x["kind"] in ["income", "refund", "borrow", "collect", "balance_in"] else -1
-        balances[x["account_id"]] += sign * x["amount_cents"]
-        if x["to_account_id"] and x["kind"] in ["transfer", "repay", "collect"]:
-            balances[x["to_account_id"]] += (-1 if x["kind"] == "collect" else 1) * x["amount_cents"]
+        for account_id, amount in account_postings(x):
+            balances[account_id] += amount
     receivable = payable = 0
     settled = {}
     for item in active:
@@ -226,41 +212,51 @@ def snapshot(db):
     liabilities = -sum(min(0, n) for n in balances.values()) + payable
     receivable += sum(max(0, a["balance_cents"]) for a in accounts if a["kind"] == "receivable")
     payable += sum(max(0, -a["balance_cents"]) for a in accounts if a["kind"] == "liability")
+    return dict(accounts=accounts, entries=entries, assets=assets, liabilities=liabilities,
+                net_assets=assets - liabilities, receivable=receivable, payable=payable)
+
+
+def snapshot(db):
+    accounts = [dict(x) for x in db.execute("SELECT * FROM accounts ORDER BY rowid")]
+    ordering = display_order(db)
+    category_state = catalog(db)
+    if "favorites" in ordering:
+        ordering["favorites"] = [p for p in ordering["favorites"] if p in category_state["items"]]
+    ranks = {aid: i for i, aid in enumerate(ordering["accounts"])}
+    accounts.sort(key=lambda a: ranks.get(a["id"], len(ranks)))
+    entries = [dict(x) for x in db.execute("SELECT * FROM entries ORDER BY date DESC,created_at DESC,rowid DESC")]
     groups = [dict(g) for g in db.execute(
         "SELECT * FROM account_groups WHERE deleted=0 OR id IN (SELECT COALESCE(group_id,kind) FROM accounts) ORDER BY rowid")]
     group_ranks = {gid: i for i, gid in enumerate(ordering.get("account_groups", []))}
     groups.sort(key=lambda g: group_ranks.get(g["id"], len(group_ranks)))
     return dict(
-        accounts=accounts,
+        **project_ledger(accounts, entries),
         account_groups=groups,
         ordering=ordering,
         category_catalog=category_state,
-        entries=entries,
-        assets=assets,
-        liabilities=liabilities,
-        net_assets=assets - liabilities,
-        receivable=receivable,
-        payable=payable,
         imports=[dict(x) for x in db.execute("SELECT id,name,status,created_at FROM imports ORDER BY created_at DESC")],
     )
 
 
 def report(entries, start, end):
-    if end < start or (end - start).days > 3660:
+    days = (end - start).days
+    if not 0 <= days <= 3660:
         fail("日期范围无效，请选择十年以内的范围")
     daily = {}
-    d = start
-    while d <= end:
-        daily[d.isoformat()] = dict(date=d.isoformat(), income=0, expense=0)
-        d += timedelta(days=1)
+    for offset in range(days + 1):
+        day = (start + timedelta(days=offset)).isoformat()
+        daily[day] = dict(date=day, income=0, expense=0)
     categories = {}
     for x in entries:
         if x["deleted"] or not start.isoformat() <= x["date"] <= end.isoformat():
             continue
-        if x["kind"] == "income":
+        rule = ENTRY_KINDS.get(x["kind"])
+        if not rule:
+            continue
+        if rule.income:
             daily[x["date"]]["income"] += x["amount_cents"]
-        if x["kind"] in ["expense", "refund"]:
-            amount = x["amount_cents"] * (-1 if x["kind"] == "refund" else 1)
+        if rule.expense_sign:
+            amount = x["amount_cents"] * rule.expense_sign
             daily[x["date"]]["expense"] += amount
             categories[x["category"]] = categories.get(x["category"], 0) + amount
     cumulative = 0

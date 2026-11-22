@@ -5,7 +5,6 @@ import {
   Entry,
   State,
   accountLabels,
-  labels,
   money,
   ordered,
   today,
@@ -13,21 +12,11 @@ import {
 } from "./types";
 import { EntryField } from "./entry-field";
 import { AccountSelect, CategorySelect, StyledSelect, StyledDate, CategoryMultiSelect } from "./controls";
-import { categoryAllowsKind } from "./category-groups";
+import { accountFlows, balanceTotal, entryMovement, periodTotals } from "./ledger-projection";
+import { bulkCategoryOptions, entryAccountOptions, kindLabel, kindRule, validateEntries } from "./entry-kinds";
 
-function totals(entries: Entry[]) {
-  return entries.reduce(
-    (total, entry) => {
-      if (entry.kind === "income") total.income += entry.amount_cents;
-      if (entry.kind === "expense") total.expense += entry.amount_cents;
-      if (entry.kind === "refund") total.expense -= entry.amount_cents;
-      return total;
-    },
-    { income: 0, expense: 0 },
-  );
-}
 function Sum({ entries }: { entries: Entry[] }) {
-  const total = totals(entries);
+  const total = periodTotals(entries);
   return (
     <div className="book-sums">
       <span>
@@ -37,7 +26,7 @@ function Sum({ entries }: { entries: Entry[] }) {
         收入 <b className="book-in">{money(total.income)}</b>
       </span>
       <span>
-        结余 <b>{money(total.income - total.expense)}</b>
+        结余 <b>{money(total.net)}</b>
       </span>
     </div>
   );
@@ -84,7 +73,7 @@ export function BookList({
         entry.account_id === account ||
         entry.to_account_id === account) &&
       (!query ||
-        [entry.category, labels[entry.kind], entry.counterparty]
+        [entry.category, kindLabel(entry.kind), entry.counterparty]
           .join(" ")
           .includes(query)),
   );
@@ -220,7 +209,7 @@ export function BookList({
           </div>
           {Array.from({ length: 12 }, (_, i) => 12 - i).map((number) => {
             const key = `${year}-${String(number).padStart(2, "0")}`;
-            const total = totals(
+            const total = periodTotals(
               active.filter((entry) => entry.date.startsWith(key)),
             );
             return (
@@ -277,130 +266,129 @@ export function BookList({
                 </tr>
                 {shown
                   .filter((entry) => entry.date === date)
-                  .map((entry) => (
-                    <tr
-                      key={entry.id}
-                      className={`editable-entry-row ${selected.includes(entry.id) ? "selected" : ""}`}
-                      tabIndex={0}
-                      aria-label={`编辑 ${entry.date} ${entry.category || labels[entry.kind]} ${money(entry.amount_cents)}`}
-                      onClick={() => bulkMode
-                        ? setSelected(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])
-                        : onEdit(entry)}
-                      onKeyDown={(event) => {
-                        if (
-                          event.target === event.currentTarget &&
-                          event.key === "Enter"
-                        )
-                          bulkMode
-                            ? setSelected(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])
-                            : onEdit(entry);
-                      }}
-                    >
-                      {bulkMode && <td className="book-select-column" onClick={event => event.stopPropagation()}>
-                        <input type="checkbox" aria-label={`选择 ${entry.date} ${entry.category || labels[entry.kind]}`}
-                          checked={selected.includes(entry.id)}
-                          onChange={() => setSelected(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])} />
-                      </td>}
-                      <td>
-                        <EntryField
-                          entry={entry}
-                          state={state}
-                          field={
-                            entry.category
-                              ? "category"
-                              : ["lend", "borrow"].includes(entry.kind)
-                                ? "counterparty"
-                                : "kind"
-                          }
-                          onSave={onSave}
-                          onEdit={onEdit}
-                        >
-                          {entry.category.split("/").pop() ||
-                            entry.counterparty ||
-                            labels[entry.kind]}
-                        </EntryField>
-                      </td>
-                      <td>
-                        <EntryField
-                          entry={entry}
-                          state={state}
-                          field="kind"
-                          onSave={onSave}
-                          onEdit={onEdit}
-                        >
-                          <span
-                            className={`book-kind ${entry.kind === "expense" ? "book-out" : ["income", "refund"].includes(entry.kind) ? "book-in" : "book-neutral"}`}
-                          >
-                            {labels[entry.kind]}
-                          </span>
-                        </EntryField>
-                      </td>
-                      <td
-                        className={`numeric book-amount ${entry.kind === "expense" ? "book-out" : ["income", "refund"].includes(entry.kind) ? "book-in" : "book-neutral"}`}
+                  .map((entry) => {
+                    const { tone, sign, targetSign } = entryMovement(entry.kind);
+                    return (
+                      <tr
+                        key={entry.id}
+                        className={`editable-entry-row ${selected.includes(entry.id) ? "selected" : ""}`}
+                        tabIndex={0}
+                        aria-label={`编辑 ${entry.date} ${entry.category || kindLabel(entry.kind)} ${money(entry.amount_cents)}`}
+                        onClick={() => bulkMode
+                          ? setSelected(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])
+                          : onEdit(entry)}
+                        onKeyDown={(event) => {
+                          if (
+                            event.target === event.currentTarget &&
+                            event.key === "Enter"
+                          )
+                            bulkMode
+                              ? setSelected(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])
+                              : onEdit(entry);
+                        }}
                       >
-                        <EntryField
-                          entry={entry}
-                          state={state}
-                          field="amount_cents"
-                          onSave={onSave}
-                          onEdit={onEdit}
-                        >
-                          {" "}
-                          {entry.kind === "expense"
-                            ? "−"
-                            : ["income", "refund"].includes(entry.kind)
-                              ? "+"
-                              : ""}
-                          {money(entry.amount_cents)}
-                        </EntryField>
-                      </td>
-                      <td>
-                        <EntryField
-                          entry={entry}
-                          state={state}
-                          field="account_id"
-                          onSave={onSave}
-                          onEdit={onEdit}
-                        >
-                          {accountName(entry.account_id)}
-                        </EntryField>
-                        {entry.to_account_id && (
-                          <small>
-                            {entry.kind === "collect" ? "←" : "→"}{" "}
-                            <EntryField
-                              entry={entry}
-                              state={state}
-                              field="to_account_id"
-                              onSave={onSave}
-                              onEdit={onEdit}
+                        {bulkMode && <td className="book-select-column" onClick={event => event.stopPropagation()}>
+                          <input type="checkbox" aria-label={`选择 ${entry.date} ${entry.category || kindLabel(entry.kind)}`}
+                            checked={selected.includes(entry.id)}
+                            onChange={() => setSelected(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])} />
+                        </td>}
+                        <td>
+                          <EntryField
+                            entry={entry}
+                            state={state}
+                            field={
+                              entry.category
+                                ? "category"
+                                : kindRule(entry.kind).counterparty
+                                  ? "counterparty"
+                                  : "kind"
+                            }
+                            onSave={onSave}
+                            onEdit={onEdit}
+                          >
+                            {entry.category.split("/").pop() ||
+                              entry.counterparty ||
+                              kindLabel(entry.kind)}
+                          </EntryField>
+                        </td>
+                        <td>
+                          <EntryField
+                            entry={entry}
+                            state={state}
+                            field="kind"
+                            onSave={onSave}
+                            onEdit={onEdit}
+                          >
+                            <span
+                              className={`book-kind ${tone}`}
                             >
-                              {accountName(entry.to_account_id)}
-                            </EntryField>
-                          </small>
-                        )}
-                      </td>
-                      <td>
-                        <EntryField
-                          entry={entry}
-                          state={state}
-                          field="date"
-                          onSave={onSave}
-                          onEdit={onEdit}
+                              {kindLabel(entry.kind)}
+                            </span>
+                          </EntryField>
+                        </td>
+                        <td
+                          className={`numeric book-amount ${tone}`}
                         >
-                          {entry.date}
-                        </EntryField>
-                      </td>
-                      {!bulkMode && <td>
-                        <div
-                          className="row-actions"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <button aria-label="删除账目" title="删除账目" onClick={() => onDelete(entry)}><Trash2 size={18} aria-hidden="true" /></button>
-                        </div>
-                      </td>}
-                      {bulkMode && <td />}
-                    </tr>
-                  ))}
+                          <EntryField
+                            entry={entry}
+                            state={state}
+                            field="amount_cents"
+                            onSave={onSave}
+                            onEdit={onEdit}
+                          >
+                            {" "}
+                            {sign}
+                            {money(entry.amount_cents)}
+                          </EntryField>
+                        </td>
+                        <td>
+                          <EntryField
+                            entry={entry}
+                            state={state}
+                            field="account_id"
+                            onSave={onSave}
+                            onEdit={onEdit}
+                          >
+                            {accountName(entry.account_id)}
+                          </EntryField>
+                          {entry.to_account_id && (
+                            <small>
+                              {targetSign < 0 ? "←" : "→"}{" "}
+                              <EntryField
+                                entry={entry}
+                                state={state}
+                                field="to_account_id"
+                                onSave={onSave}
+                                onEdit={onEdit}
+                              >
+                                {accountName(entry.to_account_id)}
+                              </EntryField>
+                            </small>
+                          )}
+                        </td>
+                        <td>
+                          <EntryField
+                            entry={entry}
+                            state={state}
+                            field="date"
+                            onSave={onSave}
+                            onEdit={onEdit}
+                          >
+                            {entry.date}
+                          </EntryField>
+                        </td>
+                        {!bulkMode && <td>
+                          <div
+                            className="row-actions"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <button aria-label="删除账目" title="删除账目" onClick={() => onDelete(entry)}><Trash2 size={18} aria-hidden="true" /></button>
+                          </div>
+                        </td>}
+                        {bulkMode && <td />}
+                      </tr>
+                    );
+                  })}
               </tbody>
             ))}
           </table>
@@ -447,41 +435,26 @@ function BulkEntryDialog({entries,state,onClose,onSave}:{entries:Entry[];state:S
   const [account,setAccount]=useState("");
   const [date,setDate]=useState(today());
   const [busy,setBusy]=useState(false), [error,setError]=useState("");
-  const catalog = state.category_catalog;
-  const kinds = [...new Set(entries.map(entry => entry.kind).filter(kind => kind === "income" || kind === "expense"))];
-  const categoryOptions = ordered(Array.from(new Set([
-    ...Object.keys(catalog?.items || {}),
-    ...state.entries.map(entry => entry.category),
-  ])).filter(path => path.trim() && (!catalog || (
-    !catalog.hidden.includes(path) && !catalog.retired?.includes(path)
-    && kinds.every(kind => categoryAllowsKind(catalog, path, kind))
-  ))), state.ordering?.categories);
-  const accountOptions=ordered(state.accounts.map(value=>value.id),state.ordering?.accounts)
-    .map(id=>state.accounts.find(value=>value.id===id)!)
-    .filter(Boolean);
-  const accountGroupOptions=ordered(state.account_groups.map(value=>value.id),state.ordering?.account_groups)
-    .map(id=>state.account_groups.find(value=>value.id===id)!)
-    .filter(Boolean);
+  const categories = bulkCategoryOptions(state, entries);
+  const { accounts: accountOptions, accountGroups: accountGroupOptions } = entryAccountOptions(state);
   const enabled=fields.category || fields.amount || fields.account || fields.date;
   const submit=async()=>{
     if(!enabled)return;
-    if(fields.category && !category){setError("请选择分类");return;}
-    if(fields.category && !categoryOptions.includes(category)){
-      setError("所选分类不适用于部分账目的交易类型，请重新选择");return;
-    }
-    if(fields.account && !account){setError("请选择账户");return;}
-    const invalid=fields.account && entries.some(entry=>entry.to_account_id===account && ["transfer","repay","collect"].includes(entry.kind));
-    if(invalid){setError("所选账户与部分账目的对方账户相同，请换一个账户");return;}
-    let amountCents:number|undefined;
-    try { if(fields.amount) amountCents=cents(amount); } catch(reason){setError((reason as Error).message);return;}
-    if(fields.amount && (!amountCents || amountCents <= 0)){setError("金额必须大于 0");return;}
     setBusy(true);setError("");
-    try { await onSave(entries.map(entry=>({...entry,
-      ...(fields.category?{category}:{}),
-      ...(fields.amount?{amount_cents:amountCents}:{}),
-      ...(fields.account?{account_id:account}:{}),
-      ...(fields.date?{date}:{}),
-    }))); } catch(reason){setError((reason as Error).message);} finally{setBusy(false);}
+    try {
+      if (fields.category && !categories.includes(category))
+        throw new Error("请选择适用于所选账目的分类");
+      const updates = entries.map(entry => ({
+        ...entry,
+        category: fields.category ? category : entry.category,
+        amount_cents: fields.amount ? cents(amount) : entry.amount_cents,
+        account_id: fields.account ? account : entry.account_id,
+        date: fields.date ? date : entry.date,
+      }));
+      const reason = validateEntries(updates, state);
+      if (reason) throw new Error(reason);
+      await onSave(updates);
+    } catch(reason){setError((reason as Error).message);} finally{setBusy(false);}
   };
   return <div className="modal-backdrop" onClick={event=>{if(event.target===event.currentTarget&&!busy)onClose();}}>
     <section className="modal bulk-entry-dialog" role="dialog" aria-modal="true" aria-label="批量修改账目" onKeyDown={event=>{if(event.key==="Escape"&&!busy)onClose();}}>
@@ -489,7 +462,7 @@ function BulkEntryDialog({entries,state,onClose,onSave}:{entries:Entry[];state:S
         <button className="icon-button" aria-label="关闭批量修改" onClick={onClose} disabled={busy}><X size={20}/></button></div>
       <form onSubmit={event=>{event.preventDefault();void submit();}}>
         <div className="bulk-field" role="group" aria-label="批量修改分类"><input type="checkbox" aria-label="启用分类修改" checked={fields.category} onChange={event=>setFields({...fields,category:event.target.checked})}/><span>分类</span>
-          <CategorySelect aria-label="批量修改分类" options={categoryOptions} value={category} disabled={!fields.category||busy} onChange={event=>setCategory(event.target.value)}/></div>
+          <CategorySelect aria-label="批量修改分类" options={categories} value={category} disabled={!fields.category||busy} onChange={event=>setCategory(event.target.value)}/></div>
         <div className="bulk-field" role="group" aria-label="批量修改金额"><input type="checkbox" aria-label="启用金额修改" checked={fields.amount} onChange={event=>setFields({...fields,amount:event.target.checked})}/><span>金额</span>
           <input aria-label="批量修改金额" inputMode="decimal" placeholder="元" value={amount} disabled={!fields.amount||busy} onChange={event=>setAmount(event.target.value)}/></div>
         <div className="bulk-field" role="group" aria-label="批量修改账户"><input type="checkbox" aria-label="启用账户修改" checked={fields.account} onChange={event=>setFields({...fields,account:event.target.checked})}/><span>账户</span>
@@ -512,20 +485,7 @@ export function AccountWorkspace({
 }) {
   const [kind, setKind] = useState("bank");
   const accounts = state.accounts.filter((account) => account.kind === kind);
-  const ids = new Set(accounts.map((account) => account.id));
-  let inflow = 0,
-    outflow = 0;
-  for (const entry of state.entries.filter((entry) => !entry.deleted)) {
-    if (ids.has(entry.account_id)) {
-      if (["income", "refund", "borrow", "collect", "balance_in"].includes(entry.kind))
-        inflow += entry.amount_cents;
-      else outflow += entry.amount_cents;
-    }
-    if (ids.has(entry.to_account_id || "")) {
-      if (["transfer", "repay"].includes(entry.kind)) inflow += entry.amount_cents;
-      if (entry.kind === "collect") outflow += entry.amount_cents;
-    }
-  }
+  const { inflow, outflow } = accountFlows(state.entries, accounts);
   return (
     <section className="account-workspace panel">
       <div className="account-rail">
@@ -547,9 +507,7 @@ export function AccountWorkspace({
             <span>
               <b>
                 {money(
-                  state.accounts
-                    .filter((account) => account.kind === id)
-                    .reduce((sum, account) => sum + account.balance_cents, 0),
+                  balanceTotal(state.accounts.filter(account => account.kind === id)),
                 )}
               </b>
               <small>{label}账户</small>
@@ -578,12 +536,7 @@ export function AccountWorkspace({
           <div>
             <small>余额</small>
             <strong>
-              {money(
-                accounts.reduce(
-                  (sum, account) => sum + account.balance_cents,
-                  0,
-                ),
-              )}
+              {money(balanceTotal(accounts))}
             </strong>
           </div>
           <div>

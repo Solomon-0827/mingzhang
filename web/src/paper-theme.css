@@ -126,7 +126,7 @@ input:focus, select:focus, textarea:focus { border-color: #827a5d; box-shadow: 0
 .data-card { background: #faf6ed; }
 .feature-icon { background: #f0e8d7; color: var(--income); }
 .feature-icon.warm, .transaction-icon.expense { background: #f7ece5; color: var(--expense); }
-.transaction-icon.income, .transaction-icon.refund { background: #edf3e8; color: var(--income); }
+.transaction-icon.income, .transaction-icon.refund, .transaction-icon.balance_in { background: #edf3e8; color: var(--income); }
 .favorite-board { background: #f8f3e8; }
 input, select, textarea, .secondary, .icon-button { background: #fffdf7; border-color: var(--border); }
 .amount-input input { background: transparent; }

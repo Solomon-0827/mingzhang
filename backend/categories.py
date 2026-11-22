@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from backend.entry_kinds import CATEGORY_KIND_MARKS, CATEGORY_KINDS, CategoryKind
+
 DEFAULTS = ['日常/餐饮', '日常/购物', '日常/交通', '居住/房租', '居住/水电',
             '生活/娱乐', '生活/旅行', '健康/医疗', '学习/书籍', '收入/工资', '收入/其他', '未分类']
 
@@ -15,9 +17,12 @@ def catalog(db):
     # A complete imported catalog owns the active choices, including unused categories.
     # Defaults and old transaction labels must not silently reappear after a sync.
     if not result.get('authoritative', False):
-        items = {p: (['income'] if p.startswith('收入/') else ['income', 'expense'] if p == '未分类' else ['expense'])
+        items = {p: (['income'] if p.startswith('收入/') else list(CATEGORY_KINDS) if p == '未分类' else ['expense'])
                  for p in DEFAULTS}
-        for row in db.execute("SELECT DISTINCT category,kind FROM entries WHERE category<>'' AND kind IN ('income','expense')"):
+        for row in db.execute(
+            f"SELECT DISTINCT category,kind FROM entries WHERE category<>'' AND kind IN ({CATEGORY_KIND_MARKS})",
+            CATEGORY_KINDS,
+        ):
             kinds = items.setdefault(row['category'], [])
             if row['kind'] not in kinds:
                 kinds.append(row['kind'])
@@ -42,7 +47,7 @@ class CategoryChange(BaseModel):
     level: Literal['parent', 'child'] = 'child'
     path: str = Field(min_length=1, max_length=80)
     name: str = Field(default='', max_length=40)
-    kind: Literal['expense', 'income'] = 'expense'
+    kind: CategoryKind = CategoryKind.expense
     version: int = Field(ge=0)
 
 
@@ -80,7 +85,10 @@ def change_category(db, body):
             fail('分类不在已删除列表中')
         for p in targets:
             hidden.remove(p)
-            items[p] = value['removed_kinds'].pop(p, None) or list({r[0] for r in db.execute("SELECT DISTINCT kind FROM entries WHERE category=? AND kind IN ('income','expense')", (p,))}) or [body.kind]
+            items[p] = value['removed_kinds'].pop(p, None) or list({r[0] for r in db.execute(
+                f"SELECT DISTINCT kind FROM entries WHERE category=? AND kind IN ({CATEGORY_KIND_MARKS})",
+                (p, *CATEGORY_KINDS),
+            )}) or [body.kind]
         drop_placeholder(db, items, path.split('/')[0])
     else:
         if not affected:
