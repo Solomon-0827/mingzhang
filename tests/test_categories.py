@@ -1,3 +1,23 @@
+import json
+from pathlib import Path
+
+import pytest
+
+CATEGORY_NAMES = json.loads(Path(__file__).with_name("fixtures").joinpath("category-name-validation.json").read_text())
+
+
+@pytest.mark.parametrize("case", CATEGORY_NAMES, ids=lambda case: case["case"])
+def test_category_name_validation(client, case):
+    name = "🐱" * case["repeat"] if "repeat" in case else case["name"]
+    action, level = case["action"], case["level"]
+    if action == "add":
+        path = name if level == "parent" else case["path"] + "/" + name
+    else:
+        path = case["path"]
+    response = client.post("/api/categories", json=dict(action=action, level=level, name=name, path=path, version=0))
+    assert response.status_code == case["status"]
+
+
 def test_category_lifecycle_keeps_history_and_versions(client):
     aid = client.post('/api/accounts', json={'name': '测试'}).json()['id']
     entry = {'date': '2026-01-01', 'kind': 'expense', 'amount_cents': 100,

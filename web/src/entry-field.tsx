@@ -74,7 +74,7 @@ export function EntryField({
     target === "account_id" ? roles.account : roles.target?.label ?? fieldLabels.to_account_id;
   const fieldLabel = field === "account_id" || field === "to_account_id" ? accountLabel(field) : fieldLabels[field];
   const chooseCategory = (
-    <CategorySelect options={categoryOptions(state, draft.kind)} aria-label="修改分类" value={draft.category} disabled={busy}
+    <CategorySelect options={categoryOptions(state, draft, "field")} aria-label="修改分类" value={draft.category} disabled={busy}
       onChange={e => selectField("category", e.target.value)} />
   );
   const chooseAccount = (target: "account_id" | "to_account_id") => (

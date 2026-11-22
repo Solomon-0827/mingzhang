@@ -33,7 +33,10 @@ def test_entry_rules(case, tmp_path, monkeypatch):
             data = entry_model(entry).model_dump(mode="json") | {"deleted": entry.get("deleted", 0)}
             db.execute(f"INSERT INTO entries ({','.join(data)}) VALUES ({','.join('?' for _ in data)})", list(data.values()))
         try:
-            model = entry_model(case["entry"])
+            fields = case["entry"]
+            if repeat := case.get("repeat"):
+                fields = fields | {repeat["field"]: "🐱" * repeat["count"]}
+            model = entry_model(fields)
             validate_entry(db, model.model_dump(mode="json"), str(model.id) if "id" in case["entry"] else None)
         except (HTTPException, ValidationError) as error:
             assert not case["valid"]

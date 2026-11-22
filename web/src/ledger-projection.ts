@@ -3,11 +3,19 @@ import type { Account, Entry, Report } from "./types";
 
 export function entryMovement(kind: Kind) {
   const rule = kindRule(kind);
+  const tone = rule?.expenseSign === 1 ? "book-out"
+    : rule?.income || rule?.expenseSign === -1 || kind === "balance_in" ? "book-in" : "book-neutral";
   return {
     direction: rule?.target && !rule.target.kind ? "transfer" : rule?.inflow ? "in" : "out",
     primarySign: rule?.inflow ? 1 : -1,
     targetSign: rule?.targetSign ?? 0,
+    tone,
+    sign: tone === "book-in" ? "+" : tone === "book-out" ? "−" : "",
   } as const;
+}
+
+export function outstandingEntries(entries: readonly Entry[]) {
+  return entries.filter(entry => !entry.deleted && (entry.kind === "lend" || entry.kind === "borrow") && entry.remaining_cents !== 0);
 }
 
 export function accountPostings(entry: Entry): [string, number][] {
@@ -88,9 +96,10 @@ export function periodTotals(entries: readonly Entry[]) {
 
 export const emptyReport: Report = { income: 0, expense: 0, net: 0, daily: [], months: [], categories: [] };
 
+const dayMs = 86_400_000;
+
 export function projectReport(entries: readonly Entry[], start: string, end: string): Report {
-  const startTime = Date.parse(start + "T00:00:00Z"), endTime = Date.parse(end + "T00:00:00Z");
-  const dayMs = 86400000;
+  const startTime = calendarDay(start), endTime = calendarDay(end);
   const length = (endTime - startTime) / dayMs;
   if (!Number.isFinite(length) || length < 0 || length > 3660)
     throw new Error("日期范围无效，请选择十年以内的范围");
@@ -123,4 +132,44 @@ export function projectReport(entries: readonly Entry[], start: string, end: str
   }
   return { income, expense, net: income - expense, daily: [...daily.values()], months: [...months.values()],
     categories: [...categories].sort(([a, amountA], [b, amountB]) => amountB - amountA || (a < b ? -1 : a > b ? 1 : 0)) };
+}
+
+function calendarDay(value: string) {
+  // The API accepts dates and exact local-midnight datetimes. Offsets don't change the date.
+  const midnight = /^(\d{4}-\d{2}-\d{2})(?:[Tt _]00:00(?::00(?:[.,](?:0{6}\d*|0{1,5}))?)?(?:[Zz]|[+−-](?:[01]\d|2[0-3]):?[0-5]\d)?)?$/.exec(value);
+  if (midnight?.[0] === value) {
+    const date = midnight[1];
+    const time = Date.parse(date + "T00:00:00Z");
+    return Number.isFinite(time) && date >= "0001-01-01" && new Date(time).toISOString().slice(0, 10) === date
+      ? time : NaN;
+  }
+  const unix = /^[+-]?(?:\d+|(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?)$/.exec(value);
+  if (unix?.[0] !== value) return NaN;
+  const timestamp = unixTimestamp(value);
+  const millisecondThreshold = 20_000_000_000;
+  // The pinned API parser converts fractional timestamps to seconds and rounds to microseconds
+  // before applying its usual unit inference to the integer part.
+  const normalized = value.includes(".") && Math.abs(timestamp) > millisecondThreshold
+    ? timestamp / 1_000 : timestamp;
+  const whole = Math.floor(normalized);
+  const micros = Math.round((normalized - whole) * 1_000_000);
+  const unitsPerSecond = Math.abs(whole) > millisecondThreshold ? 1_000 : 1;
+  const unitsPerDay = 86_400 * unitsPerSecond;
+  const microsPerDay = 86_400_000_000;
+  const remainder = (whole % unitsPerDay) * (1_000_000 / unitsPerSecond) + micros;
+  if (remainder % microsPerDay !== 0) return NaN;
+  const time = (Math.trunc(whole / unitsPerDay) + remainder / microsPerDay) * dayMs;
+  return time >= Date.parse("0001-01-01") && time <= Date.parse("9999-12-31") ? time : NaN;
+}
+
+function unixTimestamp(value: string) {
+  const whole = value.split(".", 1)[0];
+  if (whole.length <= 16) return Number(value);
+  // The API's integer parser uses signed 64-bit arithmetic before trying decimal syntax.
+  let parsed = 0n;
+  for (const digit of whole.replace(/^[+-]/, "")) {
+    parsed = BigInt.asIntN(64, parsed * 10n + BigInt(digit));
+    if (parsed < 0n) return NaN;
+  }
+  return value.includes(".") ? Number(value) : Number(whole.startsWith("-") ? -parsed : parsed);
 }

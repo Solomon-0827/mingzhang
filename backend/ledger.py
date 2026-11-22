@@ -239,13 +239,13 @@ def snapshot(db):
 
 
 def report(entries, start, end):
-    if end < start or (end - start).days > 3660:
+    days = (end - start).days
+    if not 0 <= days <= 3660:
         fail("日期范围无效，请选择十年以内的范围")
     daily = {}
-    d = start
-    while d <= end:
-        daily[d.isoformat()] = dict(date=d.isoformat(), income=0, expense=0)
-        d += timedelta(days=1)
+    for offset in range(days + 1):
+        day = (start + timedelta(days=offset)).isoformat()
+        daily[day] = dict(date=day, income=0, expense=0)
     categories = {}
     for x in entries:
         if x["deleted"] or not start.isoformat() <= x["date"] <= end.isoformat():

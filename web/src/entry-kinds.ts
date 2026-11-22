@@ -1,4 +1,5 @@
 import { ordered, today, type Account, type CategoryCatalog, type Entry } from "./types";
+import { hasLoneSurrogate, textLength, trimLedgerText } from "./validation";
 
 type Target = { label: string; kind?: string; hint: string };
 type KindRule = {
@@ -51,25 +52,49 @@ type EntryContext = {
   ordering?: { categories: string[] };
 };
 
-export function categoryOptions(context: EntryContext, ...kinds: Kind[]) {
-  if (!kinds.length || kinds.some(kind => !kindRule(kind).category)) return [];
+export function categoryOptions(context: EntryContext, entry: Pick<Entry, "kind" | "category">, editor: "dialog" | "field" = "dialog") {
+  const { kind, category } = entry;
   const catalog = context.category_catalog;
-  const items = catalog?.items ?? Object.assign(Object.create(null) as Record<string, string[]>, fallbackCategories);
-  if (!catalog) {
-    for (const entry of context.entries) {
-      if (entry.deleted || !entry.category || !kindRule(entry.kind).category) continue;
-      items[entry.category] = [...new Set([...(items[entry.category] ?? []), entry.kind])];
-    }
-  }
-  return ordered(Object.keys(items).filter(path =>
-    !catalog?.hidden.includes(path) && !catalog?.retired?.includes(path) &&
-    kinds.every(kind => items[path].includes(kind)),
+  if (catalog) return ordered(Object.keys(catalog.items).filter(path =>
+    activeCategory(catalog, path) && catalog.items[path].includes(kind),
   ), context.ordering?.categories);
+  const defaults = Object.entries(fallbackCategories).filter(([path, kinds]) =>
+    (path !== "未分类" || editor === "dialog") && kinds.includes(kind === "income" ? "income" : "expense"),
+  ).map(([path]) => path);
+  const used = context.entries.filter(entry => !entry.deleted && entry.kind === kind).map(entry => entry.category);
+  const options = [...defaults, ...used, category];
+  if (editor === "field") options.push("未分类");
+  return ordered([...new Set(options)].filter(Boolean), context.ordering?.categories);
 }
 
-export function initialCategory(context: EntryContext, kind: Kind, preferred = "") {
-  const options = categoryOptions(context, kind);
-  return options.includes(preferred) ? preferred : options[0] ?? "";
+function activeCategory(catalog: CategoryCatalog, path: string) {
+  return !catalog.hidden.includes(path) && !catalog.retired?.includes(path);
+}
+
+export function bulkCategoryOptions(context: EntryContext, selected: readonly Entry[]) {
+  const catalog = context.category_catalog;
+  const kinds = [...new Set(selected.map(entry => entry.kind).filter(kind => kindRule(kind).category))];
+  const paths = new Set([...Object.keys(catalog?.items ?? {}), ...context.entries.map(entry => entry.category)]);
+  return ordered([...paths].filter(path => path.trim() && (!catalog || (
+    activeCategory(catalog, path) &&
+    (!Object.hasOwn(catalog.items, path) || kinds.every(kind => catalog.items[path].includes(kind)))
+  ))), context.ordering?.categories);
+}
+
+export function initializeEntryDraft(initial: Entry, context: EntryContext, mode: "new" | "copy" | "edit") {
+  if (mode === "edit") return initial;
+  const { kind, category } = initial;
+  const catalog = context.category_catalog;
+  const options = categoryOptions(context, initial);
+  const required = kindRule(kind).category;
+  if (mode === "copy") {
+    const available = !catalog || activeCategory(catalog, category);
+    if (available && textLength(category) <= 80 && !hasLoneSurrogate(category) &&
+        (!required || (trimLedgerText(category) && options.includes(category)))) return initial;
+    return { ...initial, category: required ? options[0] ?? "" : "" };
+  }
+  if (required && catalog && !options.includes(category)) return { ...initial, category: options[0] ?? "" };
+  return initial;
 }
 
 export function entryRoles(entry: Entry) {
@@ -96,7 +121,8 @@ export function entryAccounts(entry: Entry, accounts: readonly Account[], field:
 export function changeEntryKind(entry: Entry, kind: Kind, context: EntryContext): Entry {
   if (kind === entry.kind) return entry;
   const next = { ...entry, kind, to_account_id: null, reference_id: null,
-    category: initialCategory(context, kind) };
+    category: context.category_catalog && kindRule(kind).category
+      ? categoryOptions(context, { kind, category: "" })[0] ?? "" : "" };
   const accounts = entryAccounts(next, context.accounts, "account_id");
   return accounts.some(account => account.id === next.account_id)
     ? next : { ...next, account_id: accounts[0]?.id ?? "" };
@@ -138,8 +164,10 @@ export function validateEntries(drafts: readonly Entry[], context: EntryContext,
       return "请选择 1900 年至今天之间的实际发生日期";
     if (!Number.isInteger(entry.amount_cents) || entry.amount_cents <= 0) return "金额必须大于 0";
     if (entry.amount_cents > 10 ** 12) return "金额超出范围";
-    if ([...entry.category].length > 80 || [...entry.merchant].length > 120 ||
-      [...entry.memo].length > 1000 || [...entry.counterparty].length > 80) return "分类、商家、备注或往来对象超出长度限制";
+    if (textLength(entry.category) > 80 || textLength(entry.merchant) > 120 ||
+      textLength(entry.memo) > 1000 || textLength(entry.counterparty) > 80) return "分类、商家、备注或往来对象超出长度限制";
+    if ([entry.category, entry.merchant, entry.memo, entry.counterparty].some(hasLoneSurrogate))
+      return "分类、商家、备注或往来对象含无效字符";
     const previous = entries.get(entry.id);
     const source = accounts.get(entry.account_id);
     const target = entry.to_account_id ? accounts.get(entry.to_account_id) : undefined;
@@ -168,8 +196,8 @@ export function validateEntries(drafts: readonly Entry[], context: EntryContext,
       return "该交易类型不应关联原交易";
     }
     const { category, counterparty } = entryDetails(entry, target, original);
-    if (rule.counterparty && !counterparty.trim()) return "借贷需要填写往来对象";
-    if (rule.category && !category.trim()) return "请选择或填写分类";
+    if (rule.counterparty && !trimLedgerText(counterparty)) return "借贷需要填写往来对象";
+    if (rule.category && !trimLedgerText(category)) return "请选择或填写分类";
     const dependents = linked.get(entry.id);
     if (previous && dependents?.size) {
       if (entry.kind !== previous.kind || category !== previous.category || counterparty !== previous.counterparty)

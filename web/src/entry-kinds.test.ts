@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import fixture from "../../tests/fixtures/entry-rules/editors.json";
-import { categoryOptions, changeEntryKind, entryError, entryRoles, kindOptions, validateEntries } from "./entry-kinds";
+import { bulkCategoryOptions, categoryOptions, changeEntryKind, entryError, entryRoles,
+  initializeEntryDraft, kindOptions, validateEntries } from "./entry-kinds";
 import type { Account, Entry } from "./types";
 
 const draft = (fields: object) => ({ id: "candidate", ...fixture.defaults, ...fields }) as Entry;
@@ -12,18 +13,41 @@ const state = {
 };
 
 describe("entry rules shared with the server", () => {
-  it.each(fixture.cases)("$name", ({ entry, valid, reason }) => {
-    const error = entryError(draft(entry), state, "2026-11-21");
+  it.each(fixture.cases)("$name", ({ entry, valid, reason, repeat }) => {
+    const fields = repeat ? { ...entry, [repeat.field]: "🐱".repeat(repeat.count) } : entry;
+    const error = entryError(draft(fields), state, "2026-11-21");
     expect(error === undefined).toBe(valid);
     if (reason) expect(error).toBe(reason);
   });
 });
 
-it("offers only compatible bulk categories and preserves special kinds on their own entries", () => {
-  expect(categoryOptions(state, "expense", "income")).toEqual(["未分类"]);
-  expect(categoryOptions(state, "expense", "refund")).toEqual([]);
+it("filters bulk categories by income and expense kinds, retaining legacy uncataloged choices", () => {
+  const expense = draft({ kind: "expense" });
+  const context = { ...state, entries: [...entries, draft({ kind: "transfer", category: "Sui/原始用途" })] };
+  expect(bulkCategoryOptions(context, [expense, draft({ kind: "income" })])).toEqual(["未分类", "Sui/原始用途"]);
+  expect(bulkCategoryOptions(context, [expense, draft({ kind: "refund" })]))
+    .toEqual(["日常/餐饮", "未分类", "Sui/原始用途"]);
+});
+
+it("preserves special kinds on their own entries", () => {
   expect(kindOptions().map(([kind]) => kind)).not.toContain("refund");
   expect(kindOptions("balance_out").map(([kind]) => kind)).toContain("balance_out");
+});
+
+it("keeps the dialog and inline category order in older snapshots without a catalog", () => {
+  const expense = draft({ kind: "expense", category: "旧/当前分类" });
+  const deleted = draft({ kind: "expense", category: "旧/回收站分类", deleted: 1 });
+  const context = { accounts: state.accounts, entries: [deleted, draft({ kind: "expense", category: "旧/自定义分类" })] };
+  expect(categoryOptions(context, expense).slice(-3)).toEqual(["未分类", "旧/自定义分类", "旧/当前分类"]);
+  expect(categoryOptions(context, expense, "field").slice(-3)).toEqual(["旧/自定义分类", "旧/当前分类", "未分类"]);
+  expect(changeEntryKind(expense, "income", context).category).toBe("");
+});
+
+it("keeps the starter expense default when available and otherwise honors the saved order", () => {
+  const expense = draft({ kind: "expense", category: "日常/餐饮" });
+  const context = { ...state, ordering: { categories: ["未分类", "日常/餐饮"] } };
+  expect(initializeEntryDraft(expense, context, "new").category).toBe("日常/餐饮");
+  expect(changeEntryKind(draft({ kind: "transfer" }), "expense", context).category).toBe("未分类");
 });
 
 it("resets links and selects an eligible funding account on a kind change", () => {
@@ -31,6 +55,22 @@ it("resets links and selects an eligible funding account on a kind change", () =
   const changed = changeEntryKind(previous, "collect", state);
   expect(changed).toMatchObject({ kind: "collect", account_id: "cash", to_account_id: null, reference_id: null, category: "" });
   expect(entryRoles(changed)).toMatchObject({ account: "收款账户", target: { label: "债权账户" } });
+});
+
+it.each(["transfer", "balance_in", "balance_out"])("preserves the imported category when copying or editing %s", kind => {
+  const imported = draft({ kind, category: "Sui/原始用途", to_account_id: kind === "transfer" ? "bank" : null });
+  const copied = initializeEntryDraft(imported, state, "copy");
+  expect(copied.category).toBe("Sui/原始用途");
+  expect(entryError(copied, state)).toBeUndefined();
+  expect(initializeEntryDraft(imported, state, "edit").category).toBe("Sui/原始用途");
+});
+
+it("copies a deleted expense category using the first available category in display order", () => {
+  const copied = draft({ kind: "expense", category: "日常/已删除" });
+  const context = { ...state, ordering: { categories: ["未分类", "日常/餐饮"] } };
+  const initialized = initializeEntryDraft(copied, context, "copy");
+  expect(initialized.category).toBe("未分类");
+  expect(entryError(initialized, context)).toBeUndefined();
 });
 
 it("checks a bulk update in queue order when entries depend on each other", () => {

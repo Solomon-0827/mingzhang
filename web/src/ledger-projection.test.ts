@@ -1,7 +1,8 @@
 import { expect, it } from "vitest";
+import reportRanges from "../../tests/fixtures/report-date-ranges.json";
 import historical from "../../tests/fixtures/ledger-projection/historical-over-settlement.json";
 import monthClose from "../../tests/fixtures/ledger-projection/month-close.json";
-import { accountFlows, accountPostings, entryMovement, periodTotals, projectLedger, projectReport } from "./ledger-projection";
+import { accountFlows, accountPostings, entryMovement, outstandingEntries, periodTotals, projectLedger, projectReport } from "./ledger-projection";
 import { applyMutations, type OfflineMutation } from "./offline-mutations";
 import type { Account, Entry, State } from "./types";
 
@@ -30,11 +31,23 @@ it.each([["month close", monthClose], ["historical over-settlement", historical]
   },
 );
 
-it("treats balance increases as inflow on rows and rejects an invalid report range", () => {
-  expect(entryMovement("balance_in").direction).toBe("in");
-  expect(entryMovement("transfer").direction).toBe("transfer");
-  expect(() => projectReport([], "2026-02-01", "2026-01-01")).toThrow("日期范围无效");
-  expect(() => projectReport([], "2000-01-01", "2026-01-01")).toThrow("日期范围无效");
+it("treats balance increases as inflow on rows", () => {
+  expect(entryMovement("balance_in")).toMatchObject({ direction: "in", sign: "+", tone: "book-in" });
+  expect(entryMovement("transfer")).toMatchObject({ direction: "transfer", sign: "", tone: "book-neutral" });
+  expect(entryMovement("refund")).toMatchObject({ sign: "+", tone: "book-in" });
+  expect(entryMovement("expense")).toMatchObject({ sign: "−", tone: "book-out" });
+});
+
+it("includes historical over-settlements in Accounts detail", () => {
+  const { accounts, entries } = load(historical);
+  const projected = projectLedger(accounts, entries);
+  expect(outstandingEntries(projected.entries).map(({ kind, remaining_cents }) => [kind, remaining_cents]))
+    .toEqual([["lend", projected.receivable], ["borrow", projected.payable]]);
+});
+
+it.each(reportRanges)("report range: $name", ({ start, end, status, first_day }) => {
+  if (status === 200) expect(projectReport([], start, end).daily[0].date).toBe(first_day ?? start);
+  else expect(() => projectReport([], start, end)).toThrow("日期范围无效");
 });
 
 it("projects refunds under the original category and fills the settlement counterparty during replay", () => {

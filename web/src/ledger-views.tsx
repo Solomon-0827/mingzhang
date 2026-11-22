@@ -12,8 +12,8 @@ import {
 } from "./types";
 import { EntryField } from "./entry-field";
 import { AccountSelect, CategorySelect, StyledSelect, StyledDate, CategoryMultiSelect } from "./controls";
-import { accountFlows, balanceTotal, entryMovement, entryPeriodAmounts, periodTotals } from "./ledger-projection";
-import { categoryOptions, entryAccounts, kindLabel, kindRule, validateEntries } from "./entry-kinds";
+import { accountFlows, balanceTotal, entryMovement, periodTotals } from "./ledger-projection";
+import { bulkCategoryOptions, entryAccounts, kindLabel, kindRule, validateEntries } from "./entry-kinds";
 
 function Sum({ entries }: { entries: Entry[] }) {
   const total = periodTotals(entries);
@@ -267,8 +267,7 @@ export function BookList({
                 {shown
                   .filter((entry) => entry.date === date)
                   .map((entry) => {
-                    const { income, expense } = entryPeriodAmounts(entry);
-                    const tone = expense > 0 ? "book-out" : income || expense < 0 ? "book-in" : "book-neutral";
+                    const { tone, sign, targetSign } = entryMovement(entry.kind);
                     return (
                       <tr
                         key={entry.id}
@@ -298,7 +297,7 @@ export function BookList({
                             entry={entry}
                             state={state}
                             field={
-                              entry.category && (kindRule(entry.kind).category || kindRule(entry.kind).reference)
+                              entry.category
                                 ? "category"
                                 : kindRule(entry.kind).counterparty
                                   ? "counterparty"
@@ -338,7 +337,7 @@ export function BookList({
                             onEdit={onEdit}
                           >
                             {" "}
-                            {tone === "book-out" ? "−" : tone === "book-in" ? "+" : ""}
+                            {sign}
                             {money(entry.amount_cents)}
                           </EntryField>
                         </td>
@@ -354,7 +353,7 @@ export function BookList({
                           </EntryField>
                           {entry.to_account_id && (
                             <small>
-                              {entryMovement(entry.kind).targetSign < 0 ? "←" : "→"}{" "}
+                              {targetSign < 0 ? "←" : "→"}{" "}
                               <EntryField
                                 entry={entry}
                                 state={state}
@@ -436,7 +435,7 @@ function BulkEntryDialog({entries,state,onClose,onSave}:{entries:Entry[];state:S
   const [account,setAccount]=useState("");
   const [date,setDate]=useState(today());
   const [busy,setBusy]=useState(false), [error,setError]=useState("");
-  const categories = categoryOptions(state, ...new Set(entries.map(entry => entry.kind)));
+  const categories = bulkCategoryOptions(state, entries);
   const eligibleAccounts = entries.map(entry => new Set(entryAccounts(entry, state.accounts, "account_id").map(a => a.id)));
   const accountOptions = state.accounts.filter(account => eligibleAccounts.every(ids => ids.has(account.id)));
   const accountGroupOptions=ordered(state.account_groups.map(value=>value.id),state.ordering?.account_groups)
@@ -466,7 +465,7 @@ function BulkEntryDialog({entries,state,onClose,onSave}:{entries:Entry[];state:S
       <div className="modal-head"><div><h2>批量修改账目</h2><small>已选择 {entries.length} 笔，只修改勾选的字段</small></div>
         <button className="icon-button" aria-label="关闭批量修改" onClick={onClose} disabled={busy}><X size={20}/></button></div>
       <form onSubmit={event=>{event.preventDefault();void submit();}}>
-        <div className="bulk-field" role="group" aria-label="批量修改分类"><input type="checkbox" aria-label="启用分类修改" disabled={!categories.length || busy} checked={fields.category} onChange={event=>setFields({...fields,category:event.target.checked})}/><span>分类</span>
+        <div className="bulk-field" role="group" aria-label="批量修改分类"><input type="checkbox" aria-label="启用分类修改" checked={fields.category} onChange={event=>setFields({...fields,category:event.target.checked})}/><span>分类</span>
           <CategorySelect aria-label="批量修改分类" options={categories} value={category} disabled={!fields.category||busy} onChange={event=>setCategory(event.target.value)}/></div>
         <div className="bulk-field" role="group" aria-label="批量修改金额"><input type="checkbox" aria-label="启用金额修改" checked={fields.amount} onChange={event=>setFields({...fields,amount:event.target.checked})}/><span>金额</span>
           <input aria-label="批量修改金额" inputMode="decimal" placeholder="元" value={amount} disabled={!fields.amount||busy} onChange={event=>setAmount(event.target.value)}/></div>

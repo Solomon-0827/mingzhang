@@ -24,3 +24,14 @@ def test_projection(path):
     postings = {e["id"]: [list(posting) for posting in account_postings(e)] for e in entries if not e["deleted"]}
     assert postings == expected["postings"]
     assert json.loads(json.dumps(report(entries, *map(date.fromisoformat, fixture["range"])))) == expected["report"]
+
+
+REPORT_RANGES = json.loads(Path(__file__).with_name("fixtures").joinpath("report-date-ranges.json").read_text())
+
+
+@pytest.mark.parametrize("case", REPORT_RANGES, ids=lambda case: case["name"])
+def test_report_date_ranges(client, case):
+    response = client.get("/api/report", params={"start": case["start"], "end": case["end"]})
+    assert response.status_code == case["status"]
+    if response.status_code == 200:
+        assert response.json()["daily"][0]["date"] == case.get("first_day", case["start"])

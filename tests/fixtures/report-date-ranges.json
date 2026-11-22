@@ -1,0 +1,20 @@
+[
+  {"name":"nonexistent February day", "start":"2026-02-30","end":"2026-03-05","status":422},
+  {"name":"non-leap February end date", "start":"2026-02-27","end":"2026-02-29","status":422},
+  {"name":"year zero", "start":"0000-01-01","end":"0000-01-02","status":422},
+  {"name":"leap day", "start":"2024-02-29","end":"2024-02-29","status":200},
+  {"name":"midnight datetime", "start":"2026-01-02T00:00:00Z","end":"2026-01-02t00:00Z","status":200,"first_day":"2026-01-02"},
+  {"name":"midnight with offset and sub-microsecond precision", "start":"2026-01-02_00:00:00,0000001−0400","end":"2026-01-02 00:00:00+04:00","status":200,"first_day":"2026-01-02"},
+  {"name":"non-midnight local time even at UTC midnight", "start":"2026-01-02T04:00:00+04:00","end":"2026-01-02","status":422},
+  {"name":"nonzero microsecond", "start":"2026-01-02T00:00:00.000001","end":"2026-01-02","status":422},
+  {"name":"invalid offset", "start":"2026-01-02T00:00:00+24:00","end":"2026-01-02","status":422},
+  {"name":"invalid midnight calendar day", "start":"2026-02-29T00:00:00Z","end":"2026-03-05","status":422},
+  {"name":"Unix timestamps in seconds and milliseconds", "start":"1767312000","end":"1767312000000","status":200,"first_day":"2026-01-02"},
+  {"name":"Unix timestamp with decimal exponent", "start":"8.64e4","end":"86400","status":200,"first_day":"1970-01-02"},
+  {"name":"decimal millisecond unit inference", "start":"20000044800000.0","end":"2603-10-12","status":422},
+  {"name":"integer timestamp overflow semantics", "start":"18446744073709638016","end":"1970-01-02","status":200,"first_day":"1970-01-02"},
+  {"name":"Unix timestamp outside midnight", "start":"1767312001","end":"2026-01-02","status":422},
+  {"name":"last supported day", "start":"9999-12-31","end":"9999-12-31","status":200},
+  {"name":"backward range", "start":"2026-02-01","end":"2026-01-01","status":400},
+  {"name":"over ten years", "start":"2000-01-01","end":"2026-01-01","status":400}
+]

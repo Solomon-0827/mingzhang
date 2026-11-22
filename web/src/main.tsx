@@ -38,8 +38,8 @@ import {
 import { AccountSelect, ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
 import { categoryLeaf } from "./category-groups";
 import { allKindOptions, categoryOptions, changeEntryKind, defaultCategories, entryAccounts, entryError,
-  entryRoles, initialCategory, kindLabel, kindOptions, referenceOptions } from "./entry-kinds";
-import { balanceTotal, emptyReport, entryMovement, entryPeriodAmounts, periodTotals, projectReport } from "./ledger-projection";
+  entryRoles, initializeEntryDraft, kindLabel, kindOptions, referenceOptions } from "./entry-kinds";
+import { balanceTotal, emptyReport, entryMovement, outstandingEntries, periodTotals, projectReport } from "./ledger-projection";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import "./paper-theme.css";
@@ -107,7 +107,7 @@ const newEntry = (account = ""): Entry => ({
   amount_cents: 0,
   account_id: account,
   to_account_id: null,
-  category: "",
+  category: defaultCategories[0],
   merchant: "",
   memo: "",
   counterparty: "",
@@ -141,7 +141,7 @@ function App() {
     [day, setDay] = useState(""),
     [trash, setTrash] = useState(false);
   const [editor, setEditor] = useState<Entry | null>(null),
-    [editing, setEditing] = useState(false),
+    [editorMode, setEditorMode] = useState<"new" | "copy" | "edit">("new"),
     [accountEditor, setAccountEditor] = useState<Account | null>(null);
   const [lastSync, setLastSync] = useState(""),
     [online, setOnline] = useState(navigator.onLine);
@@ -392,7 +392,7 @@ function App() {
       return;
     }
     setEditor(newEntry(state.accounts[0].id));
-    setEditing(false);
+    setEditorMode("new");
   }, [state, page, navigate, setNotice]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -1214,14 +1214,14 @@ function App() {
             }}
             onEdit={(entry) => {
               setEditor({ ...entry });
-              setEditing(true);
+              setEditorMode("edit");
             }}
             onDelete={(entry) => {
               void queueMutation({type:"entry.delete",path:`/entries/${entry.id}/delete`,method:"POST",body:{version:entry.version}}).catch(e => setError(e.message));
             }}
           />
         )}
-        {["overview", "transactions"].includes(page) && (
+        {(page === "overview" || page === "transactions") && (
           <section className="panel">
             <div className="panel-head">
               <h2>
@@ -1302,13 +1302,9 @@ function App() {
                   </thead>
                   <tbody>
                     {entries
-                      .slice(
-                        0,
-                        page === "overview" ? 6 : page === "entry" ? 20 : 500,
-                      )
+                      .slice(0, page === "overview" ? 6 : 500)
                       .map((x) => {
                         const movement = entryMovement(x.kind);
-                        const { income, expense } = entryPeriodAmounts(x);
                         return (
                           <tr key={x.id}>
                             <td className="muted">
@@ -1342,19 +1338,8 @@ function App() {
                                 <small>{movement.targetSign < 0 ? "←" : "→"} {accountName(x.to_account_id)}</small>
                               )}
                             </td>
-                            <td
-                              className={
-                                "numeric " +
-                                (income || expense < 0
-                                  ? "income-text"
-                                  : expense > 0 ? "book-out" : "")
-                              }
-                            >
-                              {income || expense < 0
-                                ? "+"
-                                : expense > 0
-                                  ? "−"
-                                  : ""}
+                            <td className={`numeric ${movement.tone}`}>
+                              {movement.sign}
                               {money(x.amount_cents)}
                             </td>
                             <td>
@@ -1370,7 +1355,7 @@ function App() {
                                     <button aria-label="编辑" title="编辑"
                                       onClick={() => {
                                         setEditor({ ...x });
-                                        setEditing(true);
+                                        setEditorMode("edit");
                                       }}
                                     ><PencilLine size={18} aria-hidden="true" /></button>
                                     <button
@@ -1382,7 +1367,7 @@ function App() {
                                           date: today(),
                                           version: 1,
                                         });
-                                        setEditing(false);
+                                        setEditorMode("copy");
                                       }}
                                     >
                                       <Copy size={14} />
@@ -1412,14 +1397,8 @@ function App() {
               </div>
             ) : (
               <Empty
-                text={
-                  page === "entry"
-                    ? "还没有记录，在上方记下第一笔吧。"
-                    : trash
-                      ? "回收站是空的"
-                      : "这段时间还没有匹配的流水"
-                }
-                action={page === "entry" || trash ? undefined : openNew}
+                text={trash ? "回收站是空的" : "这段时间还没有匹配的流水"}
+                action={trash ? undefined : openNew}
               />
             )}
           </section>
@@ -1435,13 +1414,7 @@ function App() {
                   {money(state.payable)}
                 </span>
               </div>
-              {state.entries
-                .filter(
-                  (x) =>
-                    !x.deleted &&
-                    ["lend", "borrow"].includes(x.kind) &&
-                    x.remaining_cents > 0,
-                )
+              {outstandingEntries(state.entries)
                 .map((x) => (
                   <div className="loan-row" key={x.id}>
                     <div>
@@ -1451,10 +1424,10 @@ function App() {
                       </small>
                     </div>
                     <span>
-                      待{x.kind === "lend" ? "收" : "还"} ¥{" "}
-                      {money(x.remaining_cents)}
+                      {x.remaining_cents < 0 ? "多" : "待"}{x.kind === "lend" ? "收" : "还"} ¥{" "}
+                      {money(Math.abs(x.remaining_cents))}
                     </span>
-                    <button aria-label={x.kind === "lend" ? "记录回款" : "记录还款"} title={x.kind === "lend" ? "记录回款" : "记录还款"}
+                    {x.remaining_cents > 0 && <button aria-label={x.kind === "lend" ? "记录回款" : "记录还款"} title={x.kind === "lend" ? "记录回款" : "记录还款"}
                       className="text-button"
                       onClick={() => {
                         setEditor({
@@ -1465,9 +1438,9 @@ function App() {
                           counterparty: x.counterparty,
                           category: "",
                         });
-                        setEditing(false);
+                        setEditorMode("new");
                       }}
-                    ><ArrowLeftRight size={18} aria-hidden="true" /></button>
+                    ><ArrowLeftRight size={18} aria-hidden="true" /></button>}
                   </div>
                 ))}
             </section>
@@ -1507,12 +1480,13 @@ function App() {
           editing={Boolean(blockedEditor.current)}
           recoveryQueued={blockedEditor.current ? blockedEditor.queued : undefined}
           recovering
-          accounts={(serverSnapshot ?? state).accounts}
-          accountGroups={(serverSnapshot ?? state).account_groups}
-          entries={(serverSnapshot ?? state).entries}
-          categoryOrder={(serverSnapshot ?? state).ordering?.categories}
-          favorites={(serverSnapshot ?? state).ordering?.favorites}
-          catalog={(serverSnapshot ?? state).category_catalog}
+          validationState={serverSnapshot ?? undefined}
+          accounts={state.accounts}
+          accountGroups={state.account_groups}
+          entries={state.entries}
+          categoryOrder={state.ordering?.categories}
+          favorites={state.ordering?.favorites}
+          catalog={state.category_catalog}
           onClose={() => setBlockedEditor(null)}
           onSave={async value => {
             const change = entryRecoveryChange(blockedEditor.entry, Boolean(blockedEditor.current), value);
@@ -1525,7 +1499,8 @@ function App() {
         <EntryDialog
           key={editor.id}
           initial={editor}
-          editing={editing}
+          editing={editorMode === "edit"}
+          copying={editorMode === "copy"}
           accounts={state.accounts}
           accountGroups={state.account_groups}
           entries={state.entries}
@@ -1534,7 +1509,7 @@ function App() {
                 catalog={state.category_catalog}
           onClose={() => setEditor(null)}
           onSave={async (value) => {
-            await saveEntry(value, editing);
+            await saveEntry(value, editorMode === "edit");
             setEditor(null);
           }}
         />
@@ -1670,7 +1645,9 @@ function Modal({
 function EntryDialog({
   inline = false,
   recovering = false,
+  copying = false,
   recoveryQueued,
+  validationState,
   onRefresh,
   initial,
   editing,
@@ -1685,7 +1662,9 @@ function EntryDialog({
 }: {
   inline?: boolean;
   recovering?: boolean;
+  copying?: boolean;
   recoveryQueued?: Entry;
+  validationState?: State;
   onRefresh?: () => void;
   initial: Entry;
   editing: boolean;
@@ -1699,9 +1678,9 @@ function EntryDialog({
   onSave: (entry: Entry) => Promise<void>;
 }) {
   const context = { accounts, entries, category_catalog: catalog, ordering: { categories: categoryOrder } };
-  const [value, setValue] = useState(() => editing || recovering ? initial : {
-    ...initial, category: initialCategory(context, initial.kind, initial.category || defaultCategories[0]),
-  }),
+  const newDraft = !editing && !recovering && !copying;
+  const [value, setValue] = useState(() => initializeEntryDraft(initial, context,
+    copying ? "copy" : newDraft ? "new" : "edit")),
     [amount, setAmount] = useState(
       initial.amount_cents ? String(initial.amount_cents / 100) : "",
     ),
@@ -1713,12 +1692,12 @@ function EntryDialog({
   const set = <K extends keyof Entry>(key: K, v: Entry[K]) =>
     setValue((old) => ({ ...old, [key]: v }));
   const roles = entryRoles(value);
-  const options = categoryOptions(context, value.kind);
+  const options = categoryOptions(context, value);
   useEffect(() => {
-    if (!editing && !recovering && roles.category && !options.includes(value.category)) {
+    if (newDraft && catalog && roles.category && !options.includes(value.category)) {
       setValue(old => ({ ...old, category: options[0] ?? "" }));
     }
-  }, [catalog, value.kind, value.category, editing, recovering]);
+  }, [catalog, value.kind, value.category, newDraft]);
   const amountField = (
       <label className="amount-input">
         金额（人民币）
@@ -1752,7 +1731,7 @@ function EntryDialog({
         setBusy(true);
         try {
           const next = { ...value, amount_cents: cents(amount) };
-          const error = entryError(next, context);
+          const error = entryError(next, validationState ?? context);
           if (error) throw new Error(error);
           await onSave(next);
           if (inline) {
@@ -1774,7 +1753,7 @@ function EntryDialog({
     >
       <div className="entry-kinds">
         {inline && <h1 className="entry-inline-title">记一笔</h1>}
-        {kindOptions(editing || recovering ? initial.kind : undefined).map(([k, v]) => (
+        {kindOptions(newDraft ? undefined : initial.kind).map(([k, v]) => (
           <button
             type="button"
             className={value.kind === k ? "selected" : ""}
