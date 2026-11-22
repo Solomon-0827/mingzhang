@@ -27,7 +27,6 @@ import {
   AccountGroup,
   CategoryCatalog,
   Entry,
-  Report,
   State,
   accountLabels,
   api,
@@ -40,6 +39,7 @@ import { AccountSelect, ControlTheme, StyledDate, StyledSelect, CategorySelect }
 import { categoryLeaf } from "./category-groups";
 import { allKindOptions, categoryOptions, changeEntryKind, defaultCategories, entryAccounts, entryError,
   entryRoles, initialCategory, kindLabel, kindOptions, referenceOptions } from "./entry-kinds";
+import { balanceTotal, emptyReport, entryMovement, entryPeriodAmounts, periodTotals, projectReport } from "./ledger-projection";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import "./paper-theme.css";
@@ -100,45 +100,6 @@ declare global {
   }
 }
 
-const emptyReport: Report = {
-  income: 0,
-  expense: 0,
-  net: 0,
-  daily: [],
-  months: [],
-  categories: [],
-};
-function localReport(entries: Entry[], start: string, end: string): Report {
-  const daily: Report["daily"] = [];
-  const byDate = new Map<string, Report["daily"][number]>();
-  for (let time = Date.parse(start + "T00:00:00Z"); time <= Date.parse(end + "T00:00:00Z"); time += 86400000) {
-    const date = new Date(time).toISOString().slice(0, 10);
-    const item = {date, income: 0, expense: 0, cumulative: 0};
-    daily.push(item); byDate.set(date, item);
-  }
-  const categories = new Map<string, number>();
-  for (const entry of entries) {
-    const item = !entry.deleted ? byDate.get(entry.date) : undefined;
-    if (!item) continue;
-    if (entry.kind === "income") item.income += entry.amount_cents;
-    if (["expense", "refund"].includes(entry.kind)) {
-      const amount = entry.amount_cents * (entry.kind === "refund" ? -1 : 1);
-      item.expense += amount;
-      categories.set(entry.category, (categories.get(entry.category) || 0) + amount);
-    }
-  }
-  let cumulative = 0;
-  const months = new Map<string, Report["months"][number]>();
-  for (const item of daily) {
-    cumulative += item.income - item.expense; item.cumulative = cumulative;
-    const month = item.date.slice(0, 7), value = months.get(month) || {month, income: 0, expense: 0};
-    value.income += item.income; value.expense += item.expense; months.set(month, value);
-  }
-  const income = daily.reduce((sum, item) => sum + item.income, 0);
-  const expense = daily.reduce((sum, item) => sum + item.expense, 0);
-  return {income, expense, net: income - expense, daily, months: [...months.values()],
-    categories: [...categories.entries()].sort((a, b) => b[1] - a[1])};
-}
 const newEntry = (account = ""): Entry => ({
   id: crypto.randomUUID(),
   date: today(),
@@ -171,8 +132,7 @@ function App() {
       today().slice(0, 4) + "-01-01",
     ),
     [customEnd, setCustomEnd] = useState(today());
-  const [report, setReport] = useState<Report>(emptyReport),
-    [curve, setCurve] = useState("daily");
+  const [curve, setCurve] = useState("daily");
   const [visibleCurves, setVisibleCurves] = useState({income:true, expense:true, cumulative:true});
   const [query, setQuery] = useState(""),
     [type, setType] = useState(""),
@@ -263,11 +223,6 @@ function App() {
     return () => window.removeEventListener("keydown", historyKey);
   }, [travelHistory]);
   useEffect(() => {
-    if (pendingScrollRestore.current === null) return;
-    const top = pendingScrollRestore.current;
-    window.requestAnimationFrame(() => window.scrollTo({top,behavior:"auto"}));
-  }, [page, report]);
-  useEffect(() => {
     const cancelRestore = () => { pendingScrollRestore.current = null; };
     window.addEventListener("wheel", cancelRestore, {passive:true});
     window.addEventListener("touchmove", cancelRestore, {passive:true});
@@ -293,6 +248,20 @@ function App() {
           `${y}-${String(endMonth).padStart(2, "0")}-${new Date(y, endMonth, 0).getDate()}`,
         ];
   }, [anchor, period, customStart, customEnd]);
+  const { report, reportError } = useMemo(() => {
+    if (page !== "reports" || !state) return { report: emptyReport };
+    try {
+      return { report: projectReport(state.entries, range[0], range[1]) };
+    } catch (error) {
+      return { report: emptyReport, reportError: (error as Error).message };
+    }
+  }, [page, state?.entries, range]);
+  useEffect(() => { if (reportError) setError(reportError); }, [reportError, setError]);
+  useEffect(() => {
+    if (pendingScrollRestore.current === null) return;
+    const top = pendingScrollRestore.current;
+    window.requestAnimationFrame(() => window.scrollTo({top,behavior:"auto"}));
+  }, [page, report]);
   const readQueue = useCallback(() => {
     const view = syncQueue.view();
     setQueueView(view);
@@ -327,6 +296,14 @@ function App() {
       throw error;
     }
   }, [requireLogin, clearConnectionError]);
+  useEffect(() => {
+    if (page !== "reports" || !logged || !online) return;
+    let active = true;
+    void refresh().catch(error => {
+      if (active && !isUnauthorized(error)) setError(error.message);
+    });
+    return () => { active = false; };
+  }, [page, range, logged, online, refresh, setError]);
   const scheduleRefresh = useCallback(() => {
     if (backgroundRefresh.current !== null)
       window.clearTimeout(backgroundRefresh.current);
@@ -404,27 +381,6 @@ function App() {
     updater.getState().then(receive).then(() => updater.check()).then(receive).catch(() => undefined);
     return unsubscribe;
   }, []);
-  useEffect(() => {
-    let current = true;
-    const epoch = loginEpoch.current;
-    if (logged && state && ["overview", "reports"].includes(page) && (pendingCount || !online)) {
-      setReport(localReport(state.entries, range[0], range[1]));
-      return () => { current = false; };
-    }
-    if (logged && ["overview", "reports"].includes(page))
-      api<Report>(`/report?start=${range[0]}&end=${range[1]}`)
-        .then((value) => {
-          if (current) setReport(value);
-        })
-        .catch((e) => {
-          if (!current || epoch !== loginEpoch.current) return;
-          if (isUnauthorized(e)) requireLogin();
-          else setError(e.message);
-        });
-    return () => {
-      current = false;
-    };
-  }, [logged, range, state, page, pendingCount, online, setError, requireLogin]);
   const openNew = useCallback(() => {
     if (!state?.accounts.length) {
       navigate("accounts");
@@ -603,23 +559,12 @@ function App() {
           ? "自定义时间"
           : `${anchor.slice(0, 4)} 年 ${Number(anchor.slice(5))} 月`;
   const overviewMonth = today().slice(0, 7);
-  const overviewFlow = useMemo(() => {
-    let income = 0;
-    let expense = 0;
-    for (const entry of state?.entries || []) {
-      if (entry.deleted || !entry.date.startsWith(overviewMonth)) continue;
-      if (entry.kind === "income") income += entry.amount_cents;
-      if (entry.kind === "expense") expense += entry.amount_cents;
-      if (entry.kind === "refund") expense -= entry.amount_cents;
-    }
-    return { income, expense, net: income - expense };
-  }, [state?.entries, overviewMonth]);
+  const overviewFlow = useMemo(() => periodTotals((state?.entries ?? []).filter(entry =>
+    entry.date.startsWith(overviewMonth))), [state?.entries, overviewMonth]);
   const overviewAccounts = useMemo(() => (state?.account_groups || []).map(group => ({
     id: group.id,
     name: group.name,
-    balance: (state?.accounts || [])
-      .filter(account => (account.group_id || account.kind) === group.id)
-      .reduce((sum, account) => sum + account.balance_cents, 0),
+    balance: balanceTotal((state?.accounts ?? []).filter(account => (account.group_id || account.kind) === group.id)),
   })).filter(group => (state?.accounts || []).some(account => (account.group_id || account.kind) === group.id)), [state?.account_groups, state?.accounts]);
   const queueNotice = blocked ? "有 1 项修改未能同步，点此处理" : `${pendingCount} 项等待同步，点此查看`;
   const queueHead = blocked ?? queueView.items[0];
@@ -1361,103 +1306,102 @@ function App() {
                         0,
                         page === "overview" ? 6 : page === "entry" ? 20 : 500,
                       )
-                      .map((x) => (
-                        <tr key={x.id}>
-                          <td className="muted">
-                            {x.date.slice(5)}
-                            <small>{x.date.slice(0, 4)}</small>
-                          </td>
-                          <td>
-                            <div className="transaction-title">
-                              <span className={"transaction-icon " + x.kind}>
-                                {[
-                                  "income",
-                                  "refund",
-                                  "collect",
-                                  "borrow",
-                                ].includes(x.kind) ? (
-                                  <ArrowDownLeft size={17} />
-                                ) : x.kind === "transfer" ? (
-                                  <ArrowLeftRight size={17} />
-                                ) : (
-                                  <ArrowUpRight size={17} />
-                                )}
-                              </span>
-                              <div>
-                                <strong>{x.category || kindLabel(x.kind)}</strong>
-                                <small>
-                                  {kindLabel(x.kind)}
-                                  {x.merchant ? " · " + x.merchant : ""}
-                                  {x.counterparty ? " · " + x.counterparty : ""}
-                                </small>
+                      .map((x) => {
+                        const movement = entryMovement(x.kind);
+                        const { income, expense } = entryPeriodAmounts(x);
+                        return (
+                          <tr key={x.id}>
+                            <td className="muted">
+                              {x.date.slice(5)}
+                              <small>{x.date.slice(0, 4)}</small>
+                            </td>
+                            <td>
+                              <div className="transaction-title">
+                                <span className={"transaction-icon " + x.kind}>
+                                  {movement.direction === "in" ? (
+                                    <ArrowDownLeft size={17} />
+                                  ) : movement.direction === "transfer" ? (
+                                    <ArrowLeftRight size={17} />
+                                  ) : (
+                                    <ArrowUpRight size={17} />
+                                  )}
+                                </span>
+                                <div>
+                                  <strong>{x.category || kindLabel(x.kind)}</strong>
+                                  <small>
+                                    {kindLabel(x.kind)}
+                                    {x.merchant ? " · " + x.merchant : ""}
+                                    {x.counterparty ? " · " + x.counterparty : ""}
+                                  </small>
+                                </div>
                               </div>
-                            </div>
-                          </td>
-                          <td>
-                            {accountName(x.account_id)}
-                            {x.to_account_id && (
-                              <small>{x.kind === "collect" ? "←" : "→"} {accountName(x.to_account_id)}</small>
-                            )}
-                          </td>
-                          <td
-                            className={
-                              "numeric " +
-                              (["income", "refund"].includes(x.kind)
-                                ? "income-text"
-                                : x.kind === "expense" ? "book-out" : "")
-                            }
-                          >
-                            {["income", "refund"].includes(x.kind)
-                              ? "+"
-                              : x.kind === "expense"
-                                ? "−"
-                                : ""}
-                            {money(x.amount_cents)}
-                          </td>
-                          <td>
-                            <div className="row-actions">
-                              {page === "transactions" && trash ? (
-                                <button aria-label="恢复交易" title="恢复交易"
-                                  onClick={() =>
-                                    void queueMutation({type:"entry.restore",path:`/entries/${x.id}/restore`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
-                                  }
-                                ><RotateCcw size={18} aria-hidden="true" /></button>
-                              ) : (
-                                <>
-                                  <button aria-label="编辑" title="编辑"
-                                    onClick={() => {
-                                      setEditor({ ...x });
-                                      setEditing(true);
-                                    }}
-                                  ><PencilLine size={18} aria-hidden="true" /></button>
-                                  <button
-                                    aria-label="复制交易" title="复制交易"
-                                    onClick={() => {
-                                      setEditor({
-                                        ...x,
-                                        id: crypto.randomUUID(),
-                                        date: today(),
-                                        version: 1,
-                                      });
-                                      setEditing(false);
-                                    }}
-                                  >
-                                    <Copy size={14} />
-                                  </button>
-                                  <button
-                                    aria-label="删除交易" title="删除交易"
-                                    onClick={() =>
-                                      void queueMutation({type:"entry.delete",path:`/entries/${x.id}/delete`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
-                                    }
-                                  >
-                                    <Trash2 size={14} />
-                                  </button>
-                                </>
+                            </td>
+                            <td>
+                              {accountName(x.account_id)}
+                              {x.to_account_id && (
+                                <small>{movement.targetSign < 0 ? "←" : "→"} {accountName(x.to_account_id)}</small>
                               )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                            </td>
+                            <td
+                              className={
+                                "numeric " +
+                                (income || expense < 0
+                                  ? "income-text"
+                                  : expense > 0 ? "book-out" : "")
+                              }
+                            >
+                              {income || expense < 0
+                                ? "+"
+                                : expense > 0
+                                  ? "−"
+                                  : ""}
+                              {money(x.amount_cents)}
+                            </td>
+                            <td>
+                              <div className="row-actions">
+                                {page === "transactions" && trash ? (
+                                  <button aria-label="恢复交易" title="恢复交易"
+                                    onClick={() =>
+                                      void queueMutation({type:"entry.restore",path:`/entries/${x.id}/restore`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
+                                    }
+                                  ><RotateCcw size={18} aria-hidden="true" /></button>
+                                ) : (
+                                  <>
+                                    <button aria-label="编辑" title="编辑"
+                                      onClick={() => {
+                                        setEditor({ ...x });
+                                        setEditing(true);
+                                      }}
+                                    ><PencilLine size={18} aria-hidden="true" /></button>
+                                    <button
+                                      aria-label="复制交易" title="复制交易"
+                                      onClick={() => {
+                                        setEditor({
+                                          ...x,
+                                          id: crypto.randomUUID(),
+                                          date: today(),
+                                          version: 1,
+                                        });
+                                        setEditing(false);
+                                      }}
+                                    >
+                                      <Copy size={14} />
+                                    </button>
+                                    <button
+                                      aria-label="删除交易" title="删除交易"
+                                      onClick={() =>
+                                        void queueMutation({type:"entry.delete",path:`/entries/${x.id}/delete`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
+                                      }
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                   </tbody>
                 </table>
                 {page === "transactions" && entries.length > 500 && (

@@ -1,0 +1,55 @@
+{
+  "accounts": [
+    {"id":"cash","kind":"cash","opening_cents":10000},
+    {"id":"bank","kind":"bank","opening_cents":-1000},
+    {"id":"debt","kind":"liability","opening_cents":-1200},
+    {"id":"asset","kind":"receivable","opening_cents":1600},
+    {"id":"unused","kind":"wallet","opening_cents":50}
+  ],
+  "entries": [
+    {"id":"salary","date":"2026-01-30","kind":"income","amount_cents":3000,"category":"工资"},
+    {"id":"meal","date":"2026-01-30","kind":"expense","amount_cents":1000,"category":"餐饮"},
+    {"id":"tea","date":"2026-01-31","kind":"expense","amount_cents":500,"category":"茶"},
+    {"id":"store","date":"2026-01-31","kind":"expense","amount_cents":500,"category":"商店"},
+    {"id":"transfer","date":"2026-01-31","kind":"transfer","amount_cents":700,"to_account_id":"bank"},
+    {"id":"lent","date":"2026-01-31","kind":"lend","amount_cents":1000},
+    {"id":"borrowed","date":"2026-01-31","kind":"borrow","amount_cents":2000},
+    {"id":"refund","date":"2026-02-01","kind":"refund","amount_cents":200,"reference_id":"meal","category":"餐饮"},
+    {"id":"recovered","date":"2026-02-01","kind":"collect","amount_cents":300,"reference_id":"lent"},
+    {"id":"repaid","date":"2026-02-01","kind":"repay","amount_cents":650,"reference_id":"borrowed"},
+    {"id":"account-repayment","date":"2026-02-01","kind":"repay","amount_cents":1400,"to_account_id":"debt"},
+    {"id":"account-collection","date":"2026-02-01","kind":"collect","amount_cents":2000,"to_account_id":"asset"},
+    {"id":"increase","date":"2026-02-01","kind":"balance_in","amount_cents":90,"account_id":"bank"},
+    {"id":"decrease","date":"2026-02-01","kind":"balance_out","amount_cents":40,"account_id":"bank"},
+    {"id":"deleted-expense","date":"2026-02-02","kind":"expense","amount_cents":999,"category":"商店","deleted":1},
+    {"id":"deleted-collection","date":"2026-02-01","kind":"collect","amount_cents":1000,"reference_id":"lent","deleted":1}
+  ],
+  "range":["2026-01-30","2026-02-02"],
+  "expected": {
+    "balances":{"cash":11750,"bank":-250,"debt":200,"asset":-400,"unused":50},
+    "remaining":{"salary":3000,"meal":800,"tea":500,"store":500,"transfer":700,"lent":700,
+      "borrowed":1350,"refund":200,"recovered":300,"repaid":650,"account-repayment":1400,
+      "account-collection":2000,"increase":90,"decrease":40,"deleted-expense":999,"deleted-collection":1000},
+    "totals":{"assets":12700,"liabilities":2000,"net_assets":10700,"receivable":700,"payable":1350},
+    "postings":{
+      "salary":[["cash",3000]],"meal":[["cash",-1000]],"tea":[["cash",-500]],"store":[["cash",-500]],
+      "transfer":[["cash",-700],["bank",700]],"lent":[["cash",-1000]],"borrowed":[["cash",2000]],
+      "refund":[["cash",200]],"recovered":[["cash",300]],"repaid":[["cash",-650]],
+      "account-repayment":[["cash",-1400],["debt",1400]],"account-collection":[["cash",2000],["asset",-2000]],
+      "increase":[["bank",90]],"decrease":[["bank",-40]]
+    },
+    "flows":{"cash":{"inflow":7500,"outflow":5750},"bank":{"inflow":790,"outflow":40},
+      "debt":{"inflow":1400,"outflow":0},"asset":{"inflow":0,"outflow":2000},"unused":{"inflow":0,"outflow":0}},
+    "report":{
+      "income":3000,"expense":1800,"net":1200,
+      "daily":[
+        {"date":"2026-01-30","income":3000,"expense":1000,"cumulative":2000},
+        {"date":"2026-01-31","income":0,"expense":1000,"cumulative":1000},
+        {"date":"2026-02-01","income":0,"expense":-200,"cumulative":1200},
+        {"date":"2026-02-02","income":0,"expense":0,"cumulative":1200}
+      ],
+      "months":[{"month":"2026-01","income":3000,"expense":2000},{"month":"2026-02","income":0,"expense":-200}],
+      "categories":[["餐饮",800],["商店",500],["茶",500]]
+    }
+  }
+}

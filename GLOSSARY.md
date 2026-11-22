@@ -13,6 +13,16 @@ Mingzhang (明账) is an offline-first personal ledger. An entry records an amou
 | Repay (还款), collect (回款) | A funding account (付款账户 or 收款账户) and a liability (负债账户) or receivable (债权账户) respectively. Entry-linked settlements use the original borrow or lend entry. |
 | Balance increase (余额调增), balance decrease (余额调减) | An adjustment to one account's balance. |
 
+## Ledger projection
+
+**Ledger projection.** The account balances, outstanding amounts, asset and liability totals, and period reports derived from entries and opening balances.
+
+**Remaining or outstanding amount (未结清).** The original amount minus active refunds or settlements linked to it.
+
+**Receivable (待收) and payable (待还).** The outstanding amounts to collect and repay, including positive receivable balances and negative liability balances respectively.
+
+**Net assets (净资产).** Total assets minus total liabilities.
+
 ## Sync
 
 **Queued change.** A locally saved change waiting for the server to accept it.

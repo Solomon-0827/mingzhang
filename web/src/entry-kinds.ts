@@ -9,17 +9,21 @@ type KindRule = {
   category?: boolean;
   counterparty?: boolean;
   existingOnly?: boolean;
+  inflow?: boolean;
+  targetSign?: 1 | -1;
+  income?: boolean;
+  expenseSign?: 1 | -1;
 };
 const rules = {
-  income: { label: "收入", category: true },
-  expense: { label: "支出", category: true },
-  transfer: { label: "转账", account: "转出账户", target: { label: "转入账户", hint: "信用卡还本金也使用账户间转账。" } },
-  refund: { label: "退款", reference: "expense", existingOnly: true },
+  income: { label: "收入", category: true, inflow: true, income: true },
+  expense: { label: "支出", category: true, expenseSign: 1 },
+  transfer: { label: "转账", targetSign: 1, account: "转出账户", target: { label: "转入账户", hint: "信用卡还本金也使用账户间转账。" } },
+  refund: { label: "退款", inflow: true, expenseSign: -1, reference: "expense", existingOnly: true },
   lend: { label: "借出", counterparty: true },
-  borrow: { label: "借入", counterparty: true },
-  repay: { label: "还款", account: "付款账户", target: { label: "负债账户", kind: "liability", hint: "付款账户余额减少，同时减少对应负债。本金不计入收支。" }, reference: "borrow" },
-  collect: { label: "回款", account: "收款账户", target: { label: "债权账户", kind: "receivable", hint: "收款账户余额增加，同时减少对应债权。本金不计入收支。" }, reference: "lend" },
-  balance_in: { label: "余额调增", existingOnly: true },
+  borrow: { label: "借入", inflow: true, counterparty: true },
+  repay: { label: "还款", targetSign: 1, account: "付款账户", target: { label: "负债账户", kind: "liability", hint: "付款账户余额减少，同时减少对应负债。本金不计入收支。" }, reference: "borrow" },
+  collect: { label: "回款", inflow: true, targetSign: -1, account: "收款账户", target: { label: "债权账户", kind: "receivable", hint: "收款账户余额增加，同时减少对应债权。本金不计入收支。" }, reference: "lend" },
+  balance_in: { label: "余额调增", inflow: true, existingOnly: true },
   balance_out: { label: "余额调减", existingOnly: true },
 } as const;
 export type Kind = keyof typeof rules;
@@ -104,6 +108,14 @@ export function referenceOptions(entry: Entry, entries: readonly Entry[]) {
     original.kind === reference && (original.remaining_cents > 0 || original.id === entry.reference_id));
 }
 
+export function entryDetails(entry: Entry, target?: Account, original?: Entry) {
+  const rule = kindRule(entry.kind);
+  if (rule?.target?.kind && target) return { category: "", counterparty: target.name };
+  if (rule?.reference && original && !original.deleted && original.kind === rule.reference)
+    return { category: rule.target ? "" : original.category, counterparty: original.counterparty };
+  return { category: entry.category, counterparty: entry.counterparty };
+}
+
 export function entryError(entry: Entry, context: EntryContext, latestDate = today()) {
   return validateEntries([entry], context, latestDate);
 }
@@ -134,32 +146,28 @@ export function validateEntries(drafts: readonly Entry[], context: EntryContext,
     if (!source || (entry.to_account_id && !target)) return "账户不存在";
     if (unavailable.has(entry.category) && previous?.category !== entry.category)
       return "分类已删除或更名，请重新选择";
-    let { category, counterparty } = entry;
+    const original = entry.reference_id ? entries.get(entry.reference_id) : undefined;
     if (rule.target && !rule.target.kind) {
       if (!target || target.id === source.id) return "转账需要两个不同的账户";
     } else if (rule.target && target) {
       if (entry.reference_id) return "不能同时关联账户和原交易";
       if (!fundingAccount(source) || target.kind !== rule.target.kind)
         return "还款请选择付款资金账户和负债账户；回款请选择收款资金账户和债权账户";
-      category = "";
-      counterparty = target.name;
     } else if (target) {
       return "只有转账、还款和回款可以关联另一账户";
     }
     if (rule.target?.kind && !target && !entry.reference_id) return `请选择${rule.target.label}`;
     if (rule.reference && !target) {
-      const original = entry.reference_id ? entries.get(entry.reference_id) : undefined;
       if (!original || original.deleted || original.kind !== rule.reference || original.id === entry.id)
         return "请选择有效的原始交易";
       if (entry.date < original.date) return "退款或还款日期不能早于原始交易";
       const related = linked.get(original.id);
       const used = [...related?.values() ?? []].reduce((sum, item) => sum + (item.id === entry.id ? 0 : item.amount_cents), 0);
       if (used + entry.amount_cents > original.amount_cents) return "金额超过原交易尚未退款或结清的金额";
-      category = rule.target ? "" : original.category;
-      counterparty = original.counterparty;
     } else if (entry.reference_id) {
       return "该交易类型不应关联原交易";
     }
+    const { category, counterparty } = entryDetails(entry, target, original);
     if (rule.counterparty && !counterparty.trim()) return "借贷需要填写往来对象";
     if (rule.category && !category.trim()) return "请选择或填写分类";
     const dependents = linked.get(entry.id);

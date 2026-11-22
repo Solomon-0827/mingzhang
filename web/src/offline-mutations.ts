@@ -1,3 +1,5 @@
+import { entryDetails } from "./entry-kinds";
+import { projectLedger } from "./ledger-projection";
 import type { Account, CategoryChange, DisplayOrder, Entry, State } from "./types";
 
 export type OfflineMutation = {
@@ -13,40 +15,8 @@ export type OfflineMutation = {
   createdAt: number;
 };
 
-function entryDelta(entry: Entry, direction: number, changes: Map<string, number>) {
-  if (entry.deleted) return;
-  const sign = ["income", "refund", "borrow", "collect", "balance_in"].includes(entry.kind) ? 1 : -1;
-  changes.set(entry.account_id, (changes.get(entry.account_id) || 0) + direction * sign * entry.amount_cents);
-  if (entry.to_account_id && ["transfer", "repay", "collect"].includes(entry.kind)) {
-    const targetSign = entry.kind === "collect" ? -1 : 1;
-    changes.set(entry.to_account_id, (changes.get(entry.to_account_id) || 0) + direction * targetSign * entry.amount_cents);
-  }
-}
-
 function rebuild(state: State): State {
-  const balances = new Map(state.accounts.map(account => [account.id, account.opening_cents]));
-  const active = state.entries.filter(entry => !entry.deleted);
-  for (const entry of active) {
-    const changes = new Map<string, number>();
-    entryDelta(entry, 1, changes);
-    for (const [id, amount] of changes) balances.set(id, (balances.get(id) || 0) + amount);
-  }
-  const settled = new Map<string, number>();
-  for (const entry of active) if (entry.reference_id)
-    settled.set(entry.reference_id, (settled.get(entry.reference_id) || 0) + entry.amount_cents);
-  let receivable = 0, payable = 0;
-  const entries = state.entries.map(entry => {
-    const remaining_cents = Math.max(0, entry.amount_cents - (settled.get(entry.id) || 0));
-    if (!entry.deleted && entry.kind === "lend") receivable += remaining_cents;
-    if (!entry.deleted && entry.kind === "borrow") payable += remaining_cents;
-    return { ...entry, remaining_cents };
-  });
-  const accounts = state.accounts.map(account => ({ ...account, balance_cents: balances.get(account.id) || 0 }));
-  const assets = accounts.reduce((sum, account) => sum + Math.max(0, account.balance_cents), 0) + receivable;
-  const liabilities = accounts.reduce((sum, account) => sum - Math.min(0, account.balance_cents), 0) + payable;
-  receivable += accounts.filter(account => account.kind === "receivable").reduce((sum, account) => sum + Math.max(0, account.balance_cents), 0);
-  payable += accounts.filter(account => account.kind === "liability").reduce((sum, account) => sum + Math.max(0, -account.balance_cents), 0);
-  return { ...state, accounts, entries, assets, liabilities, net_assets: assets - liabilities, receivable, payable };
+  return { ...state, ...projectLedger(state.accounts, state.entries) };
 }
 
 function changeCategory(state: State, change: CategoryChange): State {
@@ -106,10 +76,14 @@ function changeCategory(state: State, change: CategoryChange): State {
 export function applyMutation(state: State, mutation: OfflineMutation): State {
   const body = mutation.body;
   if (mutation.type.startsWith("entry.")) {
+    if (mutation.type === "entry.update") return applyMutations(state, [mutation]);
     const entry = body as unknown as Entry;
     let entries = [...state.entries];
-    if (mutation.type === "entry.create") entries = [entry, ...entries.filter(item => item.id !== entry.id)];
-    if (mutation.type === "entry.update") entries = entries.map(item => item.id === entry.id ? { ...entry, version: entry.version + 1 } : item);
+    if (mutation.type === "entry.create") {
+      const target = state.accounts.find(account => account.id === entry.to_account_id);
+      const original = entries.find(item => item.id === entry.reference_id);
+      entries = [{ ...entry, ...entryDetails(entry, target, original) }, ...entries.filter(item => item.id !== entry.id)];
+    }
     if (mutation.type === "entry.delete" || mutation.type === "entry.restore") entries = entries.map(item => item.id === mutation.path.split("/")[2]
       ? { ...item, deleted: mutation.type === "entry.delete" ? 1 : 0, version: item.version + 1 } : item);
     entries.sort((a, b) => b.date.localeCompare(a.date));
@@ -163,14 +137,16 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
 export function applyMutations(state: State, mutations: OfflineMutation[]): State {
   if (!mutations.length) return state;
   if (mutations.every(mutation => mutation.type === "entry.update")) {
-    const updates = new Map(mutations.map(mutation => {
+    const accounts = new Map(state.accounts.map(account => [account.id, account]));
+    const byId = new Map(state.entries.map(entry => [entry.id, entry]));
+    for (const mutation of mutations) {
       const entry = mutation.body as unknown as Entry;
-      return [entry.id, entry] as const;
-    }));
-    const entries = state.entries.map(item => {
-      const entry = updates.get(item.id);
-      return entry ? { ...entry, version: entry.version + 1 } : item;
-    });
+      if (!byId.has(entry.id)) continue;
+      const target = entry.to_account_id ? accounts.get(entry.to_account_id) : undefined;
+      const original = entry.reference_id ? byId.get(entry.reference_id) : undefined;
+      byId.set(entry.id, { ...entry, ...entryDetails(entry, target, original), version: entry.version + 1 });
+    }
+    const entries = [...byId.values()];
     entries.sort((a, b) => b.date.localeCompare(a.date));
     return rebuild({ ...state, entries });
   }

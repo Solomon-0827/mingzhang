@@ -179,22 +179,21 @@ def display_order(db):
     return json.loads(setting[0]) if setting else dict(accounts=[], categories=[], version=0)
 
 
-def snapshot(db):
-    accounts = [dict(x) for x in db.execute("SELECT * FROM accounts ORDER BY rowid")]
-    ordering = display_order(db)
-    category_state = catalog(db)
-    if "favorites" in ordering:
-        ordering["favorites"] = [p for p in ordering["favorites"] if p in category_state["items"]]
-    ranks = {aid: i for i, aid in enumerate(ordering["accounts"])}
-    accounts.sort(key=lambda a: ranks.get(a["id"], len(ranks)))
-    entries = [dict(x) for x in db.execute("SELECT * FROM entries ORDER BY date DESC,created_at DESC,rowid DESC")]
+def account_postings(entry):
+    rule = ENTRY_KINDS.get(entry["kind"])
+    yield entry["account_id"], entry["amount_cents"] if rule and rule.inflow else -entry["amount_cents"]
+    if entry["to_account_id"] and rule and rule.target_sign:
+        yield entry["to_account_id"], rule.target_sign * entry["amount_cents"]
+
+
+def project_ledger(accounts, entries):
+    accounts = [dict(account) for account in accounts]
+    entries = [dict(entry) for entry in entries]
     balances = {a["id"]: a["opening_cents"] for a in accounts}
     active = [x for x in entries if not x["deleted"]]
     for x in active:
-        sign = 1 if x["kind"] in ["income", "refund", "borrow", "collect", "balance_in"] else -1
-        balances[x["account_id"]] += sign * x["amount_cents"]
-        if x["to_account_id"] and x["kind"] in ["transfer", "repay", "collect"]:
-            balances[x["to_account_id"]] += (-1 if x["kind"] == "collect" else 1) * x["amount_cents"]
+        for account_id, amount in account_postings(x):
+            balances[account_id] += amount
     receivable = payable = 0
     settled = {}
     for item in active:
@@ -213,21 +212,28 @@ def snapshot(db):
     liabilities = -sum(min(0, n) for n in balances.values()) + payable
     receivable += sum(max(0, a["balance_cents"]) for a in accounts if a["kind"] == "receivable")
     payable += sum(max(0, -a["balance_cents"]) for a in accounts if a["kind"] == "liability")
+    return dict(accounts=accounts, entries=entries, assets=assets, liabilities=liabilities,
+                net_assets=assets - liabilities, receivable=receivable, payable=payable)
+
+
+def snapshot(db):
+    accounts = [dict(x) for x in db.execute("SELECT * FROM accounts ORDER BY rowid")]
+    ordering = display_order(db)
+    category_state = catalog(db)
+    if "favorites" in ordering:
+        ordering["favorites"] = [p for p in ordering["favorites"] if p in category_state["items"]]
+    ranks = {aid: i for i, aid in enumerate(ordering["accounts"])}
+    accounts.sort(key=lambda a: ranks.get(a["id"], len(ranks)))
+    entries = [dict(x) for x in db.execute("SELECT * FROM entries ORDER BY date DESC,created_at DESC,rowid DESC")]
     groups = [dict(g) for g in db.execute(
         "SELECT * FROM account_groups WHERE deleted=0 OR id IN (SELECT COALESCE(group_id,kind) FROM accounts) ORDER BY rowid")]
     group_ranks = {gid: i for i, gid in enumerate(ordering.get("account_groups", []))}
     groups.sort(key=lambda g: group_ranks.get(g["id"], len(group_ranks)))
     return dict(
-        accounts=accounts,
+        **project_ledger(accounts, entries),
         account_groups=groups,
         ordering=ordering,
         category_catalog=category_state,
-        entries=entries,
-        assets=assets,
-        liabilities=liabilities,
-        net_assets=assets - liabilities,
-        receivable=receivable,
-        payable=payable,
         imports=[dict(x) for x in db.execute("SELECT id,name,status,created_at FROM imports ORDER BY created_at DESC")],
     )
 
@@ -244,10 +250,13 @@ def report(entries, start, end):
     for x in entries:
         if x["deleted"] or not start.isoformat() <= x["date"] <= end.isoformat():
             continue
-        if x["kind"] == "income":
+        rule = ENTRY_KINDS.get(x["kind"])
+        if not rule:
+            continue
+        if rule.income:
             daily[x["date"]]["income"] += x["amount_cents"]
-        if x["kind"] in ["expense", "refund"]:
-            amount = x["amount_cents"] * (-1 if x["kind"] == "refund" else 1)
+        if rule.expense_sign:
+            amount = x["amount_cents"] * rule.expense_sign
             daily[x["date"]]["expense"] += amount
             categories[x["category"]] = categories.get(x["category"], 0) + amount
     cumulative = 0
@@ -267,5 +276,6 @@ def report(entries, start, end):
         net=income - expense,
         daily=list(daily.values()),
         months=list(months.values()),
-        categories=sorted(categories.items(), key=lambda x: x[1], reverse=True),
+        # UTF-16 order gives ties the same stable order as the browser.
+        categories=sorted(categories.items(), key=lambda x: (-x[1], x[0].encode("utf-16-be"))),
     )

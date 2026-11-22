@@ -1,0 +1,20 @@
+{
+  "accounts":[{"id":"cash","kind":"cash","opening_cents":0}],
+  "entries":[
+    {"id":"lent","date":"2026-03-01","kind":"lend","amount_cents":100},
+    {"id":"collection","date":"2026-03-01","kind":"collect","amount_cents":150,"reference_id":"lent"},
+    {"id":"borrowed","date":"2026-03-01","kind":"borrow","amount_cents":200},
+    {"id":"repayment","date":"2026-03-01","kind":"repay","amount_cents":275,"reference_id":"borrowed"}
+  ],
+  "range":["2026-03-01","2026-03-01"],
+  "expected":{
+    "balances":{"cash":-25},
+    "remaining":{"lent":-50,"collection":150,"borrowed":-75,"repayment":275},
+    "totals":{"assets":-50,"liabilities":-50,"net_assets":0,"receivable":-50,"payable":-75},
+    "postings":{"lent":[["cash",-100]],"collection":[["cash",150]],"borrowed":[["cash",200]],"repayment":[["cash",-275]]},
+    "flows":{"cash":{"inflow":350,"outflow":375}},
+    "report":{"income":0,"expense":0,"net":0,
+      "daily":[{"date":"2026-03-01","income":0,"expense":0,"cumulative":0}],
+      "months":[{"month":"2026-03","income":0,"expense":0}],"categories":[]}
+  }
+}

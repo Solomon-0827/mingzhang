@@ -9,18 +9,22 @@ class EntryRule:
     counterparty_required: bool = False
     target: str | None = None
     reference: str | None = None
+    inflow: bool = False
+    target_sign: int = 0
+    income: bool = False
+    expense_sign: int = 0
 
 
 ENTRY_KINDS = {
-    "income": EntryRule("收入", category_required=True),
-    "expense": EntryRule("支出", category_required=True),
-    "transfer": EntryRule("转账", target="any"),
-    "refund": EntryRule("退款", reference="expense"),
+    "income": EntryRule("收入", category_required=True, inflow=True, income=True),
+    "expense": EntryRule("支出", category_required=True, expense_sign=1),
+    "transfer": EntryRule("转账", target="any", target_sign=1),
+    "refund": EntryRule("退款", reference="expense", inflow=True, expense_sign=-1),
     "lend": EntryRule("借出", counterparty_required=True),
-    "borrow": EntryRule("借入", counterparty_required=True),
-    "repay": EntryRule("还款", target="liability", reference="borrow"),
-    "collect": EntryRule("回款", target="receivable", reference="lend"),
-    "balance_in": EntryRule("余额调增"),
+    "borrow": EntryRule("借入", counterparty_required=True, inflow=True),
+    "repay": EntryRule("还款", target="liability", reference="borrow", target_sign=1),
+    "collect": EntryRule("回款", target="receivable", reference="lend", inflow=True, target_sign=-1),
+    "balance_in": EntryRule("余额调增", inflow=True),
     "balance_out": EntryRule("余额调减"),
 }
 
