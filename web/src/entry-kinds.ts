@@ -130,8 +130,8 @@ export function changeEntryKind(entry: Entry, kind: Kind, context: EntryContext 
   const next = { ...entry, kind, to_account_id: null, reference_id: null,
     category: context.category_catalog && kindRule(kind).category
       ? categoryOptions(context, { kind, category: "" })[0] ?? "" : "" };
-  // A deleted account is never replaced silently: the user must choose where the money went.
-  if (!context.accounts.some(account => account.id === next.account_id)) return { ...next, account_id: "" };
+  // An account missing from local state (deleted, or hidden by a queued change) is kept as is, never replaced.
+  if (!context.accounts.some(account => account.id === next.account_id)) return next;
   const { accounts } = entryAccountOptions(context, next);
   return accounts.some(account => account.id === next.account_id)
     ? next : { ...next, account_id: accounts[0]?.id ?? "" };
