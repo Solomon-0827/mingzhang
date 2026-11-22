@@ -19,9 +19,7 @@
     {"id":"borrowed","kind":"borrow","amount_cents":1000,"counterparty":"李女士","remaining_cents":600},
     {"id":"repaid","kind":"repay","amount_cents":400,"reference_id":"borrowed","counterparty":"李女士"},
     {"id":"hidden-expense","kind":"expense","category":"日常/已删除"},
-    {"id":"deleted-loan","kind":"lend","counterparty":"李女士","deleted":1},
-    {"id":"reduced-purchase","kind":"expense","category":"日常/餐饮","amount_cents":3000},
-    {"id":"deleted-refund","kind":"refund","category":"日常/餐饮","reference_id":"reduced-purchase","amount_cents":4000,"deleted":1}
+    {"id":"deleted-loan","kind":"lend","counterparty":"李女士","deleted":1}
   ],
   "cases": [
     {"name":"expense","entry":{"kind":"expense","category":"日常/餐饮"},"valid":true},
@@ -54,7 +52,6 @@
     {"name":"wrong original kind","entry":{"kind":"refund","reference_id":"lent"},"valid":false,"reason":"请选择有效的原始交易"},
     {"name":"refund before purchase","entry":{"kind":"refund","reference_id":"purchase","date":"2025-12-31"},"valid":false,"reason":"退款或还款日期不能早于原始交易"},
     {"name":"refund exceeds remaining","entry":{"kind":"refund","reference_id":"purchase","amount_cents":601},"valid":false,"reason":"金额超过原交易尚未退款或结清的金额"},
-    {"name":"restore refund after original was reduced","entry":{"id":"deleted-refund","kind":"refund","category":"日常/餐饮","reference_id":"reduced-purchase","amount_cents":4000,"deleted":1},"restore":true,"valid":false,"reason":"金额超过原交易尚未退款或结清的金额"},
     {"name":"loan repayment exceeds remaining","entry":{"kind":"repay","reference_id":"borrowed","amount_cents":601},"valid":false,"reason":"金额超过原交易尚未退款或结清的金额"},
     {"name":"loan collection exceeds remaining","entry":{"kind":"collect","reference_id":"lent","amount_cents":1001},"valid":false,"reason":"金额超过原交易尚未退款或结清的金额"},
     {"name":"edit refund excluding itself","entry":{"id":"refund","kind":"refund","reference_id":"purchase","amount_cents":1000},"valid":true},

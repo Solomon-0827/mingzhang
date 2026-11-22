@@ -133,7 +133,7 @@ function App() {
       today().slice(0, 4) + "-01-01",
     ),
     [customEnd, setCustomEnd] = useState(today());
-  const [serverReport, setServerReport] = useState<Report>(emptyReport),
+  const [report, setReport] = useState<Report>(emptyReport),
     [curve, setCurve] = useState("daily");
   const [visibleCurves, setVisibleCurves] = useState({income:true, expense:true, cumulative:true});
   const [query, setQuery] = useState(""),
@@ -250,16 +250,6 @@ function App() {
           `${y}-${String(endMonth).padStart(2, "0")}-${new Date(y, endMonth, 0).getDate()}`,
         ];
   }, [anchor, period, customStart, customEnd]);
-  const { report, reportError } = useMemo(() => {
-    if (page !== "reports" || !state) return { report: emptyReport };
-    if (online && !pendingCount) return { report: serverReport };
-    try {
-      return { report: projectReport(state.entries, range[0], range[1]) };
-    } catch (error) {
-      return { report: emptyReport, reportError: (error as Error).message };
-    }
-  }, [page, state?.entries, range, pendingCount, online, serverReport]);
-  useEffect(() => { if (reportError) setError(reportError); }, [reportError, setError]);
   useEffect(() => {
     if (pendingScrollRestore.current === null) return;
     const top = pendingScrollRestore.current;
@@ -299,21 +289,6 @@ function App() {
       throw error;
     }
   }, [requireLogin, clearConnectionError]);
-  useEffect(() => {
-    if (page !== "reports" || !logged || !online || pendingCount) return;
-    let active = true;
-    const epoch = loginEpoch.current;
-    api<Report>(`/report?start=${range[0]}&end=${range[1]}`)
-      .then(value => {
-        if (active && epoch === loginEpoch.current) setServerReport(value);
-      })
-      .catch(error => {
-        if (!active || epoch !== loginEpoch.current) return;
-        if (isUnauthorized(error)) requireLogin();
-        else setError(error.message);
-      });
-    return () => { active = false; };
-  }, [page, range, logged, online, pendingCount, state, requireLogin, setError]);
   const scheduleRefresh = useCallback(() => {
     if (backgroundRefresh.current !== null)
       window.clearTimeout(backgroundRefresh.current);
@@ -391,6 +366,30 @@ function App() {
     updater.getState().then(receive).then(() => updater.check()).then(receive).catch(() => undefined);
     return unsubscribe;
   }, []);
+  useEffect(() => {
+    if (!logged || !["overview", "reports"].includes(page)) return;
+    if (state && (pendingCount || !online)) {
+      try {
+        setReport(projectReport(state.entries, range[0], range[1]));
+      } catch (error) {
+        setReport(emptyReport);
+        setError((error as Error).message);
+      }
+      return;
+    }
+    let current = true;
+    const epoch = loginEpoch.current;
+    api<Report>(`/report?start=${range[0]}&end=${range[1]}`)
+      .then(value => {
+        if (current && epoch === loginEpoch.current) setReport(value);
+      })
+      .catch(error => {
+        if (!current || epoch !== loginEpoch.current) return;
+        if (isUnauthorized(error)) requireLogin();
+        else setError(error.message);
+      });
+    return () => { current = false; };
+  }, [logged, range, state, page, pendingCount, online, setError, requireLogin]);
   const openNew = useCallback(() => {
     if (!state?.accounts.length) {
       navigate("accounts");
@@ -489,15 +488,6 @@ function App() {
   async function saveEntry(value: Entry, editing = false) {
     await queueMutation({ type: editing ? "entry.update" : "entry.create", path: editing ? `/entries/${value.id}` : "/entries",
       method: editing ? "PUT" : "POST", body: value as unknown as Record<string, unknown> });
-  }
-  async function restoreEntry(entry: Entry) {
-    if (!state) return;
-    if (entry.kind === "refund") {
-      const error = entryError(entry, state);
-      if (error) throw new Error(error);
-    }
-    await queueMutation({ type: "entry.restore", path: `/entries/${entry.id}/restore`,
-      method: "POST", body: { version: entry.version } });
   }
   async function openBlockedEditor(target: BlockedMutation) {
     const epoch = loginEpoch.current;
@@ -1365,7 +1355,9 @@ function App() {
                               <div className="row-actions">
                                 {page === "transactions" && trash ? (
                                   <button aria-label="恢复交易" title="恢复交易"
-                                    onClick={() => void restoreEntry(x).catch(e => setError(e.message))}
+                                    onClick={() =>
+                                      void queueMutation({type:"entry.restore",path:`/entries/${x.id}/restore`,method:"POST",body:{version:x.version}}).catch(e => setError(e.message))
+                                    }
                                   ><RotateCcw size={18} aria-hidden="true" /></button>
                                 ) : (
                                   <>
