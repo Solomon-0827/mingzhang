@@ -2,7 +2,7 @@ import { Check, ChevronRight, Folder, GripVertical, Star, PencilLine, Plus, Rota
 import { motion } from "motion/react";
 import { PasswordSettings } from "./password-settings";
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { Account, CategoryChange, DisplayOrder, State, ordered, accountLabels, money } from "./types";
+import { Account, CategoryChange, DisplayOrder, State, ordered, orderedAccountOptions, accountLabels, money } from "./types";
 import { StyledSelect } from "./controls";
 import { categoryGroups, categoryLeaf } from "./category-groups";
 
@@ -73,8 +73,9 @@ export function OrderSettings({ state, defaults, initialSection = "categories", 
   state: State; defaults: string[]; onSave: (value: DisplayOrder) => Promise<void>; onEditAccount: (value: Account) => void;
 }) {
   const initialCategories = () => ordered(state.category_catalog ? Object.keys(state.category_catalog.items) : Array.from(new Set([...defaults, ...state.entries.filter(e => !e.deleted && ["income", "expense"].includes(e.kind)).map(e => e.category)])).filter(Boolean), state.ordering?.categories);
-  const [accountGroups,setAccountGroups]=useState(state.account_groups.map(g=>g.id));
-  const [accounts, setAccounts] = useState(state.accounts.map(a => a.id));
+  const initialAccountOptions = () => orderedAccountOptions(state);
+  const [accountGroups,setAccountGroups]=useState(initialAccountOptions().accountGroups.map(g=>g.id));
+  const [accounts, setAccounts] = useState(initialAccountOptions().accounts.map(a => a.id));
   const [categories, setCategories] = useState(initialCategories);
   const [section, setSection] = useState<string>(initialSection);
   const [favorites, setFavorites] = useState(state.ordering?.favorites ?? []);
@@ -83,7 +84,7 @@ export function OrderSettings({ state, defaults, initialSection = "categories", 
   const group = groups.find(g => g.name === selected) ?? groups[0];
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const saving = useRef(false);
-  useEffect(() => {setCategories(initialCategories());setFavorites(state.ordering?.favorites ?? []);setAccounts(state.accounts.map(a=>a.id));setAccountGroups(state.account_groups.map(g=>g.id));}, [state.category_catalog?.version, state.ordering?.version, state.accounts, state.account_groups]);
+  useEffect(() => {const accountOptions=initialAccountOptions();setCategories(initialCategories());setFavorites(state.ordering?.favorites ?? []);setAccounts(accountOptions.accounts.map(a=>a.id));setAccountGroups(accountOptions.accountGroups.map(g=>g.id));}, [state.category_catalog?.version, state.ordering?.version, state.accounts, state.account_groups]);
   const saveOrder = async (next: Partial<DisplayOrder>) => {
     if (saving.current) return;
     saving.current=true;setBusy(true);setError("");
