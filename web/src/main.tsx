@@ -373,7 +373,8 @@ function App() {
         setReport(projectReport(state.entries, range[0], range[1]));
       } catch (error) {
         setReport(emptyReport);
-        setError((error as Error).message);
+        // Only the reports page lets the user pick the range, so only it reports an invalid one.
+        if (page === "reports") setError((error as Error).message);
       }
       return;
     }
