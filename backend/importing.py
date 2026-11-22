@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import openpyxl
 
+from backend.entry_kinds import ENTRY_KINDS, IMPORT_KINDS
 from backend.ledger import Entry, fail, save_entry
 
 ALIASES = {
@@ -22,14 +23,6 @@ ALIASES = {
     "merchant": ["商家", "商户", "交易对象", "merchant"],
     "memo": ["备注", "说明", "memo"],
     "currency": ["币种", "货币", "currency"],
-}
-TYPE_MAP = {
-    "收入": "income",
-    "支出": "expense",
-    "转账": "transfer",
-    "income": "income",
-    "expense": "expense",
-    "transfer": "transfer",
 }
 
 
@@ -95,7 +88,7 @@ def preview(db, rows, headers, mapping):
         try:
             if get("currency") not in ["", "CNY", "RMB", "人民币", "元", "¥", "￥"]:
                 raise ValueError("首版仅支持人民币，请单独处理其他币种")
-            kind = TYPE_MAP.get(get("kind"))
+            kind = IMPORT_KINDS.get(get("kind"))
             if not kind:
                 raise ValueError("类型须为收入、支出或转账；退款/借贷请手工关联原交易")
             raw_amount = Decimal(get("amount").replace(",", "").replace("￥", "").replace("¥", ""))
@@ -115,18 +108,19 @@ def preview(db, rows, headers, mapping):
                     new_accounts[name] = accounts[name]
                 return accounts[name]
 
+            rule = ENTRY_KINDS[kind]
             to_name = get("to_account")
-            if kind == "transfer" and (not to_name or to_name == name):
+            if rule.target and (not to_name or to_name == name):
                 raise ValueError("转账需要不同的转出、转入账户")
             category = "/".join(filter(None, [get("category"), get("subcategory")]))
-            if kind in ["income", "expense"] and not category:
+            if rule.category_required and not category:
                 category = "未分类"
             entry = Entry(
                 date=parsed_date,
                 kind=kind,
                 amount_cents=int(raw_amount * 100),
                 account_id=account_id(name),
-                to_account_id=account_id(to_name) if kind == "transfer" else None,
+                to_account_id=account_id(to_name) if rule.target else None,
                 category=category,
                 merchant=get("merchant"),
                 memo=get("memo"),

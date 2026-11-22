@@ -1,7 +1,8 @@
+import { kindLabel } from "./entry-kinds";
 import { useState } from "react";
 import { applyMutation, type OfflineMutation } from "./offline-mutations";
 import type { BlockedMutation } from "./sync-queue";
-import { ordered, labels, money, type Entry, type State } from "./types";
+import { ordered, money, type Entry, type State } from "./types";
 
 const titles = {
   "entry.create": "新增流水",
@@ -73,7 +74,7 @@ export function recoverySettings(item: OfflineMutation) {
 
 function entryFieldValue(key: EntryField, entry: Entry, accounts: State["accounts"], entries: Entry[]) {
   const value = entry[key];
-  if (key === "kind") return labels[entry.kind];
+  if (key === "kind") return kindLabel(entry.kind);
   if (key === "amount_cents") return `¥${money(entry.amount_cents)}`;
   if (key === "account_id" || key === "to_account_id") {
     const account = accounts.find(item => item.id === value);
@@ -166,7 +167,7 @@ export function describeBlocked(item: OfflineMutation, state: State | null) {
         ? body as unknown as Entry
         : state?.entries.find(value => value.id === targetId);
       field("日期", entry?.date);
-      field("类型", entry && (labels[entry.kind] || entry.kind));
+      field("类型", entry && (kindLabel(entry.kind) || entry.kind));
       field("金额", amount(entry?.amount_cents));
       field("账户", account(entry?.account_id));
       if (entry?.to_account_id) field("关联账户", account(entry.to_account_id));

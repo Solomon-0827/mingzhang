@@ -5,7 +5,6 @@ import {
   Entry,
   State,
   accountLabels,
-  labels,
   money,
   ordered,
   today,
@@ -13,7 +12,7 @@ import {
 } from "./types";
 import { EntryField } from "./entry-field";
 import { AccountSelect, CategorySelect, StyledSelect, StyledDate, CategoryMultiSelect } from "./controls";
-import { categoryAllowsKind } from "./category-groups";
+import { categoryOptions, entryAccounts, kindLabel, kindRule, validateEntries } from "./entry-kinds";
 
 function totals(entries: Entry[]) {
   return entries.reduce(
@@ -84,7 +83,7 @@ export function BookList({
         entry.account_id === account ||
         entry.to_account_id === account) &&
       (!query ||
-        [entry.category, labels[entry.kind], entry.counterparty]
+        [entry.category, kindLabel(entry.kind), entry.counterparty]
           .join(" ")
           .includes(query)),
   );
@@ -282,7 +281,7 @@ export function BookList({
                       key={entry.id}
                       className={`editable-entry-row ${selected.includes(entry.id) ? "selected" : ""}`}
                       tabIndex={0}
-                      aria-label={`编辑 ${entry.date} ${entry.category || labels[entry.kind]} ${money(entry.amount_cents)}`}
+                      aria-label={`编辑 ${entry.date} ${entry.category || kindLabel(entry.kind)} ${money(entry.amount_cents)}`}
                       onClick={() => bulkMode
                         ? setSelected(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])
                         : onEdit(entry)}
@@ -297,7 +296,7 @@ export function BookList({
                       }}
                     >
                       {bulkMode && <td className="book-select-column" onClick={event => event.stopPropagation()}>
-                        <input type="checkbox" aria-label={`选择 ${entry.date} ${entry.category || labels[entry.kind]}`}
+                        <input type="checkbox" aria-label={`选择 ${entry.date} ${entry.category || kindLabel(entry.kind)}`}
                           checked={selected.includes(entry.id)}
                           onChange={() => setSelected(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])} />
                       </td>}
@@ -306,9 +305,9 @@ export function BookList({
                           entry={entry}
                           state={state}
                           field={
-                            entry.category
+                            entry.category && (kindRule(entry.kind).category || kindRule(entry.kind).reference)
                               ? "category"
-                              : ["lend", "borrow"].includes(entry.kind)
+                              : kindRule(entry.kind).counterparty
                                 ? "counterparty"
                                 : "kind"
                           }
@@ -317,7 +316,7 @@ export function BookList({
                         >
                           {entry.category.split("/").pop() ||
                             entry.counterparty ||
-                            labels[entry.kind]}
+                            kindLabel(entry.kind)}
                         </EntryField>
                       </td>
                       <td>
@@ -331,7 +330,7 @@ export function BookList({
                           <span
                             className={`book-kind ${entry.kind === "expense" ? "book-out" : ["income", "refund"].includes(entry.kind) ? "book-in" : "book-neutral"}`}
                           >
-                            {labels[entry.kind]}
+                            {kindLabel(entry.kind)}
                           </span>
                         </EntryField>
                       </td>
@@ -447,49 +446,38 @@ function BulkEntryDialog({entries,state,onClose,onSave}:{entries:Entry[];state:S
   const [account,setAccount]=useState("");
   const [date,setDate]=useState(today());
   const [busy,setBusy]=useState(false), [error,setError]=useState("");
-  const catalog = state.category_catalog;
-  const kinds = [...new Set(entries.map(entry => entry.kind).filter(kind => kind === "income" || kind === "expense"))];
-  const categoryOptions = ordered(Array.from(new Set([
-    ...Object.keys(catalog?.items || {}),
-    ...state.entries.map(entry => entry.category),
-  ])).filter(path => path.trim() && (!catalog || (
-    !catalog.hidden.includes(path) && !catalog.retired?.includes(path)
-    && kinds.every(kind => categoryAllowsKind(catalog, path, kind))
-  ))), state.ordering?.categories);
-  const accountOptions=ordered(state.accounts.map(value=>value.id),state.ordering?.accounts)
-    .map(id=>state.accounts.find(value=>value.id===id)!)
-    .filter(Boolean);
+  const categories = categoryOptions(state, ...new Set(entries.map(entry => entry.kind)));
+  const eligibleAccounts = entries.map(entry => new Set(entryAccounts(entry, state.accounts, "account_id").map(a => a.id)));
+  const accountOptions = state.accounts.filter(account => eligibleAccounts.every(ids => ids.has(account.id)));
   const accountGroupOptions=ordered(state.account_groups.map(value=>value.id),state.ordering?.account_groups)
     .map(id=>state.account_groups.find(value=>value.id===id)!)
     .filter(Boolean);
   const enabled=fields.category || fields.amount || fields.account || fields.date;
   const submit=async()=>{
     if(!enabled)return;
-    if(fields.category && !category){setError("请选择分类");return;}
-    if(fields.category && !categoryOptions.includes(category)){
-      setError("所选分类不适用于部分账目的交易类型，请重新选择");return;
-    }
-    if(fields.account && !account){setError("请选择账户");return;}
-    const invalid=fields.account && entries.some(entry=>entry.to_account_id===account && ["transfer","repay","collect"].includes(entry.kind));
-    if(invalid){setError("所选账户与部分账目的对方账户相同，请换一个账户");return;}
-    let amountCents:number|undefined;
-    try { if(fields.amount) amountCents=cents(amount); } catch(reason){setError((reason as Error).message);return;}
-    if(fields.amount && (!amountCents || amountCents <= 0)){setError("金额必须大于 0");return;}
     setBusy(true);setError("");
-    try { await onSave(entries.map(entry=>({...entry,
-      ...(fields.category?{category}:{}),
-      ...(fields.amount?{amount_cents:amountCents}:{}),
-      ...(fields.account?{account_id:account}:{}),
-      ...(fields.date?{date}:{}),
-    }))); } catch(reason){setError((reason as Error).message);} finally{setBusy(false);}
+    try {
+      if (fields.category && !categories.includes(category))
+        throw new Error("请选择适用于所选账目的分类");
+      const updates = entries.map(entry => ({
+        ...entry,
+        category: fields.category ? category : entry.category,
+        amount_cents: fields.amount ? cents(amount) : entry.amount_cents,
+        account_id: fields.account ? account : entry.account_id,
+        date: fields.date ? date : entry.date,
+      }));
+      const reason = validateEntries(updates, state);
+      if (reason) throw new Error(reason);
+      await onSave(updates);
+    } catch(reason){setError((reason as Error).message);} finally{setBusy(false);}
   };
   return <div className="modal-backdrop" onClick={event=>{if(event.target===event.currentTarget&&!busy)onClose();}}>
     <section className="modal bulk-entry-dialog" role="dialog" aria-modal="true" aria-label="批量修改账目" onKeyDown={event=>{if(event.key==="Escape"&&!busy)onClose();}}>
       <div className="modal-head"><div><h2>批量修改账目</h2><small>已选择 {entries.length} 笔，只修改勾选的字段</small></div>
         <button className="icon-button" aria-label="关闭批量修改" onClick={onClose} disabled={busy}><X size={20}/></button></div>
       <form onSubmit={event=>{event.preventDefault();void submit();}}>
-        <div className="bulk-field" role="group" aria-label="批量修改分类"><input type="checkbox" aria-label="启用分类修改" checked={fields.category} onChange={event=>setFields({...fields,category:event.target.checked})}/><span>分类</span>
-          <CategorySelect aria-label="批量修改分类" options={categoryOptions} value={category} disabled={!fields.category||busy} onChange={event=>setCategory(event.target.value)}/></div>
+        <div className="bulk-field" role="group" aria-label="批量修改分类"><input type="checkbox" aria-label="启用分类修改" disabled={!categories.length || busy} checked={fields.category} onChange={event=>setFields({...fields,category:event.target.checked})}/><span>分类</span>
+          <CategorySelect aria-label="批量修改分类" options={categories} value={category} disabled={!fields.category||busy} onChange={event=>setCategory(event.target.value)}/></div>
         <div className="bulk-field" role="group" aria-label="批量修改金额"><input type="checkbox" aria-label="启用金额修改" checked={fields.amount} onChange={event=>setFields({...fields,amount:event.target.checked})}/><span>金额</span>
           <input aria-label="批量修改金额" inputMode="decimal" placeholder="元" value={amount} disabled={!fields.amount||busy} onChange={event=>setAmount(event.target.value)}/></div>
         <div className="bulk-field" role="group" aria-label="批量修改账户"><input type="checkbox" aria-label="启用账户修改" checked={fields.account} onChange={event=>setFields({...fields,account:event.target.checked})}/><span>账户</span>

@@ -2,9 +2,10 @@ import { Check, PencilLine, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useState } from "react";
 import { Popover } from "antd";
-import { Entry, Kind, State, cents, labels, money, today, ordered } from "./types";
+import { Entry, State, cents, money, today } from "./types";
 import { AccountSelect, StyledDate, StyledSelect, CategorySelect } from "./controls";
-import { categoriesForKind, defaultCategoryForKind } from "./category-groups";
+import { categoryOptions, changeEntryKind, entryAccounts, entryError, entryRoles, kindOptions,
+  referenceOptions, type Kind } from "./entry-kinds";
 
 type Field =
   | "date"
@@ -49,10 +50,10 @@ export function EntryField({
     setBusy(true);
     setError("");
     try {
-      await onSave({
-        ...next,
-        amount_cents: field === "amount_cents" ? cents(amount) : next.amount_cents,
-      });
+      const value = { ...next, amount_cents: field === "amount_cents" ? cents(amount) : next.amount_cents };
+      const reason = entryError(value, state);
+      if (reason) throw new Error(reason);
+      await onSave(value);
       setOpen(false);
     } catch (error) {
       setError((error as Error).message);
@@ -60,63 +61,31 @@ export function EntryField({
       setBusy(false);
     }
   }
-  function ready(next: Entry) {
-    if (next.kind === "transfer") return Boolean(next.to_account_id && next.to_account_id !== next.account_id);
-    if (next.kind === "refund") return Boolean(next.reference_id);
-    if (["repay", "collect"].includes(next.kind)) return Boolean(next.reference_id || next.to_account_id);
-    if (["lend", "borrow"].includes(next.kind)) return Boolean(next.counterparty.trim());
-    if (["balance_in", "balance_out"].includes(next.kind)) return true;
-    return Boolean(next.category);
-  }
   function selectField(key: "date" | "category" | "account_id" | "to_account_id", value: string) {
     if (busy) return;
     const next = { ...draft, [key]: value };
     setDraft(next);
-    if (value && (field === key || (field === "kind" && ready(next)))) void save(next);
+    if (value && (field === key || (field === "kind" && !entryError(next, state)))) void save(next);
   }
   const set = <K extends keyof Entry>(key: K, value: Entry[K]) =>
     setDraft((old) => ({ ...old, [key]: value }));
-  const refKind = draft.kind === "refund" ? "expense" : undefined;
-  const categoryOptions = ordered(state.category_catalog ? categoriesForKind(state.category_catalog, draft.kind) : Array.from(
-    new Set([
-      ...(draft.kind === "income"
-        ? ["收入/工资", "收入/其他"]
-        : [
-            "日常/餐饮",
-            "日常/购物",
-            "日常/交通",
-            "居住/房租",
-            "居住/水电",
-            "生活/娱乐",
-            "生活/旅行",
-            "健康/医疗",
-            "学习/书籍",
-          ]),
-      ...state.entries
-        .filter((item) => !item.deleted && item.kind === draft.kind)
-        .map((item) => item.category),
-      draft.category,
-      "未分类",
-    ]),
-  ).filter(Boolean), state.ordering?.categories);
+  const roles = entryRoles(draft);
+  const accountLabel = (target: "account_id" | "to_account_id") =>
+    target === "account_id" ? roles.account : roles.target?.label ?? fieldLabels.to_account_id;
+  const fieldLabel = field === "account_id" || field === "to_account_id" ? accountLabel(field) : fieldLabels[field];
   const chooseCategory = (
-    <CategorySelect options={categoryOptions} aria-label="修改分类" value={draft.category} disabled={busy}
+    <CategorySelect options={categoryOptions(state, draft.kind)} aria-label="修改分类" value={draft.category} disabled={busy}
       onChange={e => selectField("category", e.target.value)} />
   );
   const chooseAccount = (target: "account_id" | "to_account_id") => (
     <AccountSelect
-      aria-label={target === "account_id" ? "修改账户" : draft.kind === "repay" ? "修改负债账户" : draft.kind === "collect" ? "修改债权账户" : "修改转入账户"}
-      accounts={state.accounts.filter(
-        (account) =>
-          target === "account_id"
-            ? !["repay", "collect"].includes(draft.kind) || !["receivable", "liability"].includes(account.kind)
-            : account.id !== draft.account_id && (draft.kind === "repay" ? account.kind === "liability" : draft.kind === "collect" ? account.kind === "receivable" : true),
-      )}
+      aria-label={`修改${accountLabel(target)}`}
+      accounts={entryAccounts(draft, state.accounts, target)}
       groups={state.account_groups}
       value={draft[target] || ""}
       disabled={busy}
       onChange={(e) => selectField(target, e.target.value)}
-      placeholder={target === "account_id" ? "请选择账户" : draft.kind === "repay" ? "请选择负债账户" : draft.kind === "collect" ? "请选择债权账户" : "请选择转入账户"}
+      placeholder={`请选择${accountLabel(target)}`}
     />
   );
   return (
@@ -156,7 +125,7 @@ export function EntryField({
           }
           setOpen(next);
         }}
-        title={`修改${fieldLabels[field]}`}
+        title={`修改${fieldLabel}`}
         getPopupContainer={(trigger) => trigger.parentElement!}
         content={
           <form
@@ -208,7 +177,7 @@ export function EntryField({
               />
             )}
             {field === "category" &&
-              (refKind ? (
+              (roles.reference ? (
                 <p>分类跟随关联的原交易，请在完整编辑中调整关联交易。</p>
               ) : (
                 chooseCategory
@@ -233,32 +202,24 @@ export function EntryField({
                   onChange={(e) => {
                     const kind = e.target.value as Kind;
                     if (kind === draft.kind) return;
-                    const next = {
-                      ...draft,
-                      kind,
-                      account_id: ["repay", "collect"].includes(kind) && ["receivable", "liability"].includes(state.accounts.find(a => a.id === draft.account_id)?.kind || "")
-                        ? state.accounts.find(a => !["receivable", "liability"].includes(a.kind))?.id || "" : draft.account_id,
-                      to_account_id: null,
-                      reference_id: null,
-                      category: defaultCategoryForKind(state.category_catalog, kind, state.ordering?.categories),
-                    };
+                    const next = changeEntryKind(draft, kind, state);
                     setDraft(next);
-                    if (ready(next)) void save(next);
+                    if (!entryError(next, state)) void save(next);
                   }}
                 >
-                  {Object.entries(labels).filter(([kind]) => !["refund", "balance_in", "balance_out"].includes(kind) || kind === entry.kind).map(([kind, label]) => (
+                  {kindOptions(entry.kind).map(([kind, label]) => (
                     <option key={kind} value={kind}>
                       {label}
                     </option>
                   ))}
                 </StyledSelect>
-                {["income", "expense"].includes(draft.kind) && (
+                {roles.category && (
                   <label>分类{chooseCategory}</label>
                 )}
-                {["transfer", "repay", "collect"].includes(draft.kind) && (
-                  <label>{draft.kind === "repay" ? "负债账户" : draft.kind === "collect" ? "债权账户" : "转入账户"}{chooseAccount("to_account_id")}</label>
+                {roles.target && (
+                  <label>{roles.target.label}{chooseAccount("to_account_id")}</label>
                 )}
-                {["lend", "borrow"].includes(draft.kind) && (
+                {roles.counterparty && (
                   <label>
                     往来对象
                     <input
@@ -268,7 +229,7 @@ export function EntryField({
                     />
                   </label>
                 )}
-                {refKind && (
+                {roles.reference && (
                   <label>
                     关联原交易
                     <StyledSelect
@@ -278,19 +239,11 @@ export function EntryField({
                       onChange={(e) => {
                         const next = { ...draft, reference_id: e.target.value };
                         setDraft(next);
-                        if (ready(next)) void save(next);
+                        if (!entryError(next, state)) void save(next);
                       }}
                     >
                       <option value="">请选择原交易</option>
-                      {state.entries
-                        .filter(
-                          (item) =>
-                            !item.deleted &&
-                            item.id !== entry.id &&
-                            item.kind === refKind &&
-                            (item.remaining_cents > 0 ||
-                              item.id === entry.reference_id),
-                        )
+                      {referenceOptions({ ...draft, reference_id: entry.reference_id }, state.entries)
                         .map((item) => (
                           <option key={item.id} value={item.id}>
                             {item.date} · {item.counterparty || item.category} ·{" "}
@@ -321,7 +274,7 @@ export function EntryField({
                 disabled={busy}
                 onClick={() => setOpen(false)}
               ><X size={18} aria-hidden="true" /></button>
-              {(!autoSave || Boolean(error) || (field === "kind" && ["lend", "borrow"].includes(draft.kind))) && !(field === "category" && refKind) && (
+              {(!autoSave || Boolean(error) || (field === "kind" && draft.kind !== entry.kind)) && !(field === "category" && roles.reference) && (
                 <button aria-label={busy ? "保存中…" : "保存"} title={busy ? "保存中…" : "保存"} className="primary" disabled={busy}><Check size={18} aria-hidden="true" /></button>
               )}
             </div>
@@ -331,7 +284,7 @@ export function EntryField({
         <button
           type="button"
           className="entry-field-trigger"
-          aria-label={`修改${fieldLabels[field]}：${typeof children === "string" ? children : fieldLabels[field]}`}
+          aria-label={`修改${fieldLabel}：${typeof children === "string" ? children : fieldLabel}`}
         >
           {children}
         </button>

@@ -26,21 +26,20 @@ import {
   Account,
   AccountGroup,
   CategoryCatalog,
-  ordered,
   Entry,
-  Kind,
   Report,
   State,
   accountLabels,
   api,
   cents,
   isUnauthorized,
-  labels,
   money,
   today,
 } from "./types";
 import { AccountSelect, ControlTheme, StyledDate, StyledSelect, CategorySelect } from "./controls";
-import { categoriesForKind, categoryLeaf, defaultCategoryForKind } from "./category-groups";
+import { categoryLeaf } from "./category-groups";
+import { allKindOptions, categoryOptions, changeEntryKind, defaultCategories, entryAccounts, entryError,
+  entryRoles, initialCategory, kindLabel, kindOptions, referenceOptions } from "./entry-kinds";
 import { BookList, AccountWorkspace } from "./ledger-views";
 import "./style.css";
 import "./paper-theme.css";
@@ -101,20 +100,6 @@ declare global {
   }
 }
 
-const categories = [
-  "日常/餐饮",
-  "日常/购物",
-  "日常/交通",
-  "居住/房租",
-  "居住/水电",
-  "生活/娱乐",
-  "生活/旅行",
-  "健康/医疗",
-  "学习/书籍",
-  "收入/工资",
-  "收入/其他",
-  "未分类",
-];
 const emptyReport: Report = {
   income: 0,
   expense: 0,
@@ -161,7 +146,7 @@ const newEntry = (account = ""): Entry => ({
   amount_cents: 0,
   account_id: account,
   to_account_id: null,
-  category: "日常/餐饮",
+  category: "",
   merchant: "",
   memo: "",
   counterparty: "",
@@ -1326,7 +1311,7 @@ function App() {
                   onChange={(e) => setType(e.target.value)}
                 >
                   <option value="">全部类型</option>
-                  {Object.entries(labels).map(([k, v]) => (
+                  {allKindOptions.map(([k, v]) => (
                     <option key={k} value={k}>
                       {v}
                     </option>
@@ -1399,9 +1384,9 @@ function App() {
                                 )}
                               </span>
                               <div>
-                                <strong>{x.category || labels[x.kind]}</strong>
+                                <strong>{x.category || kindLabel(x.kind)}</strong>
                                 <small>
-                                  {labels[x.kind]}
+                                  {kindLabel(x.kind)}
                                   {x.merchant ? " · " + x.merchant : ""}
                                   {x.counterparty ? " · " + x.counterparty : ""}
                                 </small>
@@ -1518,7 +1503,7 @@ function App() {
                     <div>
                       <strong>{x.counterparty}</strong>
                       <small>
-                        {x.date} · {labels[x.kind]} ¥ {money(x.amount_cents)}
+                        {x.date} · {kindLabel(x.kind)} ¥ {money(x.amount_cents)}
                       </small>
                     </div>
                     <span>
@@ -1546,7 +1531,7 @@ function App() {
         )}
         {page === "settings" && state && <OrderSettings
           key={latestSettings?.id ?? "settings"} initialSection={latestSettings?.section}
-          state={(latestSettings && serverSnapshot) || state} defaults={categories}
+          state={(latestSettings && serverSnapshot) || state} defaults={defaultCategories}
           onCategoryChange={async value => { await queueMutation({type:"category.change",path:"/categories",method:"POST",body:value as unknown as Record<string,unknown>}); }}
           onPasswordChanged={() => { resetHistory(); closeSession(); setPassword(""); setPage("entry"); setNotice("密码已修改，请使用新密码登录。"); }}
           onEditAccount={setAccountEditor}
@@ -1578,12 +1563,12 @@ function App() {
           editing={Boolean(blockedEditor.current)}
           recoveryQueued={blockedEditor.current ? blockedEditor.queued : undefined}
           recovering
-          accounts={state.accounts}
-          accountGroups={state.account_groups}
-          entries={state.entries}
-          categoryOrder={state.ordering?.categories}
-          favorites={state.ordering?.favorites}
-          catalog={state.category_catalog}
+          accounts={(serverSnapshot ?? state).accounts}
+          accountGroups={(serverSnapshot ?? state).account_groups}
+          entries={(serverSnapshot ?? state).entries}
+          categoryOrder={(serverSnapshot ?? state).ordering?.categories}
+          favorites={(serverSnapshot ?? state).ordering?.favorites}
+          catalog={(serverSnapshot ?? state).category_catalog}
           onClose={() => setBlockedEditor(null)}
           onSave={async value => {
             const change = entryRecoveryChange(blockedEditor.entry, Boolean(blockedEditor.current), value);
@@ -1769,7 +1754,10 @@ function EntryDialog({
   onClose: () => void;
   onSave: (entry: Entry) => Promise<void>;
 }) {
-  const [value, setValue] = useState(initial),
+  const context = { accounts, entries, category_catalog: catalog, ordering: { categories: categoryOrder } };
+  const [value, setValue] = useState(() => editing || recovering ? initial : {
+    ...initial, category: initialCategory(context, initial.kind, initial.category || defaultCategories[0]),
+  }),
     [amount, setAmount] = useState(
       initial.amount_cents ? String(initial.amount_cents / 100) : "",
     ),
@@ -1780,24 +1768,11 @@ function EntryDialog({
   const amountRef = useRef<HTMLInputElement>(null);
   const set = <K extends keyof Entry>(key: K, v: Entry[K]) =>
     setValue((old) => ({ ...old, [key]: v }));
-  const legacySettlement = Boolean(value.reference_id && ["repay", "collect"].includes(value.kind) && !value.to_account_id);
-  const refKind = value.kind === "refund" ? "expense" : undefined;
-  const categoryOptions = ordered(catalog ? categoriesForKind(catalog, value.kind) : Array.from(
-    new Set([
-      ...categories.filter((category) =>
-        value.kind === "income"
-          ? category.startsWith("收入/") || category === "未分类"
-          : !category.startsWith("收入/"),
-      ),
-      ...entries
-        .filter((entry) => !entry.deleted && entry.kind === value.kind)
-        .map((entry) => entry.category),
-      value.category,
-    ]),
-  ).filter(Boolean), categoryOrder);
+  const roles = entryRoles(value);
+  const options = categoryOptions(context, value.kind);
   useEffect(() => {
-    if (!editing && !recovering && catalog && ["income", "expense"].includes(value.kind) && !categoryOptions.includes(value.category)) {
-      setValue(old => ({...old, category: categoryOptions[0] ?? ""}));
+    if (!editing && !recovering && roles.category && !options.includes(value.category)) {
+      setValue(old => ({ ...old, category: options[0] ?? "" }));
     }
   }, [catalog, value.kind, value.category, editing, recovering]);
   const amountField = (
@@ -1830,25 +1805,12 @@ function EntryDialog({
       onSubmit={async (e) => {
         e.preventDefault();
         setError("");
-        if (!value.account_id) {
-          setError("请选择账户");
-          return;
-        }
-        if ((value.kind === "transfer" || (["repay", "collect"].includes(value.kind) && !legacySettlement)) && !value.to_account_id) {
-          setError(value.kind === "transfer" ? "请选择转入账户" : `请选择${value.kind === "repay" ? "负债" : "债权"}账户`);
-          return;
-        }
-        if (value.kind === "transfer" && value.to_account_id === value.account_id) {
-          setError("转入账户不能与转出账户相同");
-          return;
-        }
-        if ((value.kind === "income" || value.kind === "expense") && !value.category) {
-          setError("请选择分类");
-          return;
-        }
         setBusy(true);
         try {
-          await onSave({ ...value, amount_cents: cents(amount) });
+          const next = { ...value, amount_cents: cents(amount) };
+          const error = entryError(next, context);
+          if (error) throw new Error(error);
+          await onSave(next);
           if (inline) {
             setValue({
               ...newEntry(value.account_id),
@@ -1868,23 +1830,12 @@ function EntryDialog({
     >
       <div className="entry-kinds">
         {inline && <h1 className="entry-inline-title">记一笔</h1>}
-        {Object.entries(labels).filter(([k]) => !["refund", "balance_in", "balance_out"].includes(k) || ((editing || recovering) && k === initial.kind)).map(([k, v]) => (
+        {kindOptions(editing || recovering ? initial.kind : undefined).map(([k, v]) => (
           <button
             type="button"
             className={value.kind === k ? "selected" : ""}
             key={k}
-            onClick={() => {
-              if (k === value.kind) return;
-              setValue({
-                ...value,
-                kind: k as Kind,
-                account_id: ["repay", "collect"].includes(k) && ["receivable", "liability"].includes(selectedAccount?.kind || "")
-                  ? accounts.find(a => !["receivable", "liability"].includes(a.kind))?.id || "" : value.account_id,
-                to_account_id: null,
-                reference_id: null,
-                category: defaultCategoryForKind(catalog, k as Kind, categoryOrder),
-              });
-            }}
+            onClick={() => setValue(changeEntryKind(value, k, context))}
           >
             {value.kind === k && <motion.span className="kind-selection" layoutId={`entry-kind-${kindMotionId}`} transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }} />}
             <span className="kind-label">{v}</span>
@@ -1892,10 +1843,10 @@ function EntryDialog({
         ))}
       </div>
       {!inline && amountField}
-        {["income", "expense"].includes(value.kind) && (
+        {roles.category && (
           <label className="entry-category">
             分类
-            <CategorySelect options={categoryOptions} value={value.category}
+            <CategorySelect options={options} value={value.category}
               onChange={e => set("category", e.target.value)} />
           </label>
         )}
@@ -1913,7 +1864,7 @@ function EntryDialog({
         </label>
         <label>
           <span className="entry-account-heading">
-            <span>{value.kind === "transfer" ? "转出账户" : value.kind === "repay" ? "付款账户" : value.kind === "collect" ? "收款账户" : "账户"}</span>
+            <span>{roles.account}</span>
             {selectedAccount && <span className="entry-account-balance" role="status" aria-live="polite"
               title={`${selectedAccount.name}当前余额`}>
               余额 <motion.strong key={`${selectedAccount.id}-${selectedAccount.balance_cents}`} initial={{ opacity: 0.35 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }} className={selectedAccount.balance_cents < 0 ? "negative-balance" : undefined}>
@@ -1922,39 +1873,26 @@ function EntryDialog({
             </span>}
           </span>
           <AccountSelect
-            accounts={accounts.filter(a => !["repay", "collect"].includes(value.kind) || !["receivable", "liability"].includes(a.kind))}
+            aria-label={roles.account}
+            accounts={entryAccounts(value, accounts, "account_id")}
             groups={accountGroups}
             value={value.account_id}
             onChange={(e) => set("account_id", e.target.value)}
           />
         </label>
-        {value.kind === "transfer" && (
+        {roles.target && (
           <label className="full">
-            转入账户
-            <AccountSelect
-              accounts={accounts.filter((a) => a.id !== value.account_id)}
-              groups={accountGroups}
-              required
-              value={value.to_account_id || ""}
-              onChange={(e) => set("to_account_id", e.target.value)}
-              placeholder="请选择转入账户"
-            />
-            <small>信用卡还本金也使用账户间转账。</small>
-          </label>
-        )}
-        {["repay", "collect"].includes(value.kind) && !legacySettlement && (
-          <label className="full">
-            {value.kind === "repay" ? "负债账户" : "债权账户"}
-            <AccountSelect required aria-label={value.kind === "repay" ? "负债账户" : "债权账户"}
-              accounts={accounts.filter(a => a.kind === (value.kind === "repay" ? "liability" : "receivable") && a.id !== value.account_id)}
+            {roles.target.label}
+            <AccountSelect required aria-label={roles.target.label}
+              accounts={entryAccounts(value, accounts, "to_account_id")}
               groups={accountGroups}
               value={value.to_account_id || ""} onChange={e => set("to_account_id", e.target.value)}
-              placeholder={`请选择${value.kind === "repay" ? "负债" : "债权"}账户`} />
-            <small>{value.kind === "repay" ? "付款账户余额减少，同时减少对应负债。" : "收款账户余额增加，同时减少对应债权。"}本金不计入收支。</small>
+              placeholder={`请选择${roles.target.label}`} />
+            <small>{roles.target.hint}</small>
           </label>
         )}
-        {legacySettlement && <small>此历史记录保留原借款关联，避免重复调整余额。</small>}
-        {refKind && (
+        {roles.legacySettlement && <small>此历史记录保留原借款关联，避免重复调整余额。</small>}
+        {roles.reference && (
           <label className="full">
             关联原交易
             <StyledSelect
@@ -1962,14 +1900,8 @@ function EntryDialog({
               value={value.reference_id || ""}
               onChange={(e) => set("reference_id", e.target.value)}
             >
-              <option value="">选择原始{labels[refKind as Kind]}记录</option>
-              {entries
-                .filter(
-                  (x) =>
-                    !x.deleted &&
-                    x.kind === refKind &&
-                    (x.remaining_cents > 0 || x.id === initial.reference_id),
-                )
+              <option value="">选择原始{kindLabel(roles.reference)}记录</option>
+              {referenceOptions({ ...value, reference_id: initial.reference_id }, entries)
                 .map((x) => (
                   <option key={x.id} value={x.id}>
                     {x.date} · {x.counterparty || x.category} · ¥{" "}
@@ -1980,7 +1912,7 @@ function EntryDialog({
             <small>退款在实际退款日抵扣原分类支出。</small>
           </label>
         )}
-        {["lend", "borrow"].includes(value.kind) && (
+        {roles.counterparty && (
           <label className="full">
             往来对象
             <input
@@ -1993,10 +1925,10 @@ function EntryDialog({
         )}
       </div>
       {inline && amountField}
-      {inline && ["income", "expense"].includes(value.kind) && favorites.some(p => categoryOptions.includes(p)) && (
+      {inline && roles.category && favorites.some(p => options.includes(p)) && (
         <div className="favorite-shortcuts" role="group" aria-label="常用分类">
           <span className="favorite-caption">常用分类</span>
-          {favorites.filter(p => categoryOptions.includes(p)).slice(0, 9).map(path => (
+          {favorites.filter(p => options.includes(p)).slice(0, 9).map(path => (
             <button type="button" key={path} title={path} aria-pressed={value.category === path}
               className={value.category === path ? "selected" : ""}
               onClick={() => {set("category", path); amountRef.current?.focus();}}>

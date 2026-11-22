@@ -1,14 +1,4 @@
-export type Kind =
-  | "income"
-  | "expense"
-  | "transfer"
-  | "refund"
-  | "lend"
-  | "borrow"
-  | "repay"
-  | "collect"
-  | "balance_in"
-  | "balance_out";
+import type { Kind } from "./entry-kinds";
 export type Account = {
   id: string;
   name: string;
@@ -73,18 +63,6 @@ export type Report = {
   }[];
   months: { month: string; income: number; expense: number }[];
   categories: [string, number][];
-};
-export const labels: Record<Kind, string> = {
-  income: "收入",
-  expense: "支出",
-  transfer: "转账",
-  refund: "退款",
-  lend: "借出",
-  borrow: "借入",
-  repay: "还款",
-  collect: "回款",
-  balance_in: "余额调增",
-  balance_out: "余额调减",
 };
 export const accountLabels: Record<string, string> = {
   bank: "银行卡",

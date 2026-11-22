@@ -7,6 +7,7 @@ from uuid import NAMESPACE_URL, uuid5
 import xlrd
 
 from backend.db import advance_ledger_revision
+from backend.entry_kinds import ENTRY_KINDS, IMPORT_KINDS
 from backend.ledger import Account, Entry, audit, save_entry
 
 SHEETS = {"收入", "支出", "转账", "余额变更", "负债变更", "债权变更"}
@@ -43,7 +44,7 @@ def normalize(sheet, row, raw):
     target = str(raw.get("转入账户", "")).strip()
     if not account or (sheet == "转账" and (not target or account == target)):
         raise ValueError(f"{sheet} 第 {row} 行账户无效")
-    kind = {"收入": "income", "支出": "expense", "转账": "transfer"}.get(sheet)
+    kind = IMPORT_KINDS.get(sheet)
     if kind is None:
         signed *= -1 if sheet == "负债变更" else 1
         kind = "balance_in" if signed > 0 else "balance_out"
@@ -52,7 +53,7 @@ def normalize(sheet, row, raw):
     details += [f"{k}：{raw[k]}" for k in ["成员", "项目"] if raw.get(k)]
     return dict(sheet=sheet, row=row, raw=raw, account=account, target=target, entry=dict(
         date=str(raw["日期"]).split(" ")[0], kind=kind, amount_cents=abs(signed),
-        category=category or ("未分类" if kind in {"income", "expense"} else sheet),
+        category=category or ("未分类" if ENTRY_KINDS[kind].category_required else sheet),
         merchant=str(raw.get("商家", "")), memo="；".join(filter(None, details)),
     ))
 

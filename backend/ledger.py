@@ -8,19 +8,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from backend.categories import catalog
-
-KIND_LABELS = {
-    "income": "收入",
-    "expense": "支出",
-    "transfer": "转账",
-    "refund": "退款",
-    "lend": "借出",
-    "borrow": "借入",
-    "repay": "还款",
-    "collect": "回款",
-    "balance_in": "余额调增",
-    "balance_out": "余额调减",
-}
+from backend.entry_kinds import ENTRY_KINDS, EntryKind
 
 
 def today():
@@ -52,7 +40,7 @@ class AccountUpdate(Account):
 class Entry(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     date: date
-    kind: Literal["income", "expense", "transfer", "refund", "lend", "borrow", "repay", "collect", "balance_in", "balance_out"]
+    kind: EntryKind
     amount_cents: int = Field(gt=0, le=10**12, strict=True)
     account_id: str
     to_account_id: str | None = None
@@ -89,16 +77,16 @@ def validate_entry(db, data, exclude=None):
         if not previous or previous[0] != data["category"]:
             fail("分类已删除或更名，请重新选择")
     kind = data["kind"]
-    if kind == "transfer":
+    rule = ENTRY_KINDS[kind]
+    if rule.target == "any":
         if not data["to_account_id"] or data["to_account_id"] == data["account_id"]:
             fail("转账需要两个不同的账户")
-    elif kind in ["repay", "collect"] and data["to_account_id"]:
+    elif rule.target and data["to_account_id"]:
         if data["reference_id"]:
             fail("不能同时关联账户和原交易")
         source = db.execute("SELECT kind FROM accounts WHERE id=?", (data["account_id"],)).fetchone()
         target = db.execute("SELECT * FROM accounts WHERE id=?", (data["to_account_id"],)).fetchone()
-        expected_kind = "liability" if kind == "repay" else "receivable"
-        if source["kind"] in ["receivable", "liability"] or target["kind"] != expected_kind:
+        if source["kind"] in ["receivable", "liability"] or target["kind"] != rule.target:
             fail("还款请选择付款资金账户和负债账户；回款请选择收款资金账户和债权账户")
         if data["account_id"] == data["to_account_id"]:
             fail("资金账户与往来账户不能相同")
@@ -106,12 +94,11 @@ def validate_entry(db, data, exclude=None):
         data["category"] = ""
     elif data["to_account_id"]:
         fail("只有转账、还款和回款可以关联另一账户")
-    references = {"refund": "expense", "collect": "lend", "repay": "borrow"}
-    if kind in ["repay", "collect"] and not data["to_account_id"] and not data["reference_id"]:
+    if rule.target and rule.reference and not data["to_account_id"] and not data["reference_id"]:
         fail("请选择负债账户" if kind == "repay" else "请选择债权账户")
-    if kind in references and not data["to_account_id"]:
+    if rule.reference and not data["to_account_id"]:
         original = db.execute("SELECT * FROM entries WHERE id=? AND deleted=0", (data["reference_id"],)).fetchone()
-        if not original or original["kind"] != references[kind] or original["id"] == exclude:
+        if not original or original["kind"] != rule.reference or original["id"] == exclude:
             fail("请选择有效的原始交易")
         if data["date"] < original["date"]:
             fail("退款或还款日期不能早于原始交易")
@@ -121,13 +108,13 @@ def validate_entry(db, data, exclude=None):
         ).fetchone()[0]
         if used + data["amount_cents"] > original["amount_cents"]:
             fail("金额超过原交易尚未退款或结清的金额")
-        data["category"] = original["category"] if kind == "refund" else ""
+        data["category"] = original["category"] if not rule.target else ""
         data["counterparty"] = original["counterparty"]
     elif data["reference_id"]:
         fail("该交易类型不应关联原交易")
-    if kind in ["lend", "borrow"] and not data["counterparty"].strip():
+    if rule.counterparty_required and not data["counterparty"].strip():
         fail("借贷需要填写往来对象")
-    if kind in ["income", "expense"] and not data["category"].strip():
+    if rule.category_required and not data["category"].strip():
         fail("请选择或填写分类")
     if exclude:
         linked = list(db.execute("SELECT * FROM entries WHERE reference_id=? AND deleted=0", (exclude,)))
