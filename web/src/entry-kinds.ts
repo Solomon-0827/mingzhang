@@ -131,7 +131,7 @@ export function changeEntryKind(entry: Entry, kind: Kind, context: EntryContext 
     category: context.category_catalog && kindRule(kind).category
       ? categoryOptions(context, { kind, category: "" })[0] ?? "" : "" };
   // An account missing from local state (deleted, or hidden by a queued change) is kept as is, never replaced.
-  if (!context.accounts.some(account => account.id === next.account_id)) return next;
+  if (next.account_id && !context.accounts.some(account => account.id === next.account_id)) return next;
   const { accounts } = entryAccountOptions(context, next);
   return accounts.some(account => account.id === next.account_id)
     ? next : { ...next, account_id: accounts[0]?.id ?? "" };

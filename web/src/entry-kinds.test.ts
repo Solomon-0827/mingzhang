@@ -84,6 +84,7 @@ it("uses display order for new drafts and single, inline, and bulk account choic
   expect(destination.accountGroups.map(group => group.id)).toEqual(context.ordering.account_groups);
   expect(changeEntryKind({ ...transfer, account_id: "debt" }, "collect", context).account_id).toBe("another-bank");
   expect(changeEntryKind(draft({ kind: "expense", account_id: "deleted" }), "income", context).account_id).toBe("deleted");
+  expect(changeEntryKind(draft({ kind: "expense", account_id: "" }), "income", context).account_id).toBe("debt");
 });
 
 it("lets a transfer select its current destination as the new source before swapping", () => {
