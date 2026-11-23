@@ -621,12 +621,12 @@ export function AccountWorkspace({
                 {reconciliation.map(day=><section className="reconciliation-day" key={day.date}>
                   <header><div><strong>{day.date}</strong><small>{day.postings.length} 笔变动</small></div>
                     <div className="reconciliation-day-totals"><span>期初 ¥ {money(day.opening_cents)}</span><span className="book-in">流入 +{money(day.inflow_cents)}</span><span className="book-out">流出 −{money(day.outflow_cents)}</span><b>日终 ¥ {money(day.closing_cents)}</b></div></header>
-                  <div className="reconciliation-postings">{day.postings.map(({entry,amount_cents})=>{
+                  <div className="reconciliation-postings">{day.postings.map(({entry,amount_cents,balance_cents})=>{
                     const otherId=entry.account_id===selectedAccount.id?entry.to_account_id:entry.account_id;
                     const detail=entry.category || kindLabel(entry.kind);
                     return <button key={entry.id} onClick={()=>onEditEntry(entry)} title="打开并编辑这条流水">
                       <span><strong>{detail}</strong><small>{kindLabel(entry.kind)}{otherId&&accountNames.get(otherId)?` · ${accountNames.get(otherId)}`:""}</small></span>
-                      <b className={amount_cents>0?"book-in":"book-out"}>{amount_cents>0?"+":"−"} ¥ {money(Math.abs(amount_cents))}</b>
+                      <span className="reconciliation-posting-amount"><b className={amount_cents>0?"book-in":"book-out"}>{amount_cents>0?"+":"−"} ¥ {money(Math.abs(amount_cents))}</b><small>余额 ¥ {money(balance_cents)}</small></span>
                     </button>;
                   })}</div>
                 </section>)}

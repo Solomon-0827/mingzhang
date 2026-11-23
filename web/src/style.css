@@ -1983,10 +1983,21 @@ footer {
   color: #8a8173;
   font-size: 10px;
 }
-.reconciliation-postings button > b {
+.reconciliation-posting-amount {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 3px;
+  justify-items: end;
+  font-variant-numeric: tabular-nums;
+}
+.reconciliation-posting-amount > b {
   flex: 0 0 auto;
   font-size: 13px;
-  font-variant-numeric: tabular-nums;
+}
+.reconciliation-posting-amount > small {
+  color: #8a8173;
+  font-size: 10px;
+  font-weight: 400;
 }
 @media (max-width: 780px) {
   .book-body {

@@ -224,7 +224,9 @@ def snapshot(db):
         ordering["favorites"] = [p for p in ordering["favorites"] if p in category_state["items"]]
     ranks = {aid: i for i, aid in enumerate(ordering["accounts"])}
     accounts.sort(key=lambda a: ranks.get(a["id"], len(ranks)))
-    entries = [dict(x) for x in db.execute("SELECT * FROM entries ORDER BY date DESC,created_at DESC,rowid DESC")]
+    entries = [dict(x) for x in db.execute(
+        "SELECT *,rowid AS sort_order FROM entries ORDER BY date DESC,created_at DESC,rowid DESC"
+    )]
     groups = [dict(g) for g in db.execute(
         "SELECT * FROM account_groups WHERE deleted=0 OR id IN (SELECT COALESCE(group_id,kind) FROM accounts) ORDER BY rowid")]
     group_ranks = {gid: i for i, gid in enumerate(ordering.get("account_groups", []))}
