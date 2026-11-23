@@ -26,7 +26,14 @@ export type Entry = {
   version: number;
   deleted: number;
   remaining_cents: number;
+  created_at?: string;
+  sort_order?: number;
 };
+export function entriesNewestFirst(a: Entry, b: Entry) {
+  return b.date.localeCompare(a.date)
+    || (b.created_at || "").localeCompare(a.created_at || "")
+    || (b.sort_order || 0) - (a.sort_order || 0);
+}
 export type DisplayOrder = { account_groups?: string[]; accounts: string[]; categories: string[]; favorites?: string[]; version: number };
 export function ordered(values: string[], order: string[] = []) {
   const ranks = new Map(order.map((v, i) => [v, i]));

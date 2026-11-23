@@ -1,6 +1,6 @@
 import { entryDetails } from "./entry-kinds";
 import { projectLedger } from "./ledger-projection";
-import type { Account, CategoryChange, DisplayOrder, Entry, State } from "./types";
+import { entriesNewestFirst, type Account, type CategoryChange, type DisplayOrder, type Entry, type State } from "./types";
 
 export type OfflineMutation = {
   id: string;
@@ -82,11 +82,12 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
     if (mutation.type === "entry.create") {
       const original = entry.kind === "refund" ? entries.find(item => item.id === entry.reference_id) : undefined;
       const { category } = entryDetails(entry, undefined, original);
-      entries = [{ ...entry, category }, ...entries.filter(item => item.id !== entry.id)];
+      entries = [{ ...entry, category, created_at: entry.created_at ?? new Date(mutation.createdAt).toISOString(),
+        sort_order: entry.sort_order ?? mutation.createdAt }, ...entries.filter(item => item.id !== entry.id)];
     }
     if (mutation.type === "entry.delete" || mutation.type === "entry.restore") entries = entries.map(item => item.id === mutation.path.split("/")[2]
       ? { ...item, deleted: mutation.type === "entry.delete" ? 1 : 0, version: item.version + 1 } : item);
-    entries.sort((a, b) => b.date.localeCompare(a.date));
+    entries.sort(entriesNewestFirst);
     return rebuild({ ...state, entries });
   }
   if (mutation.type === "account.create") {
@@ -103,7 +104,8 @@ export function applyMutation(state: State, mutation: OfflineMutation): State {
         const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(mutation.createdAt));
         const adjustment: Entry = { id: account.adjustment_id || `offline-balance-${mutation.id}`, date, kind: difference > 0 ? "balance_in" : "balance_out",
           amount_cents: Math.abs(difference), account_id: account.id, to_account_id: null, category: "", merchant: "", memo: "账户余额调整",
-          counterparty: "", reference_id: null, version: 1, deleted: 0, remaining_cents: Math.abs(difference) };
+          counterparty: "", reference_id: null, version: 1, deleted: 0, remaining_cents: Math.abs(difference),
+          created_at: new Date(mutation.createdAt).toISOString(), sort_order: mutation.createdAt };
         next = rebuild({ ...next, entries: [adjustment, ...next.entries.filter(item => item.id !== adjustment.id)] });
       }
     }
@@ -143,10 +145,12 @@ export function applyMutations(state: State, mutations: OfflineMutation[]): Stat
       if (!byId.has(entry.id)) continue;
       const original = entry.kind === "refund" && entry.reference_id ? byId.get(entry.reference_id) : undefined;
       const { category } = entryDetails(entry, undefined, original);
-      byId.set(entry.id, { ...entry, category, version: entry.version + 1 });
+      const current = byId.get(entry.id)!;
+      byId.set(entry.id, { ...entry, category, created_at: current.created_at ?? entry.created_at,
+        sort_order: current.sort_order ?? entry.sort_order, version: entry.version + 1 });
     }
     const entries = [...byId.values()];
-    entries.sort((a, b) => b.date.localeCompare(a.date));
+    entries.sort(entriesNewestFirst);
     return rebuild({ ...state, entries });
   }
   return mutations.reduce(applyMutation, state);

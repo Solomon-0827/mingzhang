@@ -34,6 +34,17 @@ def report(client):
     return client.get("/api/report?start=2026-01-01&end=2026-12-31").json()
 
 
+def test_state_exposes_stable_entry_order_for_same_day(client):
+    aid = account(client)
+    older = entry(client, aid, amount=100)
+    newer = entry(client, aid, amount=200)
+
+    entries = client.get("/api/state").json()["entries"]
+
+    assert [item["id"] for item in entries] == [newer["id"], older["id"]]
+    assert entries[0]["sort_order"] > entries[1]["sort_order"]
+
+
 def test_entry_accepts_category_for_other_kind_when_replaying(client):
     aid = account(client)
     # Offline queues must replay because catalog kinds are derived from entries.

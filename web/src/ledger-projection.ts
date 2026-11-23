@@ -1,5 +1,5 @@
 import { kindRule, type Kind } from "./entry-kinds";
-import type { Account, Entry, Report } from "./types";
+import { entriesNewestFirst, type Account, type Entry, type Report } from "./types";
 
 export function entryMovement(kind: Kind) {
   const rule = kindRule(kind);
@@ -71,7 +71,7 @@ export function accountFlows(entries: readonly Entry[], accounts: readonly Accou
   return { inflow, outflow };
 }
 
-export type ReconciliationPosting = { entry: Entry; amount_cents: number };
+export type ReconciliationPosting = { entry: Entry; amount_cents: number; balance_cents: number };
 export type ReconciliationDay = {
   date: string;
   opening_cents: number;
@@ -82,7 +82,7 @@ export type ReconciliationDay = {
 };
 
 export function accountReconciliation(account: Account, entries: readonly Entry[]): ReconciliationDay[] {
-  const postings = new Map<string, ReconciliationPosting[]>();
+  const postings = new Map<string, Omit<ReconciliationPosting, "balance_cents">[]>();
   for (const entry of entries) {
     if (entry.deleted) continue;
     const amount_cents = accountPostings(entry).find(([id]) => id === account.id)?.[1];
@@ -92,12 +92,19 @@ export function accountReconciliation(account: Account, entries: readonly Entry[
     postings.set(entry.date, day);
   }
   let balance = account.opening_cents;
-  const days = [...postings].sort(([a], [b]) => a.localeCompare(b)).map(([date, dayPostings]) => {
+  const days = [...postings].sort(([a], [b]) => a.localeCompare(b)).map(([date, unsortedPostings]) => {
+    const dayPostings = [...unsortedPostings].sort((a, b) => entriesNewestFirst(a.entry, b.entry));
     const opening_cents = balance;
     const inflow_cents = dayPostings.reduce((sum, posting) => sum + Math.max(0, posting.amount_cents), 0);
     const outflow_cents = dayPostings.reduce((sum, posting) => sum - Math.min(0, posting.amount_cents), 0);
     balance += inflow_cents - outflow_cents;
-    return { date, opening_cents, inflow_cents, outflow_cents, closing_cents: balance, postings: dayPostings };
+    let postingBalance = balance;
+    const balancedPostings = dayPostings.map(posting => {
+      const balanced = { ...posting, balance_cents: postingBalance };
+      postingBalance -= posting.amount_cents;
+      return balanced;
+    });
+    return { date, opening_cents, inflow_cents, outflow_cents, closing_cents: balance, postings: balancedPostings };
   });
   return days.reverse();
 }

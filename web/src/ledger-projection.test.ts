@@ -65,11 +65,34 @@ it("reconciles each account by day with opening, movements, and closing balance"
 
   expect(accountReconciliation(wallet, entries)).toEqual([
     { date: "2026-11-03", opening_cents: 14_800, inflow_cents: 200, outflow_cents: 0, closing_cents: 15_000,
-      postings: [{ entry: entries[0], amount_cents: 200 }] },
+      postings: [{ entry: entries[0], amount_cents: 200, balance_cents: 15_000 }] },
     { date: "2026-11-02", opening_cents: 13_800, inflow_cents: 3_000, outflow_cents: 2_000, closing_cents: 14_800,
-      postings: [{ entry: entries[2], amount_cents: 3_000 }, { entry: entries[3], amount_cents: -2_000 }] },
+      postings: [{ entry: entries[2], amount_cents: 3_000, balance_cents: 14_800 },
+        { entry: entries[3], amount_cents: -2_000, balance_cents: 11_800 }] },
     { date: "2026-11-01", opening_cents: 10_000, inflow_cents: 5_000, outflow_cents: 1_200, closing_cents: 13_800,
-      postings: [{ entry: entries[4], amount_cents: -1_200 }, { entry: entries[5], amount_cents: 5_000 }] },
+      postings: [{ entry: entries[4], amount_cents: -1_200, balance_cents: 13_800 },
+        { entry: entries[5], amount_cents: 5_000, balance_cents: 15_000 }] },
+  ]);
+});
+
+it("keeps per-entry balances in server order after an offline date edit", () => {
+  const wallet = { id: "wallet", name: "支付宝", kind: "wallet", opening_cents: 10_000, balance_cents: 0, version: 1 };
+  const entry = (id: string, date: string, amount_cents: number, created_at: string, sort_order: number): Entry => ({
+    id, date, kind: "expense", amount_cents, account_id: "wallet", to_account_id: null, category: "日常/餐饮",
+    merchant: "", memo: "", counterparty: "", reference_id: null, version: 1, deleted: 0,
+    remaining_cents: amount_cents, created_at, sort_order,
+  });
+  const older = entry("older", "2026-11-01", 1_000, "2026-11-01 09:00:00", 1);
+  const newer = entry("newer", "2026-11-02", 2_000, "2026-11-02 09:00:00", 2);
+  const state = { accounts: [wallet], entries: [newer, older] } as State;
+  const moved = { ...older, date: "2026-11-02" };
+  const updated = applyMutations(state, [{ id: "change-date", type: "entry.update", path: "/entries/older",
+    method: "PUT", body: moved as unknown as Record<string, unknown>, createdAt: Date.parse("2026-11-03T00:00:00Z") }]);
+
+  const day = accountReconciliation(wallet, updated.entries)[0];
+  expect(day.postings.map(posting => [posting.entry.id, posting.balance_cents])).toEqual([
+    ["newer", 7_000],
+    ["older", 9_000],
   ]);
 });
 
