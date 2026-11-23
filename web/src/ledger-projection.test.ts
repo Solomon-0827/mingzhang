@@ -3,7 +3,7 @@ import reportRanges from "../../tests/fixtures/report-date-ranges.json";
 import reportTotals from "../../tests/fixtures/report-totals.json";
 import historical from "../../tests/fixtures/ledger-projection/historical-over-settlement.json";
 import monthClose from "../../tests/fixtures/ledger-projection/month-close.json";
-import { accountFlows, accountPostings, entryMovement, outstandingEntries, periodTotals, projectLedger, projectReport } from "./ledger-projection";
+import { accountFlows, accountPostings, accountReconciliation, entryMovement, outstandingEntries, periodTotals, projectLedger, projectReport } from "./ledger-projection";
 import { applyMutations, type OfflineMutation } from "./offline-mutations";
 import type { Account, Entry, State } from "./types";
 
@@ -44,6 +44,33 @@ it("includes historical over-settlements in Accounts detail", () => {
   const projected = projectLedger(accounts, entries);
   expect(outstandingEntries(projected.entries).map(({ kind, remaining_cents }) => [kind, remaining_cents]))
     .toEqual([["lend", projected.receivable], ["borrow", projected.payable]]);
+});
+
+it("reconciles each account by day with opening, movements, and closing balance", () => {
+  const wallet = { id: "wallet", name: "支付宝", kind: "wallet", opening_cents: 10_000, balance_cents: 0, version: 1 };
+  const bank = { id: "bank", name: "工商银行", kind: "bank", opening_cents: 0, balance_cents: 0, version: 1 };
+  const row = (id: string, date: string, kind: Entry["kind"], amount_cents: number, account_id = "wallet", to_account_id: string | null = null, deleted = 0): Entry => ({
+    id, date, kind, amount_cents, account_id, to_account_id, deleted,
+    category: kind === "expense" ? "日常/餐饮" : "", merchant: "", memo: "", counterparty: "",
+    reference_id: null, version: 1, remaining_cents: amount_cents,
+  });
+  const entries = [
+    row("adjust", "2026-11-03", "balance_in", 200),
+    row("deleted", "2026-11-03", "expense", 900, "wallet", null, 1),
+    row("transfer-in", "2026-11-02", "transfer", 3_000, "bank", "wallet"),
+    row("transfer-out", "2026-11-02", "transfer", 2_000, "wallet", "bank"),
+    row("expense", "2026-11-01", "expense", 1_200),
+    row("income", "2026-11-01", "income", 5_000),
+  ];
+
+  expect(accountReconciliation(wallet, entries)).toEqual([
+    { date: "2026-11-03", opening_cents: 14_800, inflow_cents: 200, outflow_cents: 0, closing_cents: 15_000,
+      postings: [{ entry: entries[0], amount_cents: 200 }] },
+    { date: "2026-11-02", opening_cents: 13_800, inflow_cents: 3_000, outflow_cents: 2_000, closing_cents: 14_800,
+      postings: [{ entry: entries[2], amount_cents: 3_000 }, { entry: entries[3], amount_cents: -2_000 }] },
+    { date: "2026-11-01", opening_cents: 10_000, inflow_cents: 5_000, outflow_cents: 1_200, closing_cents: 13_800,
+      postings: [{ entry: entries[4], amount_cents: -1_200 }, { entry: entries[5], amount_cents: 5_000 }] },
+  ]);
 });
 
 it.each(reportRanges)("report range: $name", ({ start, end, status, first_day }) => {

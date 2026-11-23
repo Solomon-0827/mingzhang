@@ -71,6 +71,37 @@ export function accountFlows(entries: readonly Entry[], accounts: readonly Accou
   return { inflow, outflow };
 }
 
+export type ReconciliationPosting = { entry: Entry; amount_cents: number };
+export type ReconciliationDay = {
+  date: string;
+  opening_cents: number;
+  inflow_cents: number;
+  outflow_cents: number;
+  closing_cents: number;
+  postings: ReconciliationPosting[];
+};
+
+export function accountReconciliation(account: Account, entries: readonly Entry[]): ReconciliationDay[] {
+  const postings = new Map<string, ReconciliationPosting[]>();
+  for (const entry of entries) {
+    if (entry.deleted) continue;
+    const amount_cents = accountPostings(entry).find(([id]) => id === account.id)?.[1];
+    if (amount_cents === undefined) continue;
+    const day = postings.get(entry.date) ?? [];
+    day.push({ entry, amount_cents });
+    postings.set(entry.date, day);
+  }
+  let balance = account.opening_cents;
+  const days = [...postings].sort(([a], [b]) => a.localeCompare(b)).map(([date, dayPostings]) => {
+    const opening_cents = balance;
+    const inflow_cents = dayPostings.reduce((sum, posting) => sum + Math.max(0, posting.amount_cents), 0);
+    const outflow_cents = dayPostings.reduce((sum, posting) => sum - Math.min(0, posting.amount_cents), 0);
+    balance += inflow_cents - outflow_cents;
+    return { date, opening_cents, inflow_cents, outflow_cents, closing_cents: balance, postings: dayPostings };
+  });
+  return days.reverse();
+}
+
 export function balanceTotal(accounts: readonly Account[]) {
   return accounts.reduce((total, account) => total + account.balance_cents, 0);
 }

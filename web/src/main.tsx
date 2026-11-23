@@ -1408,7 +1408,7 @@ function App() {
         )}
         {page === "accounts" && state && (
           <>
-            <AccountWorkspace state={state} onEdit={setAccountEditor} />
+            <AccountWorkspace state={state} onEdit={setAccountEditor} onEditEntry={entry => {setEditor({...entry});setEditorMode("edit");}} />
             <section className="panel">
               <div className="panel-head">
                 <h2>未结清往来</h2>
