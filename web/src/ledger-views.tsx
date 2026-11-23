@@ -1,4 +1,4 @@
-import { CheckSquare, ChevronLeft, ChevronRight, ListChecks, ListFilter, PencilLine, Plus, Search, Trash2, Wallet, X } from "lucide-react";
+import { CalendarDays, CheckSquare, ChevronLeft, ChevronRight, ListChecks, ListFilter, PencilLine, Plus, Search, Trash2, Wallet, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   Account,
@@ -7,12 +7,13 @@ import {
   accountLabels,
   money,
   ordered,
+  orderedAccountOptions,
   today,
   cents,
 } from "./types";
 import { EntryField } from "./entry-field";
 import { AccountSelect, CategorySelect, StyledSelect, StyledDate, CategoryMultiSelect } from "./controls";
-import { accountFlows, balanceTotal, entryMovement, periodTotals } from "./ledger-projection";
+import { accountFlows, accountReconciliation, balanceTotal, entryMovement, periodTotals } from "./ledger-projection";
 import { bulkCategoryOptions, entryAccountOptions, kindLabel, kindRule, validateEntries } from "./entry-kinds";
 
 function Sum({ entries }: { entries: Entry[] }) {
@@ -479,13 +480,21 @@ function BulkEntryDialog({entries,state,onClose,onSave}:{entries:Entry[];state:S
 export function AccountWorkspace({
   state,
   onEdit,
+  onEditEntry,
 }: {
   state: State;
   onEdit: (account: Account) => void;
+  onEditEntry: (entry: Entry) => void;
 }) {
   const [kind, setKind] = useState("bank");
-  const accounts = state.accounts.filter((account) => account.kind === kind);
+  const [view, setView] = useState<"overview" | "reconciliation">("overview");
+  const [selectedAccountId, setSelectedAccountId] = useState("");
+  const accounts = orderedAccountOptions(state).accounts.filter((account) => account.kind === kind);
   const { inflow, outflow } = accountFlows(state.entries, accounts);
+  const selectedAccount = accounts.find(account => account.id === selectedAccountId) ?? accounts[0];
+  const reconciliation = selectedAccount ? accountReconciliation(selectedAccount, state.entries) : [];
+  const accountNames = new Map(state.accounts.map(account => [account.id, account.name]));
+  const selectedFlows = selectedAccount ? accountFlows(state.entries, [selectedAccount]) : {inflow:0,outflow:0};
   return (
     <section className="account-workspace panel">
       <div className="account-rail">
@@ -501,7 +510,7 @@ export function AccountWorkspace({
           <button
             key={id}
             className={kind === id ? "active" : ""}
-            onClick={() => setKind(id)}
+            onClick={() => {setKind(id);setSelectedAccountId("");}}
           >
             <Wallet size={22} />
             <span>
@@ -517,8 +526,11 @@ export function AccountWorkspace({
       </div>
       <div className="account-detail">
         <div className="account-detail-heading">
-          <h2>{accountLabels[kind]}账户</h2>
-          <button aria-label="添加账户" title="添加账户"
+          <div><h2>{accountLabels[kind]}账户</h2><div className="account-view-tabs" role="tablist" aria-label="资金账户视图">
+            <button role="tab" aria-selected={view === "overview"} className={view === "overview" ? "active" : ""} onClick={()=>setView("overview")}><Wallet size={15}/>账户概览</button>
+            <button role="tab" aria-selected={view === "reconciliation"} className={view === "reconciliation" ? "active" : ""} onClick={()=>setView("reconciliation")}><CalendarDays size={15}/>逐日对账</button>
+          </div></div>
+          {view === "overview" && <button aria-label="添加账户" title="添加账户"
             className="primary"
             onClick={() =>
               onEdit({
@@ -530,8 +542,9 @@ export function AccountWorkspace({
                 version: 1,
               })
             }
-          ><Plus size={18} aria-hidden="true" /></button>
+          ><Plus size={18} aria-hidden="true" /></button>}
         </div>
+        {view === "overview" ? <>
         <div className="account-flow">
           <div>
             <small>余额</small>
@@ -588,6 +601,40 @@ export function AccountWorkspace({
         <p className="book-note">
           单位：人民币元 · 累计流入、流出包含转账及借还款，不含期初余额。
         </p>
+        </> : <div className="reconciliation-view">
+          {accounts.length ? <>
+            <div className="reconciliation-accounts" role="tablist" aria-label="选择对账账户">
+              {accounts.map(account=><button key={account.id} role="tab" aria-selected={selectedAccount?.id===account.id}
+                className={selectedAccount?.id===account.id?"active":""} onClick={()=>setSelectedAccountId(account.id)}>
+                <span>{account.name}</span><strong>¥ {money(account.balance_cents)}</strong>
+              </button>)}
+            </div>
+            {selectedAccount && <>
+              <div className="reconciliation-summary">
+                <div><small>期初余额</small><strong>¥ {money(selectedAccount.opening_cents)}</strong></div>
+                <div><small>累计流入</small><strong className="book-in">+ ¥ {money(selectedFlows.inflow)}</strong></div>
+                <div><small>累计流出</small><strong className="book-out">− ¥ {money(selectedFlows.outflow)}</strong></div>
+                <div><small>当前账面余额</small><strong>¥ {money(selectedAccount.balance_cents)}</strong></div>
+              </div>
+              <p className="reconciliation-tip">从最近一天向前核对；第一次与{selectedAccount.name}实际余额不同的日终余额附近，通常就是遗漏或记错的流水。</p>
+              <div className="reconciliation-days">
+                {reconciliation.map(day=><section className="reconciliation-day" key={day.date}>
+                  <header><div><strong>{day.date}</strong><small>{day.postings.length} 笔变动</small></div>
+                    <div className="reconciliation-day-totals"><span>期初 ¥ {money(day.opening_cents)}</span><span className="book-in">流入 +{money(day.inflow_cents)}</span><span className="book-out">流出 −{money(day.outflow_cents)}</span><b>日终 ¥ {money(day.closing_cents)}</b></div></header>
+                  <div className="reconciliation-postings">{day.postings.map(({entry,amount_cents})=>{
+                    const otherId=entry.account_id===selectedAccount.id?entry.to_account_id:entry.account_id;
+                    const detail=entry.category || kindLabel(entry.kind);
+                    return <button key={entry.id} onClick={()=>onEditEntry(entry)} title="打开并编辑这条流水">
+                      <span><strong>{detail}</strong><small>{kindLabel(entry.kind)}{otherId&&accountNames.get(otherId)?` · ${accountNames.get(otherId)}`:""}</small></span>
+                      <b className={amount_cents>0?"book-in":"book-out"}>{amount_cents>0?"+":"−"} ¥ {money(Math.abs(amount_cents))}</b>
+                    </button>;
+                  })}</div>
+                </section>)}
+                {!reconciliation.length&&<div className="empty">这个账户还没有流水，当前余额就是期初余额。</div>}
+              </div>
+            </>}
+          </> : <div className="empty">当前类型下还没有账户。</div>}
+        </div>}
       </div>
     </section>
   );
