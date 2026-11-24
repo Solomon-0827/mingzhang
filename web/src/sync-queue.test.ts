@@ -648,6 +648,24 @@ describe("transactional sync queue", () => {
     expect(queue.view().count).toBe(0);
   });
 
+  it("keeps the local ledger when changes continue during a background refresh", async () => {
+    const { queue, open, fetchSnapshot, serverSnapshot } = setup();
+    await queue.refresh();
+    let added = 0;
+    fetchSnapshot.mockImplementation(async ids => {
+      added += 1;
+      await open().enqueue(createEntry(`local-${added}`));
+      return serverSnapshot(ids);
+    });
+
+    await expect(queue.refresh({ localFallback: true })).resolves.toEqual({ snapshot, reconciled: false });
+
+    expect(fetchSnapshot).toHaveBeenCalledTimes(3);
+    expect(queue.view().state?.entries.map(item => item.id)).toEqual(["local-2", "local-1"]);
+    expect(queue.view().count).toBe(2);
+    await expect(queue.refresh()).rejects.toThrow("同步期间账本仍在变化");
+  });
+
   it("rebuilds from a receipt-covered snapshot without replaying a committed catalog change", async () => {
     const { queue, send, commit, open } = setup(withCatalog);
     await queue.enqueue(category("已提交", 1));

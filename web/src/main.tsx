@@ -47,6 +47,7 @@ import type { OfflineMutation } from "./offline-mutations";
 import { createSyncQueue, type BlockedMutation, type LedgerEpoch, type QueueAction, type ReceiptStatus, type SyncSnapshot } from "./sync-queue";
 import { isQueueStorageKey, queueSignalKey } from "./mutation-store";
 import { BlockedSyncDetails, EntryRecoveryComparison, describeBlocked, entryRecoveryChange, prepareEntryRecovery, rebaseChange, recoverySettings } from "./blocked-sync";
+import { canOpenCachedLedgerBeforeAuthentication } from "./startup-policy";
 
 const queueChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("mingzhang.mutations") : null;
 const syncQueue = createSyncQueue({
@@ -272,16 +273,18 @@ function App() {
     closeSession();
     setError("请重新登录");
   }, [closeSession, setError]);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (localFallback = false) => {
     const epoch = loginEpoch.current;
     try {
-      const snapshot = await syncQueue.refresh();
+      const result = await syncQueue.refresh({ localFallback });
       if (epoch === loginEpoch.current) {
-        clearConnectionError();
         setLogged(true);
-        setLastSync(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+        if (result.reconciled) {
+          clearConnectionError();
+          setLastSync(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+        }
       }
-      return snapshot;
+      return result;
     } catch (error) {
       if (isUnauthorized(error) && epoch === loginEpoch.current) requireLogin();
       throw error;
@@ -292,7 +295,7 @@ function App() {
       window.clearTimeout(backgroundRefresh.current);
     backgroundRefresh.current = window.setTimeout(() => {
       backgroundRefresh.current = null;
-      refresh().catch((e) => setError(e.message));
+      refresh(true).catch((e) => setError(e.message));
     }, 2000);
   }, [refresh, setError]);
   useEffect(() => () => {
@@ -300,26 +303,43 @@ function App() {
       window.clearTimeout(backgroundRefresh.current);
   }, []);
   useEffect(() => {
-    refresh()
-      .catch((e) => {
+    let active = true;
+    const startLocalFirst = async () => {
+      try {
+        await syncQueue.load();
+        if (!active) return;
+        const canOpenLocal = canOpenCachedLedgerBeforeAuthentication(Boolean(window.mingzhangUpdate), Boolean(syncQueue.view().state));
+        if (canOpenLocal) {
+          readQueue();
+          setLogged(true);
+          setChecked(true);
+        }
+        await refresh(true);
+      } catch (e) {
+        if (!active) return;
         if (isUnauthorized(e)) {
           setError("");
           return;
         }
-        if (syncQueue.view().state) {
+        const canOpenLocal = canOpenCachedLedgerBeforeAuthentication(Boolean(window.mingzhangUpdate), Boolean(syncQueue.view().state));
+        if (canOpenLocal) {
           readQueue();
           setLogged(true);
           setError("当前使用本机账本，恢复联网后会自动同步。");
         } else {
-          setError(e.message);
+          setError((e as Error).message);
         }
-      })
-      .finally(() => setChecked(true));
+      } finally {
+        if (active) setChecked(true);
+      }
+    };
+    void startLocalFirst();
+    return () => { active = false; };
   }, [refresh, readQueue, setError]);
   useEffect(() => {
     if (!logged) return;
-    const timer = setInterval(() => refresh().catch((e) => setError(e.message)), 30000);
-    const focus = () => refresh().catch((e) => setError(e.message));
+    const timer = setInterval(() => refresh(true).catch((e) => setError(e.message)), 30000);
+    const focus = () => refresh(true).catch((e) => setError(e.message));
     window.addEventListener("focus", focus);
     return () => {
       clearInterval(timer);
@@ -346,7 +366,7 @@ function App() {
     const reconnect = () => {
       readQueue();
       setOnline(true);
-      refresh().catch(e => setError(e.message));
+      refresh(true).catch(e => setError(e.message));
     };
     const disconnect = () => setOnline(false);
     window.addEventListener("online", reconnect);
@@ -365,30 +385,15 @@ function App() {
     return unsubscribe;
   }, []);
   useEffect(() => {
-    if (!logged || !["overview", "reports"].includes(page)) return;
-    if (state && (pendingCount || !online)) {
-      try {
-        setReport(projectReport(state.entries, range[0], range[1]));
-      } catch (error) {
-        setReport(emptyReport);
-        // Only the reports page lets the user pick the range, so only it reports an invalid one.
-        if (page === "reports") setError((error as Error).message);
-      }
-      return;
+    if (!logged || !state || !["overview", "reports"].includes(page)) return;
+    try {
+      setReport(projectReport(state.entries, range[0], range[1]));
+    } catch (error) {
+      setReport(emptyReport);
+      // Only the reports page lets the user pick the range, so only it reports an invalid one.
+      if (page === "reports") setError((error as Error).message);
     }
-    let current = true;
-    const epoch = loginEpoch.current;
-    api<Report>(`/report?start=${range[0]}&end=${range[1]}`)
-      .then(value => {
-        if (current && epoch === loginEpoch.current) setReport(value);
-      })
-      .catch(error => {
-        if (!current || epoch !== loginEpoch.current) return;
-        if (isUnauthorized(error)) requireLogin();
-        else setError(error.message);
-      });
-    return () => { current = false; };
-  }, [logged, range, state, page, pendingCount, online, setError, requireLogin]);
+  }, [logged, range, state, page, setError]);
   const openNew = useCallback(() => {
     if (!state?.accounts.length) {
       navigate("accounts");
@@ -490,13 +495,13 @@ function App() {
   }
   async function openBlockedEditor(target: BlockedMutation) {
     const epoch = loginEpoch.current;
-    const snapshot = await refresh();
+    const { snapshot } = await refresh();
     if (epoch === loginEpoch.current)
       setBlockedEditor({ target, ...prepareEntryRecovery(target, snapshot, newEntry()) });
   }
   async function rebaseBlocked(target: BlockedMutation) {
     const epoch = loginEpoch.current;
-    const snapshot = await refresh();
+    const { snapshot } = await refresh();
     if (epoch === loginEpoch.current)
       await flushPendingMutations({ kind: "edit", target, change: rebaseChange(target, snapshot) });
   }
@@ -504,7 +509,7 @@ function App() {
     const section = recoverySettings(target);
     if (!section) return;
     const epoch = loginEpoch.current;
-    const snapshot = await refresh();
+    const { snapshot } = await refresh();
     if (epoch !== loginEpoch.current || syncQueue.blocked()?.id !== target.id) return;
     setSettingsRecovery({ id: target.id, section });
     setShowBlocked(false);
