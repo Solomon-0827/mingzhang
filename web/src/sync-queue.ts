@@ -221,7 +221,7 @@ export function createSyncQueue({
 
   // The server reads receipts and the ledger together. A change that appeared while
   // the request was running may already be in that snapshot, especially from a v1 tab.
-  async function fetchAndCacheSnapshot(claim?: { id: string; attempt?: string }) {
+  async function fetchAndCacheSnapshot(claim?: { id: string; attempt?: string }, localFallback = false) {
     for (let request = 0; request < 2; request += 1) {
       const ids = new Set((await readRecords()).map(record => record.item.id));
       const requested = claim ? new Set([...ids, claim.id]) : ids;
@@ -242,17 +242,21 @@ export function createSyncQueue({
         (currentEpoch !== startedIn && currentEpoch !== saved.ledger_epoch) || !unchanged || !covered) continue;
       const uncached = writeCache(saved, requested);
       if (uncached) onStoredChange(uncached);
-      return cache!;
+      return { value: cache!, reconciled: true };
     }
+    // The local snapshot plus its queued changes is authoritative while the user is
+    // still editing. Keep serving it and let the next background refresh reconcile.
+    await load();
+    if (localFallback && cache) return { value: cache, reconciled: false };
     throw new RequestError("unavailable", "同步期间账本仍在变化，请稍后重试。");
   }
 
-  async function refresh() {
+  async function refresh({ localFallback = false } = {}) {
     await importLegacy();
     await load();
-    await fetchAndCacheSnapshot();
+    const result = await fetchAndCacheSnapshot(undefined, localFallback);
     await load();
-    return cache!.snapshot;
+    return { snapshot: result.value.snapshot, reconciled: result.reconciled };
   }
 
   async function runFlush(action?: QueueAction, canRunAutomatically?: () => boolean): Promise<FlushResult> {
@@ -350,7 +354,7 @@ export function createSyncQueue({
           let receipt = await fetchReceipt(id);
           readCache();
           if (!expectedEpoch || receipt.ledger_epoch !== expectedEpoch || cache?.ledger_epoch !== expectedEpoch) {
-            const confirmed = await fetchAndCacheSnapshot({ id, attempt });
+            const confirmed = (await fetchAndCacheSnapshot({ id, attempt })).value;
             if (expectedEpoch || confirmed.ledger_epoch !== receipt.ledger_epoch) return "receipt-unavailable";
           }
           const epoch = receipt.ledger_epoch;
@@ -359,7 +363,7 @@ export function createSyncQueue({
             receipt = await cancelMutation(id, epoch);
           }
           if (receipt.committed || recovery.kind === "discard") {
-            const confirmed = await fetchAndCacheSnapshot({ id, attempt });
+            const confirmed = (await fetchAndCacheSnapshot({ id, attempt })).value;
             if (receipt.ledger_epoch !== epoch || confirmed.ledger_epoch !== epoch ||
               (receipt.committed && !confirmed.committed.includes(id))) return "receipt-unavailable";
           }
@@ -385,7 +389,7 @@ export function createSyncQueue({
             sent = { ledger_epoch: error.ledgerEpoch, cancelled: true };
           }
           accepted = true;
-          const confirmed = await fetchAndCacheSnapshot({ id, attempt });
+          const confirmed = (await fetchAndCacheSnapshot({ id, attempt })).value;
           if (confirmed.ledger_epoch !== sent.ledger_epoch) return "retryable";
           if (sent.cancelled) {
             const removed = await finish(() => null);
